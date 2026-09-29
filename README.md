@@ -40,7 +40,7 @@ Make sure you have [Rust and Cargo](https://rustup.rs/) installed on your system
 ### Clone and build from source
 
 ```bash
-git clone https://github.com/your-username/pmp.git
+git clone https://github.com/dtorrensf/pmp.git
 cd pmp
 cargo build --release
 ```
