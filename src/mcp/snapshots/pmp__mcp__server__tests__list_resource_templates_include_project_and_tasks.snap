@@ -1,0 +1,14 @@
+---
+source: src/mcp/server.rs
+expression: "result.resource_templates.iter().map(|t|\n(&t.uri_template, &t.name)).collect::<Vec<_>>()"
+---
+[
+  [
+    "pmp://projects/{id}",
+    "project"
+  ],
+  [
+    "pmp://projects/{id}/tasks",
+    "project_tasks"
+  ]
+]

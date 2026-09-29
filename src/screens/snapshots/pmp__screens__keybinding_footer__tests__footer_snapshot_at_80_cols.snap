@@ -1,0 +1,5 @@
+---
+source: src/screens/keybinding_footer.rs
+expression: "render_to_string(keys, 80, 1)"
+---
+Enter: Open  c: Create  q: Quit

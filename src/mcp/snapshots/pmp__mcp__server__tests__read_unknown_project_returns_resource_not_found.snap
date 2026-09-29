@@ -1,0 +1,8 @@
+---
+source: src/mcp/server.rs
+expression: err
+---
+{
+  "code": -32602,
+  "message": "resource not found"
+}

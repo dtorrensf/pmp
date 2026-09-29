@@ -1,0 +1,13 @@
+---
+source: src/mcp/server.rs
+expression: result
+---
+{
+  "contents": [
+    {
+      "uri": "pmp://projects",
+      "mimeType": "application/json",
+      "text": "[\n  {\n    \"id\": 1,\n    \"name\": \"Alpha\",\n    \"description\": \"First project\",\n    \"created_at\": \"now\"\n  },\n  {\n    \"id\": 2,\n    \"name\": \"Beta\",\n    \"description\": \"Second project\",\n    \"created_at\": \"now\"\n  }\n]"
+    }
+  ]
+}

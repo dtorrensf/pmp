@@ -1,0 +1,6 @@
+---
+source: src/screens/components/confirm_dialog.rs
+assertion_line: 92
+expression: "render_dialog(&dialog, 60, 24)"
+---
+                    Delete task T3? (y/N)

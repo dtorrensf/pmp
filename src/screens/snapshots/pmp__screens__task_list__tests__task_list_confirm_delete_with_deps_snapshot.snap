@@ -1,0 +1,29 @@
+---
+source: src/screens/task_list.rs
+assertion_line: 676
+expression: render_to_string(&screen)
+---
+┌ALPHA─────────────────────────────────────────────────────┐
+│ Deleting will remove 1 dependency links. Continue? (y/N) │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
