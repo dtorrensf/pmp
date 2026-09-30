@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Diego Torréns Farias
+// SPDX-License-Identifier: AGPL-3.0-or-later
 use std::path::PathBuf;
 use std::str::FromStr;
 

@@ -109,7 +109,9 @@ PMP is a 100% **Open Source** project! We love receiving pull requests, suggesti
 
 This project is licensed under the **AGPL-3.0-or-later** license. This means you are free to use, modify, and distribute the software, provided that any derivative works or modified network services maintain the same license and are open source.
 
-See the [`LICENSE`](LICENSE) file for more details.
+Copyright © 2026 Diego Torréns Farias.
+
+See the [`LICENSE`](LICENSE) file for more details, and [`NOTICE`](NOTICE) for the full copyright notice.
 
 ---
 <div align="center">
