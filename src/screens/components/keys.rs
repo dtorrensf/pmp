@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Diego Torréns Farias
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! `KeyEvent` constructors for declaring `KEYBINDINGS` tables without the
 //! modifiers/kind/state boilerplate. The produced events are bit-identical to
 //! the literals the screens used to write by hand: `kind` is

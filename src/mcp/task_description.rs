@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Diego Torréns Farias
+// SPDX-License-Identifier: AGPL-3.0-or-later
 pub fn compose_description(context: &str, requirements: &str, benefits: &str) -> String {
     let mut parts = Vec::new();
 

@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Diego Torréns Farias
+// SPDX-License-Identifier: AGPL-3.0-or-later
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;

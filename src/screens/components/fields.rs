@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Diego Torréns Farias
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Shared form-field renderers used by the task/project forms and the task
 //! list filter popup. Both helpers draw a `Borders::ALL` block titled after
 //! the field and render the current value inside it; they never move the

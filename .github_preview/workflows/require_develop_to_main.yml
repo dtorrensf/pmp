@@ -1,0 +1,19 @@
+name: PR-source-branch-guard
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+    branches:
+      - main
+
+jobs:
+  check-source-branch:
+    name: check-source-branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR head branch is develop
+        run: |
+          echo "PR head ref: ${{ github.event.pull_request.head.ref }}"
+          if [ "${{ github.event.pull_request.head.ref }}" != "develop" ]; then
+            echo "PR no permitido: los PR a main solo pueden venir de la rama 'develop'."
+            exit 1
+          fi

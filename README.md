@@ -4,7 +4,7 @@
   <p><strong>Manage your projects and tasks from the terminal with style and efficiency.</strong></p>
 
   [![License: AGPL 3.0](https://img.shields.io/badge/License-AGPL_3.0-blue.svg)](LICENSE)
-  [![Rust](https://img.shields.io/badge/Rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
+  [![Rust](https://img.shields.io/badge/Rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 </div>
 
 ---
@@ -35,9 +35,24 @@ With PMP, you get a local, blazing-fast, keyboard-driven project manager powered
 
 ## 🚀 Installation
 
-Make sure you have [Rust and Cargo](https://rustup.rs/) installed on your system.
+Install the `pmp` binary with Cargo. You need:
 
-### Clone and build from source
+- **Rust 1.85 or newer**, because the project uses edition 2024. [rustup](https://rustup.rs/) is the usual way to get it.
+- A **C compiler**, because `rusqlite` builds embedded SQLite: `build-essential` on Linux, Xcode Command Line Tools on macOS, and Visual Studio Build Tools on Windows.
+
+`cargo install --git` uses your active toolchain and does **not** apply `rust-toolchain.toml`. The **1.98.1** pin is for contributors and CI.
+
+### Install with Cargo
+
+```bash
+cargo install --git https://github.com/dtorrensf/pmp
+```
+
+That installs the `pmp` binary in `~/.cargo/bin`. If you installed Rust with rustup, that directory must be on your `PATH`.
+
+There are no tags yet.
+
+### Build from a clone (contributors)
 
 ```bash
 git clone https://github.com/dtorrensf/pmp.git
@@ -45,11 +60,7 @@ cd pmp
 cargo build --release
 ```
 
-Then you can move the binary to your `$PATH`:
-
-```bash
-sudo mv target/release/pmp /usr/local/bin/
-```
+The binary is `target/release/pmp`.
 
 ---
 
@@ -109,7 +120,9 @@ PMP is a 100% **Open Source** project! We love receiving pull requests, suggesti
 
 This project is licensed under the **AGPL-3.0-or-later** license. This means you are free to use, modify, and distribute the software, provided that any derivative works or modified network services maintain the same license and are open source.
 
-See the [`LICENSE`](LICENSE) file for more details.
+Copyright © 2026 Diego Torréns Farias.
+
+See the [`LICENSE`](LICENSE) file for more details, and [`NOTICE`](NOTICE) for the full copyright notice.
 
 ---
 <div align="center">

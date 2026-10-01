@@ -1,0 +1,42 @@
+PMP (Project Management Program)
+Copyright (C) 2026 Diego Torréns Farias
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+Full license
+------------
+The full, verbatim text of the GNU Affero General Public License, version 3,
+is the `LICENSE` file at the root of this repository. `LICENSE` is the license
+document and must not be modified: the copyright notice for the program itself
+is this file, not the license text.
+
+Source files
+------------
+Every Rust source file (`src/**/*.rs` and `tests/*.rs`) starts with:
+
+    // Copyright (C) 2026 Diego Torréns Farias
+    // SPDX-License-Identifier: AGPL-3.0-or-later
+
+The SPDX identifier in those headers points to the full notice: this file
+together with `LICENSE`.
+
+Third-party material
+--------------------
+No third-party source code, code snippets, or document templates are vendored
+in this repository. `pmp_app_icon.png` is this project's own artwork. The only
+third-party code is the crates.io dependency set declared in `Cargo.toml` and
+recorded in `Cargo.lock`; it is used through its own licenses and is not
+redistributed inside this repository, so it requires no attribution here.
