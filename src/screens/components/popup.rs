@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Diego Torréns Farias
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Shared centered-popup helpers: fixed-size and percentage-based centering
 //! geometry, plus the common scaffold (`Clear` + titled `Borders::ALL` block)
 //! used by the task-list filter popup and the task-form dependency picker.

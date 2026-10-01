@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Diego Torréns Farias
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Shared behavioral contract for `Repository` implementations.
 //!
 //! Every implementation of the trait must satisfy these tests so that
