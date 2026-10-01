@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_call:
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      # Pin third-party actions to immutable commit SHAs for supply-chain safety.
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Check
+        run: cargo check
+
+      - name: Test
+        run: cargo test
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
