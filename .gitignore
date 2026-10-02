@@ -3,3 +3,6 @@
 # SDD/gentle-ai tooling meta files (not project source)
 AGENTS.md
 
+# OpenCode local agent installation
+.opencode/
+

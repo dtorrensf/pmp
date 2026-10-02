@@ -391,35 +391,46 @@ mod tests {
         assert_eq!(args.target, Target::All);
     }
 
-    /// Golden test: the OpenCode renderer must produce bytes identical to the
-    /// committed `.opencode/agents/*.md` files. We use direct byte comparison
-    /// rather than insta snapshots because the committed files themselves are the
-    /// canonical golden output; maintaining a parallel snapshot file would only
-    /// duplicate them and could drift independently.
+    /// Golden test: the OpenCode renderer must produce content identical to the
+    /// committed insta snapshots. The canonical source templates live in
+    /// `agents/*.md`, but the rendered OpenCode output (with `mode`, `color` and
+    /// `permission` blocks) is stored as snapshots so we do not need to commit the
+    /// `.opencode/` installation directory into the repository.
     #[test]
-    fn opencode_rendered_agents_match_committed_files() {
-        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    fn opencode_rendered_agents_match_snapshots() {
+        let tmp = TempDir::new().unwrap();
         let ctx = RenderContext {
             target: Target::OpenCode,
             scope: Scope::Project,
-            project_dir: repo_root.clone(),
-            home_dir: repo_root.join("home"),
+            project_dir: tmp.path().to_path_buf(),
+            home_dir: tmp.path().join("home"),
             dry_run: false,
         };
         let renderer = OpenCodeRenderer;
         let ops = renderer.render(&ctx).unwrap();
 
         assert_eq!(ops.len(), 4, "expected four OpenCode agent files");
-        for op in &ops {
-            let committed = std::fs::read(&op.path)
-                .unwrap_or_else(|e| panic!("failed to read committed {}: {e}", op.path.display()));
-            assert_eq!(
-                op.content.as_bytes(),
-                committed.as_slice(),
-                "rendered content for {} does not match committed file",
-                op.path.display()
+
+        let content_of = |stem: &str| {
+            ops.iter()
+                .find(|op| op.path.file_stem().and_then(|s| s.to_str()) == Some(stem))
+                .unwrap_or_else(|| panic!("missing rendered file for {stem}"))
+                .content
+                .clone()
+        };
+
+        for stem in ["pmp-orchestrator", "pmp-query", "pmp-plan", "pmp-implement"] {
+            assert!(
+                ops.iter()
+                    .any(|op| op.path.ends_with(format!(".opencode/agents/{stem}.md"))),
+                "expected {stem}.md to be rendered under .opencode/agents/"
             );
         }
+
+        insta::assert_snapshot!("pmp_orchestrator", content_of("pmp-orchestrator"));
+        insta::assert_snapshot!("pmp_query", content_of("pmp-query"));
+        insta::assert_snapshot!("pmp_plan", content_of("pmp-plan"));
+        insta::assert_snapshot!("pmp_implement", content_of("pmp-implement"));
     }
 
     #[test]
