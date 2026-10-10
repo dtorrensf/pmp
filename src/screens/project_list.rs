@@ -14,6 +14,7 @@ use ratatui::{
 use crate::db::repository::Repository;
 use crate::screens::components::confirm_dialog::ConfirmDialog;
 use crate::screens::components::keys::key;
+use crate::screens::components::progress::completion_percentage;
 use crate::screens::{Action, Component, Screen};
 
 pub enum ProjectListMode {
@@ -24,6 +25,7 @@ pub enum ProjectListMode {
 pub struct ProjectListScreen {
     repo: Arc<dyn Repository>,
     projects: Vec<crate::domain::project::Project>,
+    progress: Vec<u64>,
     selected: usize,
     mode: ProjectListMode,
 }
@@ -42,6 +44,7 @@ impl ProjectListScreen {
         Self {
             repo,
             projects: Vec::new(),
+            progress: Vec::new(),
             selected: 0,
             mode: ProjectListMode::Browsing,
         }
@@ -55,6 +58,15 @@ impl ProjectListScreen {
 impl Component for ProjectListScreen {
     fn init(&mut self) -> anyhow::Result<()> {
         self.projects = self.repo.list_projects()?;
+        self.progress = self
+            .projects
+            .iter()
+            .map(|project| {
+                let project_id = project.id.unwrap_or(0);
+                let tasks = self.repo.list_tasks_by_project(project_id).unwrap_or_default();
+                completion_percentage(&tasks)
+            })
+            .collect();
         self.selected = self.selected.min(self.projects.len().saturating_sub(1));
         self.mode = ProjectListMode::Browsing;
         Ok(())
@@ -144,7 +156,7 @@ fn render_list(screen: &ProjectListScreen, frame: &mut Frame, area: Rect) {
         return;
     }
 
-    let items: Vec<ListItem> = screen
+        let items: Vec<ListItem> = screen
         .projects
         .iter()
         .enumerate()
@@ -154,7 +166,9 @@ fn render_list(screen: &ProjectListScreen, frame: &mut Frame, area: Rect) {
             } else {
                 Style::default()
             };
-            ListItem::new(Line::from(Span::styled(p.name.clone(), style)))
+            let progress = screen.progress.get(i).copied().unwrap_or(0);
+            let label = format!("{} ({}%)", p.name, progress);
+            ListItem::new(Line::from(Span::styled(label, style)))
         })
         .collect();
     let list = List::new(items).block(block);
