@@ -63,7 +63,10 @@ impl Component for ProjectListScreen {
             .iter()
             .map(|project| {
                 let project_id = project.id.unwrap_or(0);
-                let tasks = self.repo.list_tasks_by_project(project_id).unwrap_or_default();
+                let tasks = self
+                    .repo
+                    .list_tasks_by_project(project_id)
+                    .unwrap_or_default();
                 completion_percentage(&tasks)
             })
             .collect();
@@ -156,7 +159,7 @@ fn render_list(screen: &ProjectListScreen, frame: &mut Frame, area: Rect) {
         return;
     }
 
-        let items: Vec<ListItem> = screen
+    let items: Vec<ListItem> = screen
         .projects
         .iter()
         .enumerate()

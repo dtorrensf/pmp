@@ -257,9 +257,7 @@ mod tests {
         repo.create_task(project_id, "Task 3", "", Status::Done, Priority::Low)
             .unwrap();
         let mut app = App::new(repo.clone());
-        app.dispatch(Action::Navigate(Screen::ProjectDashboard {
-            project_id,
-        }));
+        app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id }));
         app.dispatch(Action::Navigate(Screen::ProjectList));
         (repo, app)
     }

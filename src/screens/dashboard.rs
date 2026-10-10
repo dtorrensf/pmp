@@ -193,7 +193,11 @@ impl Component for ProjectDashboard {
         let total = self.view.all_tasks().len() as u64;
         let done = counts[2];
         let percentage = completion_percentage(self.view.all_tasks());
-        let ratio = if total == 0 { 0.0 } else { done as f64 / total as f64 };
+        let ratio = if total == 0 {
+            0.0
+        } else {
+            done as f64 / total as f64
+        };
         let gauge = Gauge::default()
             .block(Block::default().title("Progress").borders(Borders::ALL))
             .ratio(ratio)

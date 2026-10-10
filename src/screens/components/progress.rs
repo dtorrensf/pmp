@@ -49,11 +49,7 @@ mod tests {
 
     #[test]
     fn one_done_out_of_three_is_thirty_three_percent() {
-        let tasks = vec![
-            task(Status::Todo),
-            task(Status::Todo),
-            task(Status::Done),
-        ];
+        let tasks = vec![task(Status::Todo), task(Status::Todo), task(Status::Done)];
         assert_eq!(completion_percentage(&tasks), 33);
     }
 
@@ -71,18 +67,10 @@ mod tests {
 
     #[test]
     fn rounds_to_nearest_integer() {
-        let tasks = vec![
-            task(Status::Done),
-            task(Status::Todo),
-            task(Status::Todo),
-        ];
+        let tasks = vec![task(Status::Done), task(Status::Todo), task(Status::Todo)];
         assert_eq!(completion_percentage(&tasks), 33);
 
-        let tasks = vec![
-            task(Status::Done),
-            task(Status::Done),
-            task(Status::Todo),
-        ];
+        let tasks = vec![task(Status::Done), task(Status::Done), task(Status::Todo)];
         assert_eq!(completion_percentage(&tasks), 67);
     }
 }
