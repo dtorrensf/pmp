@@ -3,7 +3,7 @@ source: src/tui.rs
 expression: render_app_to_string(&mut app)
 ---
 ┌Projects──────────────────────────────────────────────────────────────────────┐
-│Alpha                                                                         │
+│Alpha (33%)                                                                   │
 │                                                                              │
 │                                                                              │
 │                                                                              │
