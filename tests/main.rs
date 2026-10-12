@@ -135,6 +135,36 @@ fn binary_help_arg_prints_usage_and_exits_cleanly() {
             .expect("pmp help should spawn");
         assert!(output.status.success(), "pmp {flag} should exit cleanly");
         let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("pmp - Project Management Program"),
+            "pmp {flag} should print the program title"
+        );
         assert!(stdout.contains("Usage:"), "pmp {flag} should print usage");
+        assert!(
+            stdout.contains("Options:"),
+            "pmp {flag} should print options"
+        );
+        assert!(
+            stdout.contains("Commands:"),
+            "pmp {flag} should print commands"
+        );
     }
+}
+
+#[test]
+fn binary_invalid_arg_prints_help_and_exits_with_error() {
+    let output = Command::new(env!("CARGO_BIN_EXE_pmp"))
+        .arg("invalid-arg")
+        .output()
+        .expect("pmp invalid-arg should spawn");
+    assert!(
+        !output.status.success(),
+        "pmp invalid-arg should exit with an error"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("error:"), "stderr should contain error");
+    assert!(
+        stderr.contains("Usage:"),
+        "stderr should contain usage help"
+    );
 }
