@@ -5,13 +5,26 @@ use std::sync::Arc;
 use pmp::app::App;
 use pmp::db::sqlite::SqliteRepository;
 
+const HELP: &str = "Usage: pmp [mcp|--version|-v|--help|-h]";
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    match args.get(1).map(String::as_str) {
+        Some("-v" | "--version") => {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Some("-h" | "--help") => {
+            println!("{}", HELP);
+            return Ok(());
+        }
+        _ => {}
+    }
     let data_dir = dirs::data_dir().unwrap_or_else(|| std::env::current_dir().expect("cwd"));
     let db_path = data_dir.join("pmp").join("pmp.db");
     std::fs::create_dir_all(db_path.parent().unwrap())?;
     let repo = Arc::new(SqliteRepository::open(&db_path)?);
-    let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(|s| s == "mcp").unwrap_or(false) {
         pmp::mcp::serve(repo).await?;
     } else {
