@@ -230,7 +230,7 @@ impl PmpServer {
 
     #[tool(
         name = "update_task_status",
-        description = "Switch the status of a task. Use when the user (or an AI agent) starts working on a task (switch to In Progress) or finishes it (switch to Done). Rejects Done status if the task has incomplete dependencies."
+        description = "Switch the status of a task. Use when the user starts working on a task (switch to In Progress) or finishes it (switch to Done). Rejects Done status if the task has incomplete dependencies."
     )]
     async fn update_task_status(
         &self,
