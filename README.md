@@ -88,6 +88,15 @@ pmp mcp
 
 The server will start and interact smoothly with your environment.
 
+### Command-line options
+
+```bash
+pmp              # Start the interactive TUI
+pmp mcp          # Start the MCP server
+pmp --version    # Print version (also -v)
+pmp --help       # Print help (also -h)
+```
+
 ---
 
 ## 🤝 Contributing
