@@ -1,0 +1,2 @@
+[alias]
+cov = "llvm-cov --fail-under-lines 80 --html"
