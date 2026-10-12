@@ -14,9 +14,6 @@ async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(|s| s == "mcp").unwrap_or(false) {
         pmp::mcp::serve(repo).await?;
-    } else if args.get(1).map(|s| s == "agents").unwrap_or(false) {
-        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        pmp::agents::run(&refs[1..])?;
     } else {
         let app = App::new(repo);
         pmp::tui::run(app)?;
