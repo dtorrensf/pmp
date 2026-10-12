@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/dtorrensf/pmp/compare/pmp-v0.2.0...pmp-v0.3.0) (2026-10-12)
+
+
+### Features
+
+* Add version and help options to CLI ([#19](https://github.com/dtorrensf/pmp/issues/19)) ([71bcebc](https://github.com/dtorrensf/pmp/commit/71bcebc1ff6fa764109ae8eb45911adcda531198))
+* Version and help commands ([#20](https://github.com/dtorrensf/pmp/issues/20)) ([beb7fe4](https://github.com/dtorrensf/pmp/commit/beb7fe48082faafef3779506ced3cc0b80e391ff))
+
 ## [0.2.0](https://github.com/dtorrensf/pmp/compare/pmp-v0.1.0...pmp-v0.2.0) (2026-10-12)
 
 
