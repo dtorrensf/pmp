@@ -1,0 +1,11 @@
+pmp - Project Management Program
+
+Usage: pmp [OPTIONS] [COMMAND]
+
+Options:
+  -h, --help       Print help information
+  -v, --version    Print version information
+
+Commands:
+  mcp              Start the MCP server
+  (no command)     Start the interactive TUI (default)
