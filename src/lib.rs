@@ -8,7 +8,6 @@ pub mod tui;
 
 pub use db::repository;
 
-pub mod agents;
 pub mod mcp;
 
 #[cfg(test)]

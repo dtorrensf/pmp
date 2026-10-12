@@ -64,20 +64,6 @@ The binary is `target/release/pmp`.
 
 ---
 
-## 🤖 AI agent integration
-
-PMP includes a four-agent pipeline (`pmp-orchestrator`, `pmp-query`, `pmp-plan`, `pmp-implement`) that works with Claude, OpenCode, Cursor, Copilot, Codex, and Antigravity. The installer renders the agents and wires the built-in MCP server for each tool.
-
-Install the agents into the current project with:
-
-```bash
-pmp agents install --target all --scope project
-```
-
-For per-target file paths, MCP wiring details, manual install commands, and global scope options, see [`docs/agents.md`](docs/agents.md).
-
----
-
 ## 💻 How to Use
 
 Using PMP is as simple as typing a command.
@@ -101,6 +87,15 @@ pmp mcp
 ```
 
 The server will start and interact smoothly with your environment.
+
+### Command-line options
+
+```bash
+pmp              # Start the interactive TUI
+pmp mcp          # Start the MCP server
+pmp --version    # Print version (also -v)
+pmp --help       # Print help (also -h)
+```
 
 ---
 

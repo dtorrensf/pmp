@@ -108,3 +108,63 @@ fn binary_mcp_arg_responds_to_initialize_then_exits_cleanly() {
     let status = child.wait().expect("child should exit");
     assert!(status.success(), "pmp mcp should exit cleanly");
 }
+
+#[test]
+fn binary_version_arg_prints_version_and_exits_cleanly() {
+    let expected = format!("{}\n", env!("CARGO_PKG_VERSION"));
+    for flag in ["--version", "-v"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_pmp"))
+            .arg(flag)
+            .output()
+            .expect("pmp version should spawn");
+        assert!(output.status.success(), "pmp {flag} should exit cleanly");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            expected,
+            "pmp {flag} should print the version"
+        );
+    }
+}
+
+#[test]
+fn binary_help_arg_prints_usage_and_exits_cleanly() {
+    for flag in ["--help", "-h"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_pmp"))
+            .arg(flag)
+            .output()
+            .expect("pmp help should spawn");
+        assert!(output.status.success(), "pmp {flag} should exit cleanly");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("pmp - Project Management Program"),
+            "pmp {flag} should print the program title"
+        );
+        assert!(stdout.contains("Usage:"), "pmp {flag} should print usage");
+        assert!(
+            stdout.contains("Options:"),
+            "pmp {flag} should print options"
+        );
+        assert!(
+            stdout.contains("Commands:"),
+            "pmp {flag} should print commands"
+        );
+    }
+}
+
+#[test]
+fn binary_invalid_arg_prints_help_and_exits_with_error() {
+    let output = Command::new(env!("CARGO_BIN_EXE_pmp"))
+        .arg("invalid-arg")
+        .output()
+        .expect("pmp invalid-arg should spawn");
+    assert!(
+        !output.status.success(),
+        "pmp invalid-arg should exit with an error"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("error:"), "stderr should contain error");
+    assert!(
+        stderr.contains("Usage:"),
+        "stderr should contain usage help"
+    );
+}
