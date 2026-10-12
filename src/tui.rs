@@ -249,10 +249,15 @@ mod tests {
     fn setup_app_with_project() -> (Arc<StubRepository>, App) {
         let repo = Arc::new(StubRepository::default());
         let project = repo.create_project("Alpha", "First project").unwrap();
+        let project_id = project.id.unwrap();
+        repo.create_task(project_id, "Task 1", "", Status::Todo, Priority::Low)
+            .unwrap();
+        repo.create_task(project_id, "Task 2", "", Status::Todo, Priority::Low)
+            .unwrap();
+        repo.create_task(project_id, "Task 3", "", Status::Done, Priority::Low)
+            .unwrap();
         let mut app = App::new(repo.clone());
-        app.dispatch(Action::Navigate(Screen::ProjectDashboard {
-            project_id: project.id.unwrap(),
-        }));
+        app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id }));
         app.dispatch(Action::Navigate(Screen::ProjectList));
         (repo, app)
     }
