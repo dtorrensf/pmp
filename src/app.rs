@@ -1,6 +1,6 @@
 // Copyright (C) 2026 Diego Torréns Farias
 // SPDX-License-Identifier: AGPL-3.0-or-later
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::db::repository::Repository;
 use crate::domain::error::AppError;
@@ -16,6 +16,11 @@ pub struct App {
     pub repo: Arc<dyn Repository>,
     pub action: Option<Action>,
     pub error: Option<String>,
+    /// Newer pmp version reported by the background update check, if any.
+    pub update_available: Option<String>,
+    /// Whether the update banner is currently open.
+    pub show_update: bool,
+    pending_update: Option<Arc<OnceLock<String>>>,
     components: Components,
 }
 
@@ -35,6 +40,9 @@ impl App {
             repo: repo.clone(),
             action: None,
             error: None,
+            update_available: None,
+            show_update: false,
+            pending_update: None,
             components: Components {
                 project_list: ProjectListScreen::new(repo.clone()),
                 dashboard: ProjectDashboard::new(repo.clone()),
@@ -47,6 +55,39 @@ impl App {
             app.error = Some(e.to_string());
         }
         app
+    }
+
+    /// Registers the slot filled by the background update check.
+    pub fn set_pending_update(&mut self, slot: Arc<OnceLock<String>>) {
+        self.pending_update = Some(slot);
+    }
+
+    /// Copies the background update result, if already available, into
+    /// `update_available`.
+    pub fn poll_update(&mut self) {
+        if let Some(version) = self.pending_update.as_ref().and_then(|slot| slot.get()) {
+            self.update_available = Some(version.clone());
+        }
+    }
+
+    /// Opens the update banner. No-op when no update is available.
+    pub fn open_update_banner(&mut self) {
+        if self.update_available.is_some() {
+            self.show_update = true;
+        }
+    }
+
+    pub fn close_update_banner(&mut self) {
+        self.show_update = false;
+    }
+
+    /// `true` when the active screen has a text field that must receive
+    /// printable keys (so global shortcuts like `u` must not intercept them).
+    pub fn accepts_text_input(&self) -> bool {
+        matches!(
+            self.screen,
+            Screen::ProjectForm { .. } | Screen::TaskForm { .. }
+        )
     }
 
     pub fn dispatch(&mut self, action: Action) -> Option<Action> {
@@ -1061,5 +1102,55 @@ mod tests {
     fn app_is_send() {
         fn assert_send<T: Send>() {}
         assert_send::<App>();
+    }
+
+    #[test]
+    fn update_is_hidden_by_default() {
+        let app = App::new(Arc::new(StubRepository::default()));
+        assert_eq!(app.update_available, None);
+        assert!(!app.show_update);
+    }
+
+    #[test]
+    fn poll_update_copies_slot_value() {
+        let mut app = App::new(Arc::new(StubRepository::default()));
+        let slot = Arc::new(OnceLock::new());
+        app.set_pending_update(slot.clone());
+
+        app.poll_update();
+        assert_eq!(app.update_available, None);
+
+        slot.set("0.4.0".to_string()).unwrap();
+        app.poll_update();
+        assert_eq!(app.update_available.as_deref(), Some("0.4.0"));
+    }
+
+    #[test]
+    fn open_update_banner_requires_an_update() {
+        let mut app = App::new(Arc::new(StubRepository::default()));
+        app.open_update_banner();
+        assert!(!app.show_update);
+
+        app.update_available = Some("0.4.0".to_string());
+        app.open_update_banner();
+        assert!(app.show_update);
+
+        app.close_update_banner();
+        assert!(!app.show_update);
+    }
+
+    #[test]
+    fn accepts_text_input_only_on_forms() {
+        let mut app = App::new(Arc::new(StubRepository::default()));
+        assert!(!app.accepts_text_input());
+
+        app.dispatch(Action::Navigate(Screen::ProjectForm { project_id: None }));
+        assert!(app.accepts_text_input());
+
+        app.dispatch(Action::Navigate(Screen::TaskForm {
+            project_id: 1,
+            task_id: None,
+        }));
+        assert!(app.accepts_text_input());
     }
 }
