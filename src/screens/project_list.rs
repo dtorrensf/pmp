@@ -14,6 +14,7 @@ use ratatui::{
 use crate::db::repository::Repository;
 use crate::screens::components::confirm_dialog::ConfirmDialog;
 use crate::screens::components::keys::key;
+use crate::screens::components::list_navigation::move_selection;
 use crate::screens::components::progress::completion_percentage;
 use crate::screens::{Action, Component, Screen};
 
@@ -32,6 +33,8 @@ pub struct ProjectListScreen {
 
 impl ProjectListScreen {
     pub const KEYBINDINGS: &[(KeyEvent, &'static str)] = &[
+        (key(KeyCode::Char('j')), "Down"),
+        (key(KeyCode::Char('k')), "Up"),
         (key(KeyCode::Enter), "Open"),
         (key(KeyCode::Char('c')), "Create"),
         (key(KeyCode::Char('d')), "Delete"),
@@ -116,16 +119,8 @@ impl Component for ProjectListScreen {
                             project_id: p.id.unwrap_or(0),
                         })
                     }),
-                    KeyCode::Up => {
-                        if self.selected > 0 {
-                            self.selected -= 1;
-                        }
-                        None
-                    }
-                    KeyCode::Down => {
-                        if self.selected + 1 < self.projects.len() {
-                            self.selected += 1;
-                        }
+                    KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k') => {
+                        move_selection(&mut self.selected, self.projects.len(), *code);
                         None
                     }
                     _ => None,
@@ -268,6 +263,8 @@ mod tests {
         assert_eq!(
             keys,
             vec![
+                (KeyCode::Char('j'), "Down"),
+                (KeyCode::Char('k'), "Up"),
                 (KeyCode::Enter, "Open"),
                 (KeyCode::Char('c'), "Create"),
                 (KeyCode::Char('d'), "Delete"),
@@ -286,6 +283,29 @@ mod tests {
         screen.init().unwrap();
         let action = screen.handle_event(&char_event('r'));
         assert_eq!(action, Some(Action::Refresh));
+    }
+
+    #[test]
+    fn j_and_k_navigate_projects_and_clamp_at_list_boundaries() {
+        let repo = Arc::new(StubRepository::default());
+        repo.create_project("Alpha", "").unwrap();
+        repo.create_project("Beta", "").unwrap();
+        repo.create_project("Gamma", "").unwrap();
+        let mut screen = ProjectListScreen::new(repo);
+        screen.init().unwrap();
+
+        screen.handle_event(&char_event('k'));
+        assert_eq!(screen.selected, 0);
+
+        screen.handle_event(&char_event('j'));
+        assert_eq!(screen.selected, 1);
+        screen.handle_event(&key_event(KeyCode::Down));
+        assert_eq!(screen.selected, 2);
+        screen.handle_event(&char_event('j'));
+        assert_eq!(screen.selected, 2);
+
+        screen.handle_event(&char_event('k'));
+        assert_eq!(screen.selected, 1);
     }
 
     #[test]
