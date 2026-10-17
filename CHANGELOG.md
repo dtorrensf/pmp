@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/dtorrensf/pmp/compare/pmp-v0.4.0...pmp-v0.4.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* Test implementation ([#27](https://github.com/dtorrensf/pmp/issues/27)) ([491cf63](https://github.com/dtorrensf/pmp/commit/491cf63d2a1361f17d6feb4b57578ce58ec0beab))
+
 ## [0.4.0](https://github.com/dtorrensf/pmp/compare/pmp-v0.3.0...pmp-v0.4.0) (2026-10-17)
 
 
