@@ -12,10 +12,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 /// Command shown to the user to install the newer version.
-pub const UPDATE_COMMAND: &str = "cargo install --git https://github.com/dtorrensf/pmp";
+pub(crate) const UPDATE_COMMAND: &str = "cargo install --git https://github.com/dtorrensf/pmp";
 
 /// Minimum time between two calls to the GitHub API.
-pub const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
+const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 
 const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/dtorrensf/pmp/releases/latest";
 const TAG_PREFIX: &str = "pmp-v";
@@ -29,14 +29,14 @@ pub struct UpdateCheckState {
 }
 
 /// Parses a release tag such as `pmp-v0.4.0` into a semver version.
-pub fn parse_tag(tag: &str) -> Option<semver::Version> {
+fn parse_tag(tag: &str) -> Option<semver::Version> {
     let version = tag.strip_prefix(TAG_PREFIX)?;
     semver::Version::parse(version).ok()
 }
 
 /// Returns `true` when `latest` is a strictly newer version than `current`.
 /// Unparseable input is never considered newer.
-pub fn newer(current: &str, latest: &str) -> bool {
+fn newer(current: &str, latest: &str) -> bool {
     match (
         semver::Version::parse(current),
         semver::Version::parse(latest),
@@ -47,19 +47,19 @@ pub fn newer(current: &str, latest: &str) -> bool {
 }
 
 /// Extracts the `tag_name` field from the GitHub "latest release" JSON body.
-pub fn latest_version_from_json(body: &str) -> Option<String> {
+fn latest_version_from_json(body: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(body).ok()?;
     value.get("tag_name")?.as_str().map(str::to_string)
 }
 
 /// Returns `true` when the last check happened less than `interval` ago.
-pub fn is_fresh(last_check_unix: u64, now: u64, interval: u64) -> bool {
+fn is_fresh(last_check_unix: u64, now: u64, interval: u64) -> bool {
     now.saturating_sub(last_check_unix) < interval
 }
 
 /// Extracts the latest published version (without the tag prefix) from the
 /// GitHub "latest release" JSON body.
-pub fn latest_version_from_release_body(body: &str) -> Option<String> {
+fn latest_version_from_release_body(body: &str) -> Option<String> {
     let tag = latest_version_from_json(body)?;
     Some(parse_tag(&tag)?.to_string())
 }
@@ -67,7 +67,7 @@ pub fn latest_version_from_release_body(body: &str) -> Option<String> {
 /// Queries `url` (GitHub "latest release" endpoint) for the latest published
 /// version, whether or not it is newer than `current` (the comparison happens
 /// when the result is shown). Any network, status or parsing error yields `None`.
-pub fn fetch_latest_version(url: &str, current: &str) -> Option<String> {
+fn fetch_latest_version(url: &str, current: &str) -> Option<String> {
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(REQUEST_TIMEOUT))
         .user_agent(format!("pmp/{current}"))
@@ -83,7 +83,7 @@ pub fn fetch_latest_version(url: &str, current: &str) -> Option<String> {
 }
 
 /// Queries GitHub for the latest published version.
-pub fn check_for_update(current: &str) -> Option<String> {
+fn check_for_update(current: &str) -> Option<String> {
     fetch_latest_version(LATEST_RELEASE_URL, current)
 }
 
@@ -107,7 +107,7 @@ where
 
 /// Runs the update check against the real clock, data directory and GitHub,
 /// publishing a newer version (if any) into `slot`.
-pub fn run_update_check(current: &str, slot: &Arc<OnceLock<String>>) {
+fn run_update_check(current: &str, slot: &Arc<OnceLock<String>>) {
     run_update_check_with(current, slot, state_path().as_deref(), now_unix(), || {
         check_for_update(current)
     });
@@ -118,7 +118,7 @@ pub fn run_update_check(current: &str, slot: &Arc<OnceLock<String>>) {
 /// current unix time and `fetch` the network lookup. Reuses the cached result
 /// while it is fresh; otherwise calls `fetch`, persists the outcome and
 /// publishes `latest` into `slot` only when it is newer than `current`.
-pub fn run_update_check_with<F>(
+fn run_update_check_with<F>(
     current: &str,
     slot: &Arc<OnceLock<String>>,
     state_file: Option<&Path>,

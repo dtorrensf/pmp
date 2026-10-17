@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use std::sync::{Arc, OnceLock};
 
+use crossterm::event::{KeyCode, KeyModifiers};
+
 use crate::db::repository::Repository;
 use crate::domain::error::AppError;
 use crate::domain::task::Status;
@@ -17,9 +19,9 @@ pub struct App {
     pub action: Option<Action>,
     pub error: Option<String>,
     /// Newer pmp version reported by the background update check, if any.
-    pub update_available: Option<String>,
+    update_available: Option<String>,
     /// Whether the update banner is currently open.
-    pub show_update: bool,
+    show_update: bool,
     pending_update: Option<Arc<OnceLock<String>>>,
     components: Components,
 }
@@ -81,13 +83,39 @@ impl App {
         self.show_update = false;
     }
 
-    /// `true` when the active screen has a text field that must receive
-    /// printable keys (so global shortcuts like `u` must not intercept them).
-    pub fn accepts_text_input(&self) -> bool {
-        matches!(
-            self.screen,
-            Screen::ProjectForm { .. } | Screen::TaskForm { .. }
-        )
+    pub fn set_update_available(&mut self, version: String) {
+        self.update_available = Some(version);
+    }
+
+    pub fn has_update(&self) -> bool {
+        self.update_available.is_some()
+    }
+
+    pub fn update_version(&self) -> Option<&str> {
+        self.update_available.as_deref()
+    }
+
+    pub fn is_update_banner_open(&self) -> bool {
+        self.show_update
+    }
+
+    /// Returns `true` when the key belongs to update-banner handling.
+    pub fn handle_update_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+        if self.show_update {
+            if code == KeyCode::Esc {
+                self.close_update_banner();
+            }
+            return true;
+        }
+        if code == KeyCode::Char('u')
+            && modifiers == KeyModifiers::NONE
+            && self.has_update()
+            && !self.screen.accepts_text_input()
+        {
+            self.open_update_banner();
+            return true;
+        }
+        false
     }
 
     pub fn dispatch(&mut self, action: Action) -> Option<Action> {
@@ -1107,8 +1135,8 @@ mod tests {
     #[test]
     fn update_is_hidden_by_default() {
         let app = App::new(Arc::new(StubRepository::default()));
-        assert_eq!(app.update_available, None);
-        assert!(!app.show_update);
+        assert!(!app.has_update());
+        assert!(!app.is_update_banner_open());
     }
 
     #[test]
@@ -1118,39 +1146,39 @@ mod tests {
         app.set_pending_update(slot.clone());
 
         app.poll_update();
-        assert_eq!(app.update_available, None);
+        assert!(!app.has_update());
 
         slot.set("0.4.0".to_string()).unwrap();
         app.poll_update();
-        assert_eq!(app.update_available.as_deref(), Some("0.4.0"));
+        assert_eq!(app.update_version(), Some("0.4.0"));
     }
 
     #[test]
     fn open_update_banner_requires_an_update() {
         let mut app = App::new(Arc::new(StubRepository::default()));
         app.open_update_banner();
-        assert!(!app.show_update);
+        assert!(!app.is_update_banner_open());
 
-        app.update_available = Some("0.4.0".to_string());
+        app.set_update_available("0.4.0".to_string());
         app.open_update_banner();
-        assert!(app.show_update);
+        assert!(app.is_update_banner_open());
 
         app.close_update_banner();
-        assert!(!app.show_update);
+        assert!(!app.is_update_banner_open());
     }
 
     #[test]
     fn accepts_text_input_only_on_forms() {
         let mut app = App::new(Arc::new(StubRepository::default()));
-        assert!(!app.accepts_text_input());
+        assert!(!app.screen.accepts_text_input());
 
         app.dispatch(Action::Navigate(Screen::ProjectForm { project_id: None }));
-        assert!(app.accepts_text_input());
+        assert!(app.screen.accepts_text_input());
 
         app.dispatch(Action::Navigate(Screen::TaskForm {
             project_id: 1,
             task_id: None,
         }));
-        assert!(app.accepts_text_input());
+        assert!(app.screen.accepts_text_input());
     }
 }
