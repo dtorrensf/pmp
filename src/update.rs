@@ -249,10 +249,10 @@ fn load_state(path: &Path) -> Option<UpdateCheckState> {
 }
 
 fn save_state(path: &Path, state: &UpdateCheckState) {
-    if let Some(parent) = path.parent() {
-        if let Err(error) = std::fs::create_dir_all(parent) {
-            warn!(error = %error, path = ?parent, "pmp: failed to create data dir for update cache");
-        }
+    if let Some(parent) = path.parent()
+        && let Err(error) = std::fs::create_dir_all(parent)
+    {
+        warn!(error = %error, path = ?parent, "pmp: failed to create data dir for update cache");
     }
     match serde_json::to_string(state) {
         Ok(text) => {
