@@ -1,6 +1,7 @@
 [package]
 name = "pmp"
 version = "0.3.0"
+repository = "https://github.com/dtorrensf/pmp"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 authors = ["Diego Torréns Farias <dtorrensfarias@outlook.com>"]
