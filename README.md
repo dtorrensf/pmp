@@ -50,6 +50,8 @@ cargo install --git https://github.com/dtorrensf/pmp
 
 That installs the `pmp` binary in `~/.cargo/bin`. If you installed Rust with rustup, that directory must be on your `PATH`.
 
+> If `~/.cargo/bin` isn't on your `PATH` it will be necessary to add it.
+
 There are no tags yet.
 
 ### Build from a clone (contributors)
