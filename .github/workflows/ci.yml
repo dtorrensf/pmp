@@ -10,6 +10,7 @@ on:
 jobs:
   gates:
     runs-on: ubuntu-latest
+    if: ${{ !startsWith(github.head_ref, 'release-please--branches--') }}
     steps:
       # Pin third-party actions to immutable commit SHAs for supply-chain safety.
       - name: Checkout
