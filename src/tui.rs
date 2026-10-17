@@ -93,7 +93,7 @@ where
                 if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
                     break;
                 }
-                if !handle_update_key(app, key.code, key.modifiers) {
+                if !app.handle_update_key(key.code, key.modifiers) {
                     let mut next = app.active_component().handle_event(&Event::Key(key));
                     while let Some(action) = next {
                         if matches!(action, Action::Quit) {
@@ -132,8 +132,8 @@ fn render_app_frame(app: &mut App, frame: &mut Frame) {
         .split(area);
     let keys = app.active_component().keybindings();
     app.active_component().render(frame, chunks[0]);
-    render_footer_row(frame, chunks[1], keys, app.update_available.as_deref());
-    if let (true, Some(version)) = (app.show_update, app.update_available.as_deref()) {
+    render_footer_row(frame, chunks[1], keys, app.update_version());
+    if let (true, Some(version)) = (app.is_update_banner_open(), app.update_version()) {
         render_update_banner(frame, version, area);
     }
     if let Some(error) = &app.error {
@@ -178,30 +178,6 @@ fn render_update_banner(frame: &mut Frame, version: &str, area: Rect) {
         env!("CARGO_PKG_VERSION")
     );
     frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), inner);
-}
-
-/// Handles the update-banner keys. Returns `true` when the key was consumed
-/// and must not reach the active component.
-///
-/// While the banner is open only `Esc` is processed (the rest is swallowed so
-/// the screen behind it does not react). Otherwise `u` opens the banner when an
-/// update is available, except on screens with text fields where `u` is text.
-fn handle_update_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> bool {
-    if app.show_update {
-        if code == KeyCode::Esc {
-            app.close_update_banner();
-        }
-        return true;
-    }
-    if code == KeyCode::Char('u')
-        && modifiers == KeyModifiers::NONE
-        && app.update_available.is_some()
-        && !app.accepts_text_input()
-    {
-        app.open_update_banner();
-        return true;
-    }
-    false
 }
 
 fn render_error(frame: &mut Frame, error: &str, area: Rect) {
@@ -609,7 +585,7 @@ mod tests {
 
     fn app_with_update(version: &str) -> (Arc<StubRepository>, App) {
         let (repo, mut app) = setup_app_with_project();
-        app.update_available = Some(version.to_string());
+        app.set_update_available(version.to_string());
         (repo, app)
     }
 
@@ -618,11 +594,11 @@ mod tests {
         let (_repo, mut app) = app_with_update("0.4.0");
 
         run_with_events(&mut app, vec![char_event('u')]).unwrap();
-        assert!(app.show_update);
+        assert!(app.is_update_banner_open());
         assert!(render_app_to_string(&mut app).contains("Update available"));
 
         run_with_events(&mut app, vec![key_event(KeyCode::Esc)]).unwrap();
-        assert!(!app.show_update);
+        assert!(!app.is_update_banner_open());
         assert!(!render_app_to_string(&mut app).contains("Update available"));
     }
 
@@ -632,7 +608,7 @@ mod tests {
 
         run_with_events(&mut app, vec![char_event('u')]).unwrap();
 
-        assert!(!app.show_update);
+        assert!(!app.is_update_banner_open());
     }
 
     #[test]
@@ -646,7 +622,7 @@ mod tests {
 
         run_with_events(&mut app, vec![char_event('u')]).unwrap();
 
-        assert!(!app.show_update);
+        assert!(!app.is_update_banner_open());
     }
 
     #[test]
@@ -656,7 +632,7 @@ mod tests {
         // Enter would open the dashboard if it reached the project list.
         run_with_events(&mut app, vec![char_event('u'), key_event(KeyCode::Enter)]).unwrap();
 
-        assert!(app.show_update);
+        assert!(app.is_update_banner_open());
         assert_eq!(app.screen, Screen::ProjectList);
     }
 

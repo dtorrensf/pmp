@@ -66,6 +66,14 @@ pub enum Screen {
     },
 }
 
+impl Screen {
+    /// `true` when this screen has a text field that must receive printable
+    /// keys, so global shortcuts should not intercept them.
+    pub fn accepts_text_input(&self) -> bool {
+        matches!(self, Self::ProjectForm { .. } | Self::TaskForm { .. })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum Action {
     #[default]
