@@ -12,6 +12,7 @@ use crate::db::repository::Repository;
 use crate::domain::task::{Priority, Status, Task};
 use crate::screens::components::confirm_dialog::ConfirmDialog;
 use crate::screens::components::fields::render_readonly_field;
+use crate::screens::components::list_navigation::move_selection;
 use crate::screens::components::popup::{centered_rect, render_popup_scaffold};
 use crate::screens::{Action, Screen};
 
@@ -149,16 +150,8 @@ impl TaskListView {
     ) -> Option<Action> {
         match &mut self.mode {
             TaskListMode::Browsing => match code {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    if self.selected > 0 {
-                        self.selected -= 1;
-                    }
-                    None
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if self.selected + 1 < self.tasks.len() {
-                        self.selected += 1;
-                    }
+                KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j') => {
+                    move_selection(&mut self.selected, self.tasks.len(), code);
                     None
                 }
                 KeyCode::Enter => self.tasks.get(self.selected).map(|task| {

@@ -5,6 +5,7 @@ pub mod db;
 pub mod domain;
 pub mod screens;
 pub mod tui;
+pub mod update;
 
 pub use db::repository;
 

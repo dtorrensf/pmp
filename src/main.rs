@@ -18,7 +18,11 @@ async fn main() -> anyhow::Result<()> {
             eprintln!("error: unknown argument '{}'\n\n{}", arg, HELP);
             std::process::exit(1);
         }
-        None => pmp::tui::run(App::new(open_repo()?))?,
+        None => {
+            let mut app = App::new(open_repo()?);
+            app.set_pending_update(pmp::update::spawn_check(env!("CARGO_PKG_VERSION")));
+            pmp::tui::run(app)?
+        }
     }
     Ok(())
 }

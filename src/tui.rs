@@ -13,7 +13,7 @@ use crossterm::terminal::{
 use crossterm::{ExecutableCommand, cursor};
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
@@ -21,10 +21,23 @@ use signal_hook::flag;
 
 use crate::app::App;
 use crate::screens::Action;
+use crate::screens::components::popup::{centered_rect, render_popup_scaffold};
 use crate::screens::keybinding_footer::render_footer;
+use crate::update::update_command;
 
 /// Polling timeout for each iteration of the TUI event loop.
 const EVENT_TIMEOUT: Duration = Duration::from_millis(100);
+const UPDATE_HINT_MIN_WIDTH: u16 = 100;
+
+struct CancelUpdateCheckOnDrop(Option<Arc<AtomicBool>>);
+
+impl Drop for CancelUpdateCheckOnDrop {
+    fn drop(&mut self) {
+        if let Some(cancel) = &self.0 {
+            cancel.store(true, Ordering::Relaxed);
+        }
+    }
+}
 
 /// Number of consecutive event-loop timeouts that make up an auto-refresh interval.
 fn auto_refresh_ticks(interval: Duration) -> usize {
@@ -32,6 +45,7 @@ fn auto_refresh_ticks(interval: Duration) -> usize {
 }
 
 pub fn run(mut app: App) -> anyhow::Result<()> {
+    let _cancel_update_check = CancelUpdateCheckOnDrop(app.update_check_cancel_handle());
     enable_raw_mode().context("enable raw mode")?;
     let mut stdout = io::stdout();
     stdout
@@ -81,19 +95,8 @@ where
     let mut refresh_tick = 0usize;
 
     while !stop.load(Ordering::Relaxed) {
-        terminal.draw(|frame| {
-            let area = frame.area();
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(0), Constraint::Length(1)])
-                .split(area);
-            let keys = app.active_component().keybindings();
-            app.active_component().render(frame, chunks[0]);
-            render_footer(frame, chunks[1], keys);
-            if let Some(error) = &app.error {
-                render_error(frame, error, area);
-            }
-        })?;
+        app.poll_update();
+        terminal.draw(|frame| render_app_frame(app, frame))?;
 
         let event = events.next_event(EVENT_TIMEOUT)?;
         let is_timeout = event.is_none();
@@ -102,12 +105,14 @@ where
                 if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
                     break;
                 }
-                let mut next = app.active_component().handle_event(&Event::Key(key));
-                while let Some(action) = next {
-                    if matches!(action, Action::Quit) {
-                        return Ok(());
+                if !app.handle_update_key(key.code, key.modifiers) {
+                    let mut next = app.active_component().handle_event(&Event::Key(key));
+                    while let Some(action) = next {
+                        if matches!(action, Action::Quit) {
+                            return Ok(());
+                        }
+                        next = app.dispatch(action);
                     }
-                    next = app.dispatch(action);
                 }
             }
             Some(Event::Resize(_, _)) => {}
@@ -127,6 +132,69 @@ where
         }
     }
     Ok(())
+}
+
+/// Shared drawing for the whole application frame: active screen, footer
+/// (with the update hint when available), update banner and error overlay.
+fn render_app_frame(app: &mut App, frame: &mut Frame) {
+    let area = frame.area();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .split(area);
+    let keys = app.active_component().keybindings();
+    app.active_component().render(frame, chunks[0]);
+    render_footer_row(frame, chunks[1], keys, app.update_version());
+    if let (true, Some(version)) = (app.is_update_banner_open(), app.update_version()) {
+        render_update_banner(frame, version, area);
+    }
+    if let Some(error) = &app.error {
+        render_error(frame, error, area);
+    }
+}
+
+/// Renders the keybinding footer, plus a yellow `New vX.Y.Z (u)` hint on the
+/// right when a newer version is available.
+fn render_footer_row(
+    frame: &mut Frame,
+    area: Rect,
+    keys: &[(crossterm::event::KeyEvent, &str)],
+    update_version: Option<&str>,
+) {
+    let Some(version) = update_version else {
+        render_footer(frame, area, keys);
+        return;
+    };
+    if area.width < UPDATE_HINT_MIN_WIDTH {
+        render_footer(frame, area, keys);
+        return;
+    }
+    let hint = format!("⬆ New v{version} (u)");
+    let hint_width = (hint.chars().count() as u16).min(area.width);
+    let parts = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(hint_width)])
+        .split(area);
+    render_footer(frame, parts[0], keys);
+    frame.render_widget(
+        Paragraph::new(hint).style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        parts[1],
+    );
+}
+
+fn render_update_banner(frame: &mut Frame, version: &str, area: Rect) {
+    let popup = centered_rect(64, 9, area);
+    let inner = render_popup_scaffold(frame, popup, "Update available");
+    let command = update_command(version);
+    let text = format!(
+        "New version: v{version} (current: v{})\n\nUpdate with:\n{command}\n\nEsc: close",
+        env!("CARGO_PKG_VERSION")
+    );
+    frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), inner);
 }
 
 fn render_error(frame: &mut Frame, error: &str, area: Rect) {
@@ -170,7 +238,7 @@ mod tests {
     use crate::db::repository::Repository;
     use crate::db::stub::StubRepository;
     use crate::domain::task::{Priority, Status};
-    use crate::screens::dashboard::AUTO_REFRESH_INTERVAL;
+    use crate::screens::AUTO_REFRESH_INTERVAL;
     use crate::screens::{Action, Screen};
 
     use super::*;
@@ -282,6 +350,15 @@ mod tests {
     }
 
     #[test]
+    fn tui_cleanup_cancels_background_update_check() {
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        drop(CancelUpdateCheckOnDrop(Some(cancel.clone())));
+
+        assert!(cancel.load(Ordering::Relaxed));
+    }
+
+    #[test]
     fn event_loop_navigates_entry_to_dashboard_on_enter() {
         let (_repo, mut app) = setup_app_with_project();
         assert_eq!(app.screen, Screen::ProjectList);
@@ -366,11 +443,19 @@ mod tests {
     }
 
     #[test]
-    fn non_dashboard_does_not_auto_refresh_after_timeouts() {
+    fn project_list_auto_refreshes_progress_after_timeouts() {
         let (repo, mut app) = setup_app_with_project();
         assert_eq!(app.screen, Screen::ProjectList);
 
-        repo.create_project("Beta", "").unwrap();
+        let task_id = repo
+            .list_tasks_by_project(1)
+            .unwrap()
+            .into_iter()
+            .find(|task| task.status == Status::Todo)
+            .unwrap()
+            .id
+            .unwrap();
+        repo.update_task_status(task_id, Status::Done).unwrap();
 
         let events: Vec<Option<Event>> =
             std::iter::repeat_n(None, auto_refresh_ticks(AUTO_REFRESH_INTERVAL))
@@ -385,12 +470,8 @@ mod tests {
 
         let text = render_app_to_string(&mut app);
         assert!(
-            text.contains("Alpha"),
-            "project list should still show the originally loaded project"
-        );
-        assert!(
-            !text.contains("Beta"),
-            "project list must not auto-refresh on a non-dashboard screen"
+            text.contains("Alpha (67%)"),
+            "project progress should be refreshed"
         );
     }
 
@@ -513,23 +594,13 @@ mod tests {
     }
 
     fn render_app_to_string(app: &mut App) -> String {
-        let backend = TestBackend::new(80, 24);
+        render_app_to_string_at_size(app, 80, 24)
+    }
+
+    fn render_app_to_string_at_size(app: &mut App, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                let chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Min(0), Constraint::Length(1)])
-                    .split(area);
-                let keys = app.active_component().keybindings();
-                app.active_component().render(frame, chunks[0]);
-                render_footer(frame, chunks[1], keys);
-                if let Some(error) = &app.error {
-                    render_error(frame, error, area);
-                }
-            })
-            .unwrap();
+        terminal.draw(|frame| render_app_frame(app, frame)).unwrap();
         buffer_to_string(terminal.backend().buffer())
     }
 
@@ -544,5 +615,91 @@ mod tests {
             lines.push(line.trim_end().to_string());
         }
         lines.join("\n")
+    }
+
+    fn app_with_update(version: &str) -> (Arc<StubRepository>, App) {
+        let (repo, mut app) = setup_app_with_project();
+        app.set_update_available(version.to_string());
+        (repo, app)
+    }
+
+    #[test]
+    fn u_opens_update_banner_and_esc_closes_it() {
+        let (_repo, mut app) = app_with_update("0.4.0");
+
+        run_with_events(&mut app, vec![char_event('u')]).unwrap();
+        assert!(app.is_update_banner_open());
+        assert!(render_app_to_string(&mut app).contains("Update available"));
+
+        run_with_events(&mut app, vec![key_event(KeyCode::Esc)]).unwrap();
+        assert!(!app.is_update_banner_open());
+        assert!(!render_app_to_string(&mut app).contains("Update available"));
+    }
+
+    #[test]
+    fn u_does_nothing_without_update() {
+        let (_repo, mut app) = setup_app_with_project();
+
+        run_with_events(&mut app, vec![char_event('u')]).unwrap();
+
+        assert!(!app.is_update_banner_open());
+    }
+
+    #[test]
+    fn u_is_text_input_inside_forms() {
+        let (_repo, mut app) = app_with_update("0.4.0");
+        app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id: 1 }));
+        app.dispatch(Action::Navigate(Screen::TaskForm {
+            project_id: 1,
+            task_id: None,
+        }));
+
+        run_with_events(&mut app, vec![char_event('u')]).unwrap();
+
+        assert!(!app.is_update_banner_open());
+    }
+
+    #[test]
+    fn open_update_banner_swallows_keys_except_esc() {
+        let (_repo, mut app) = app_with_update("0.4.0");
+
+        // Enter would open the dashboard if it reached the project list.
+        run_with_events(&mut app, vec![char_event('u'), key_event(KeyCode::Enter)]).unwrap();
+
+        assert!(app.is_update_banner_open());
+        assert_eq!(app.screen, Screen::ProjectList);
+    }
+
+    #[test]
+    fn footer_shows_update_hint_when_available() {
+        let (_repo, mut app) = app_with_update("0.4.0");
+        let text = render_app_to_string_at_size(&mut app, 120, 24);
+        let last_line = text.lines().last().unwrap();
+        assert!(last_line.contains("⬆ New v0.4.0 (u)"));
+        assert!(last_line.contains("Enter: Open"));
+    }
+
+    #[test]
+    fn footer_hides_update_hint_when_terminal_is_narrow() {
+        let (_repo, mut app) = app_with_update("0.4.0");
+        let text = render_app_to_string_at_size(&mut app, 40, 24);
+        let footer = text.lines().last().unwrap();
+
+        assert!(!footer.contains("⬆ New v0.4.0 (u)"));
+        assert!(footer.contains("Enter: Open"));
+    }
+
+    #[test]
+    fn footer_has_no_update_hint_without_update() {
+        let (_repo, mut app) = setup_app_with_project();
+        let text = render_app_to_string(&mut app);
+        assert!(!text.lines().last().unwrap().contains("(u)"));
+    }
+
+    #[test]
+    fn update_banner_snapshot() {
+        let (_repo, mut app) = app_with_update("0.4.0");
+        app.open_update_banner();
+        insta::assert_snapshot!(render_app_to_string(&mut app));
     }
 }

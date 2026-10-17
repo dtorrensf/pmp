@@ -1,0 +1,28 @@
+---
+source: src/tui.rs
+expression: render_app_to_string(&mut app)
+---
+┌Projects──────────────────────────────────────────────────────────────────────┐
+│Alpha (33%)                                                                   │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│       ┌Update available──────────────────────────────────────────────┐       │
+│       │New version: v0.4.0 (current: v0.3.0)                         │       │
+│       │                                                              │       │
+│       │Update with:                                                  │       │
+│       │cargo install --git https://github.com/dtorrensf/pmp --tag    │       │
+│       │pmp-v0.4.0                                                    │       │
+│       │                                                              │       │
+│       │Esc: close                                                    │       │
+│       └──────────────────────────────────────────────────────────────┘       │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+j: Down  k: Up  Enter: Open  c: Create  d: Delete  e: Edit  r: Refresh  q: Quit

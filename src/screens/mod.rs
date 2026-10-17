@@ -5,6 +5,8 @@ use std::time::Duration;
 use crossterm::event::{Event, KeyEvent};
 use ratatui::{Frame, layout::Rect};
 
+pub const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+
 pub mod components;
 pub mod dashboard;
 pub mod keybinding_footer;
@@ -64,6 +66,14 @@ pub enum Screen {
     TaskList {
         project_id: i64,
     },
+}
+
+impl Screen {
+    /// `true` when this screen has a text field that must receive printable
+    /// keys, so global shortcuts should not intercept them.
+    pub fn accepts_text_input(&self) -> bool {
+        matches!(self, Self::ProjectForm { .. } | Self::TaskForm { .. })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -149,8 +159,8 @@ pub mod tests {
     #[test]
     fn component_auto_refresh_defaults_to_none() {
         let repo = std::sync::Arc::new(StubRepository::default());
-        let list = ProjectListScreen::new(repo);
-        assert_eq!(list.auto_refresh_interval(), None);
+        let form = ProjectForm::new(repo);
+        assert_eq!(form.auto_refresh_interval(), None);
     }
 
     #[test]
