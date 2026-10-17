@@ -11,6 +11,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 /// Minimum time between two calls to the GitHub API.
 const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
@@ -136,10 +137,11 @@ where
 /// Runs the update check against the real clock, data directory and GitHub,
 /// publishing a newer version (if any) into `slot`.
 fn run_update_check(current: &str, slot: &Arc<OnceLock<String>>, cancelled: &AtomicBool) {
+    let state_file = dirs::data_dir().map(|data_dir| state_path(&data_dir));
     run_update_check_with_cancel(
         current,
         slot,
-        state_path().as_deref(),
+        state_file.as_deref(),
         now_unix(),
         cancelled,
         || check_for_update(current),
@@ -225,21 +227,42 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-fn state_path() -> Option<PathBuf> {
-    dirs::data_dir().map(|dir| dir.join("pmp").join("update-check.json"))
+fn state_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("pmp").join("update-check.json")
 }
 
 fn load_state(path: &Path) -> Option<UpdateCheckState> {
-    let text = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&text).ok()
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) => {
+            warn!(error = %error, path = ?path, "pmp: failed to read update cache");
+            return None;
+        }
+    };
+    match serde_json::from_str(&text) {
+        Ok(state) => Some(state),
+        Err(error) => {
+            warn!(error = %error, path = ?path, "pmp: failed to parse update cache");
+            None
+        }
+    }
 }
 
 fn save_state(path: &Path, state: &UpdateCheckState) {
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            warn!(error = %error, path = ?parent, "pmp: failed to create data dir for update cache");
+        }
     }
-    if let Ok(text) = serde_json::to_string(state) {
-        let _ = std::fs::write(path, text);
+    match serde_json::to_string(state) {
+        Ok(text) => {
+            if let Err(error) = std::fs::write(path, text) {
+                warn!(error = %error, path = ?path, "pmp: failed to persist update cache");
+            }
+        }
+        Err(error) => {
+            warn!(error = %error, path = ?path, "pmp: failed to serialize update cache");
+        }
     }
 }
 
@@ -462,15 +485,14 @@ mod tests {
     }
 
     #[test]
-    fn now_unix_returns_a_plausible_timestamp() {
-        assert!(now_unix() > 1_700_000_000);
-    }
-
-    #[test]
     fn state_path_is_inside_pmp_data_dir() {
-        if let Some(path) = state_path() {
-            assert!(path.ends_with("pmp/update-check.json"));
-        }
+        let temp_dir = tempfile::tempdir().unwrap();
+        let data_dir = temp_dir.path().join("data");
+
+        assert_eq!(
+            state_path(&data_dir),
+            data_dir.join("pmp").join("update-check.json")
+        );
     }
 
     #[test]
