@@ -1,6 +1,7 @@
 // Copyright (C) 2026 Diego Torréns Farias
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use std::sync::Arc;
+use std::time::Duration;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
@@ -16,7 +17,7 @@ use crate::screens::components::confirm_dialog::ConfirmDialog;
 use crate::screens::components::keys::key;
 use crate::screens::components::list_navigation::move_selection;
 use crate::screens::components::progress::completion_percentage;
-use crate::screens::{Action, Component, Screen};
+use crate::screens::{AUTO_REFRESH_INTERVAL, Action, Component, Screen};
 
 pub enum ProjectListMode {
     Browsing,
@@ -80,6 +81,10 @@ impl Component for ProjectListScreen {
 
     fn keybindings(&self) -> &'static [(KeyEvent, &'static str)] {
         Self::KEYBINDINGS
+    }
+
+    fn auto_refresh_interval(&self) -> Option<Duration> {
+        matches!(&self.mode, ProjectListMode::Browsing).then_some(AUTO_REFRESH_INTERVAL)
     }
 
     fn handle_event(&mut self, event: &Event) -> Option<Action> {
@@ -306,6 +311,18 @@ mod tests {
 
         screen.handle_event(&char_event('k'));
         assert_eq!(screen.selected, 1);
+    }
+
+    #[test]
+    fn auto_refresh_pauses_while_confirm_delete_is_open() {
+        let repo = Arc::new(StubRepository::default());
+        repo.create_project("Alpha", "").unwrap();
+        let mut screen = ProjectListScreen::new(repo);
+        screen.init().unwrap();
+
+        assert_eq!(screen.auto_refresh_interval(), Some(AUTO_REFRESH_INTERVAL));
+        screen.handle_event(&char_event('d'));
+        assert_eq!(screen.auto_refresh_interval(), None);
     }
 
     #[test]
