@@ -27,6 +27,7 @@ use crate::update::update_command;
 
 /// Polling timeout for each iteration of the TUI event loop.
 const EVENT_TIMEOUT: Duration = Duration::from_millis(100);
+const UPDATE_HINT_MIN_WIDTH: u16 = 100;
 
 struct CancelUpdateCheckOnDrop(Option<Arc<AtomicBool>>);
 
@@ -164,6 +165,10 @@ fn render_footer_row(
         render_footer(frame, area, keys);
         return;
     };
+    if area.width < UPDATE_HINT_MIN_WIDTH {
+        render_footer(frame, area, keys);
+        return;
+    }
     let hint = format!("⬆ New v{version} (u)");
     let hint_width = (hint.chars().count() as u16).min(area.width);
     let parts = Layout::default()
@@ -585,7 +590,11 @@ mod tests {
     }
 
     fn render_app_to_string(app: &mut App) -> String {
-        let backend = TestBackend::new(80, 24);
+        render_app_to_string_at_size(app, 80, 24)
+    }
+
+    fn render_app_to_string_at_size(app: &mut App, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| render_app_frame(app, frame)).unwrap();
         buffer_to_string(terminal.backend().buffer())
@@ -660,10 +669,20 @@ mod tests {
     #[test]
     fn footer_shows_update_hint_when_available() {
         let (_repo, mut app) = app_with_update("0.4.0");
-        let text = render_app_to_string(&mut app);
+        let text = render_app_to_string_at_size(&mut app, 120, 24);
         let last_line = text.lines().last().unwrap();
         assert!(last_line.contains("⬆ New v0.4.0 (u)"));
         assert!(last_line.contains("Enter: Open"));
+    }
+
+    #[test]
+    fn footer_hides_update_hint_when_terminal_is_narrow() {
+        let (_repo, mut app) = app_with_update("0.4.0");
+        let text = render_app_to_string_at_size(&mut app, 40, 24);
+        let footer = text.lines().last().unwrap();
+
+        assert!(!footer.contains("⬆ New v0.4.0 (u)"));
+        assert!(footer.contains("Enter: Open"));
     }
 
     #[test]
