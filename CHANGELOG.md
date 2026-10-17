@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/dtorrensf/pmp/compare/pmp-v0.3.0...pmp-v0.4.0) (2026-10-17)
+
+
+### Features
+
+* Add comment on README ([#25](https://github.com/dtorrensf/pmp/issues/25)) ([ce289e3](https://github.com/dtorrensf/pmp/commit/ce289e3d47596e257654523ed5f7115b55a9354b))
+
 ## [0.3.0](https://github.com/dtorrensf/pmp/compare/pmp-v0.2.0...pmp-v0.3.0) (2026-10-12)
 
 
