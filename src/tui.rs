@@ -238,7 +238,7 @@ mod tests {
     use crate::db::repository::Repository;
     use crate::db::stub::StubRepository;
     use crate::domain::task::{Priority, Status};
-    use crate::screens::dashboard::AUTO_REFRESH_INTERVAL;
+    use crate::screens::AUTO_REFRESH_INTERVAL;
     use crate::screens::{Action, Screen};
 
     use super::*;
@@ -443,11 +443,19 @@ mod tests {
     }
 
     #[test]
-    fn non_dashboard_does_not_auto_refresh_after_timeouts() {
+    fn project_list_auto_refreshes_progress_after_timeouts() {
         let (repo, mut app) = setup_app_with_project();
         assert_eq!(app.screen, Screen::ProjectList);
 
-        repo.create_project("Beta", "").unwrap();
+        let task_id = repo
+            .list_tasks_by_project(1)
+            .unwrap()
+            .into_iter()
+            .find(|task| task.status == Status::Todo)
+            .unwrap()
+            .id
+            .unwrap();
+        repo.update_task_status(task_id, Status::Done).unwrap();
 
         let events: Vec<Option<Event>> =
             std::iter::repeat_n(None, auto_refresh_ticks(AUTO_REFRESH_INTERVAL))
@@ -462,12 +470,8 @@ mod tests {
 
         let text = render_app_to_string(&mut app);
         assert!(
-            text.contains("Alpha"),
-            "project list should still show the originally loaded project"
-        );
-        assert!(
-            !text.contains("Beta"),
-            "project list must not auto-refresh on a non-dashboard screen"
+            text.contains("Alpha (67%)"),
+            "project progress should be refreshed"
         );
     }
 

@@ -17,7 +17,7 @@ use crate::domain::task::{Status, Task};
 use crate::screens::components::keys::key;
 use crate::screens::components::progress::completion_percentage;
 use crate::screens::task_list_view::{TaskListMode, TaskListView};
-use crate::screens::{Action, Component, Screen};
+use crate::screens::{AUTO_REFRESH_INTERVAL, Action, Component, Screen};
 
 pub struct ProjectDashboard {
     repo: Arc<dyn Repository>,
@@ -25,9 +25,6 @@ pub struct ProjectDashboard {
     project: Option<Project>,
     view: TaskListView,
 }
-
-/// Interval at which the project dashboard is automatically refreshed when idle.
-pub const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 impl ProjectDashboard {
     pub const KEYBINDINGS: &[(KeyEvent, &'static str)] = &[
