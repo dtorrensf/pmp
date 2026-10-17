@@ -25,4 +25,4 @@ expression: render_app_to_string(&mut app)
 │                                                                              │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
-Enter: Open  c: Create  d: Delete  e: Edit  r: Refresh  q: Quit
+j: Down  k: Up  Enter: Open  c: Create  d: Delete  e: Edit  r: Refresh  q: Quit
