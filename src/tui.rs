@@ -23,10 +23,20 @@ use crate::app::App;
 use crate::screens::Action;
 use crate::screens::components::popup::{centered_rect, render_popup_scaffold};
 use crate::screens::keybinding_footer::render_footer;
-use crate::update::UPDATE_COMMAND;
+use crate::update::update_command;
 
 /// Polling timeout for each iteration of the TUI event loop.
 const EVENT_TIMEOUT: Duration = Duration::from_millis(100);
+
+struct CancelUpdateCheckOnDrop(Option<Arc<AtomicBool>>);
+
+impl Drop for CancelUpdateCheckOnDrop {
+    fn drop(&mut self) {
+        if let Some(cancel) = &self.0 {
+            cancel.store(true, Ordering::Relaxed);
+        }
+    }
+}
 
 /// Number of consecutive event-loop timeouts that make up an auto-refresh interval.
 fn auto_refresh_ticks(interval: Duration) -> usize {
@@ -34,6 +44,7 @@ fn auto_refresh_ticks(interval: Duration) -> usize {
 }
 
 pub fn run(mut app: App) -> anyhow::Result<()> {
+    let _cancel_update_check = CancelUpdateCheckOnDrop(app.update_check_cancel_handle());
     enable_raw_mode().context("enable raw mode")?;
     let mut stdout = io::stdout();
     stdout
@@ -173,8 +184,9 @@ fn render_footer_row(
 fn render_update_banner(frame: &mut Frame, version: &str, area: Rect) {
     let popup = centered_rect(64, 9, area);
     let inner = render_popup_scaffold(frame, popup, "Update available");
+    let command = update_command(version);
     let text = format!(
-        "New version: v{version} (current: v{})\n\nUpdate with:\n{UPDATE_COMMAND}\n\nEsc: close",
+        "New version: v{version} (current: v{})\n\nUpdate with:\n{command}\n\nEsc: close",
         env!("CARGO_PKG_VERSION")
     );
     frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), inner);
@@ -330,6 +342,15 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(app.screen, Screen::ProjectList);
+    }
+
+    #[test]
+    fn tui_cleanup_cancels_background_update_check() {
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        drop(CancelUpdateCheckOnDrop(Some(cancel.clone())));
+
+        assert!(cancel.load(Ordering::Relaxed));
     }
 
     #[test]

@@ -6,20 +6,46 @@
 //! the application: any network, parsing or IO error simply means "no update".
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-/// Command shown to the user to install the newer version.
-pub(crate) const UPDATE_COMMAND: &str = "cargo install --git https://github.com/dtorrensf/pmp";
-
 /// Minimum time between two calls to the GitHub API.
 const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 
-const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/dtorrensf/pmp/releases/latest";
+const PACKAGE_REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 const TAG_PREFIX: &str = "pmp-v";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Builds the GitHub API endpoint from Cargo's repository URL.
+fn latest_release_url() -> String {
+    let repository_url = repository_url();
+    let repository = repository_url
+        .strip_prefix("https://github.com/")
+        .or_else(|| repository_url.strip_prefix("http://github.com/"))
+        .unwrap_or(repository_url)
+        .trim_end_matches(".git")
+        .trim_end_matches('/');
+    format!("https://api.github.com/repos/{repository}/releases/latest")
+}
+
+fn repository_url() -> &'static str {
+    if PACKAGE_REPOSITORY.is_empty() {
+        "https://github.com/dtorrensf/pmp"
+    } else {
+        PACKAGE_REPOSITORY
+    }
+}
+
+/// Command shown to the user to install the announced version.
+pub(crate) fn update_command(version: &str) -> String {
+    format!(
+        "cargo install --git {} --tag {TAG_PREFIX}{version}",
+        repository_url()
+    )
+}
 
 /// Persisted result of the last update check.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -84,33 +110,40 @@ fn fetch_latest_version(url: &str, current: &str) -> Option<String> {
 
 /// Queries GitHub for the latest published version.
 fn check_for_update(current: &str) -> Option<String> {
-    fetch_latest_version(LATEST_RELEASE_URL, current)
+    fetch_latest_version(&latest_release_url(), current)
 }
 
-/// Starts [`run_update_check`] on a detached background thread and returns the
-/// slot that receives the newer version, if any.
-pub fn spawn_check(current: &'static str) -> Arc<OnceLock<String>> {
+/// Starts [`run_update_check`] on a background thread and returns its result
+/// slot and cancellation flag.
+pub fn spawn_check(current: &'static str) -> (Arc<OnceLock<String>>, Arc<AtomicBool>) {
     spawn_with(current, run_update_check)
 }
 
-/// Runs `job` on a detached background thread with a fresh slot. Split out so
-/// tests can drive the threading without touching the network.
-fn spawn_with<F>(current: &'static str, job: F) -> Arc<OnceLock<String>>
+/// Runs `job` on a background thread with a fresh slot and cancellation flag.
+/// Split out so tests can drive the threading without touching the network.
+fn spawn_with<F>(current: &'static str, job: F) -> (Arc<OnceLock<String>>, Arc<AtomicBool>)
 where
-    F: FnOnce(&str, &Arc<OnceLock<String>>) + Send + 'static,
+    F: FnOnce(&str, &Arc<OnceLock<String>>, &AtomicBool) + Send + 'static,
 {
     let slot = Arc::new(OnceLock::new());
+    let cancelled = Arc::new(AtomicBool::new(false));
     let thread_slot = slot.clone();
-    std::thread::spawn(move || job(current, &thread_slot));
-    slot
+    let thread_cancelled = cancelled.clone();
+    std::thread::spawn(move || job(current, &thread_slot, &thread_cancelled));
+    (slot, cancelled)
 }
 
 /// Runs the update check against the real clock, data directory and GitHub,
 /// publishing a newer version (if any) into `slot`.
-fn run_update_check(current: &str, slot: &Arc<OnceLock<String>>) {
-    run_update_check_with(current, slot, state_path().as_deref(), now_unix(), || {
-        check_for_update(current)
-    });
+fn run_update_check(current: &str, slot: &Arc<OnceLock<String>>, cancelled: &AtomicBool) {
+    run_update_check_with_cancel(
+        current,
+        slot,
+        state_path().as_deref(),
+        now_unix(),
+        cancelled,
+        || check_for_update(current),
+    );
 }
 
 /// Core of the update check with every external dependency injected:
@@ -118,6 +151,7 @@ fn run_update_check(current: &str, slot: &Arc<OnceLock<String>>) {
 /// current unix time and `fetch` the network lookup. Reuses the cached result
 /// while it is fresh; otherwise calls `fetch`, persists the outcome and
 /// publishes `latest` into `slot` only when it is newer than `current`.
+#[cfg(test)]
 fn run_update_check_with<F>(
     current: &str,
     slot: &Arc<OnceLock<String>>,
@@ -127,12 +161,42 @@ fn run_update_check_with<F>(
 ) where
     F: FnOnce() -> Option<String>,
 {
+    run_update_check_with_cancel(
+        current,
+        slot,
+        state_file,
+        now,
+        &AtomicBool::new(false),
+        fetch,
+    );
+}
+
+fn run_update_check_with_cancel<F>(
+    current: &str,
+    slot: &Arc<OnceLock<String>>,
+    state_file: Option<&Path>,
+    now: u64,
+    cancelled: &AtomicBool,
+    fetch: F,
+) where
+    F: FnOnce() -> Option<String>,
+{
+    if cancelled.load(Ordering::Relaxed) {
+        return;
+    }
+
     let latest = match state_file.and_then(load_state) {
         Some(state) if is_fresh(state.last_check_unix, now, CHECK_INTERVAL_SECS) => {
             state.latest_version
         }
         _ => {
+            if cancelled.load(Ordering::Relaxed) {
+                return;
+            }
             let latest = fetch();
+            if cancelled.load(Ordering::Relaxed) {
+                return;
+            }
             if let Some(path) = state_file {
                 save_state(
                     path,
@@ -146,6 +210,9 @@ fn run_update_check_with<F>(
         }
     };
 
+    if cancelled.load(Ordering::Relaxed) {
+        return;
+    }
     if let Some(version) = latest.filter(|v| newer(current, v)) {
         let _ = slot.set(version);
     }
@@ -266,10 +333,18 @@ mod tests {
     }
 
     #[test]
-    fn update_command_points_to_repository() {
+    fn latest_release_url_is_derived_from_cargo_repository() {
         assert_eq!(
-            UPDATE_COMMAND,
-            "cargo install --git https://github.com/dtorrensf/pmp"
+            latest_release_url(),
+            "https://api.github.com/repos/dtorrensf/pmp/releases/latest"
+        );
+    }
+
+    #[test]
+    fn update_command_points_to_repository_and_pins_release_tag() {
+        assert_eq!(
+            update_command("0.4.0"),
+            "cargo install --git https://github.com/dtorrensf/pmp --tag pmp-v0.4.0"
         );
     }
 
@@ -359,7 +434,7 @@ mod tests {
 
     #[test]
     fn spawn_with_runs_job_on_background_thread_and_fills_slot() {
-        let slot = spawn_with("0.2.0", |current, slot| {
+        let (slot, _cancel) = spawn_with("0.2.0", |current, slot, _cancel| {
             let _ = slot.set(format!("from {current}"));
         });
         let start = std::time::Instant::now();
@@ -367,6 +442,23 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(slot.get().map(String::as_str), Some("from 0.2.0"));
+    }
+
+    #[test]
+    fn cancelled_update_check_does_not_publish_or_persist_fetch_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("update-check.json");
+        let slot = empty_slot();
+        let cancelled = AtomicBool::new(false);
+
+        run_update_check_with_cancel("0.3.0", &slot, Some(&path), 500, &cancelled, || {
+            cancelled.store(true, Ordering::Relaxed);
+            Some("0.4.0".to_string())
+        });
+
+        assert!(cancelled.load(Ordering::Relaxed));
+        assert_eq!(slot.get(), None);
+        assert!(!path.exists());
     }
 
     #[test]

@@ -1,5 +1,6 @@
 // Copyright (C) 2026 Diego Torréns Farias
 // SPDX-License-Identifier: AGPL-3.0-or-later
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
 
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -23,6 +24,7 @@ pub struct App {
     /// Whether the update banner is currently open.
     show_update: bool,
     pending_update: Option<Arc<OnceLock<String>>>,
+    update_check_cancel: Option<Arc<AtomicBool>>,
     components: Components,
 }
 
@@ -45,6 +47,7 @@ impl App {
             update_available: None,
             show_update: false,
             pending_update: None,
+            update_check_cancel: None,
             components: Components {
                 project_list: ProjectListScreen::new(repo.clone()),
                 dashboard: ProjectDashboard::new(repo.clone()),
@@ -60,8 +63,14 @@ impl App {
     }
 
     /// Registers the slot filled by the background update check.
-    pub fn set_pending_update(&mut self, slot: Arc<OnceLock<String>>) {
+    pub fn set_pending_update(&mut self, update_check: (Arc<OnceLock<String>>, Arc<AtomicBool>)) {
+        let (slot, cancel) = update_check;
         self.pending_update = Some(slot);
+        self.update_check_cancel = Some(cancel);
+    }
+
+    pub(crate) fn update_check_cancel_handle(&self) -> Option<Arc<AtomicBool>> {
+        self.update_check_cancel.clone()
     }
 
     /// Copies the background update result, if already available, into
@@ -1143,7 +1152,7 @@ mod tests {
     fn poll_update_copies_slot_value() {
         let mut app = App::new(Arc::new(StubRepository::default()));
         let slot = Arc::new(OnceLock::new());
-        app.set_pending_update(slot.clone());
+        app.set_pending_update((slot.clone(), Arc::new(AtomicBool::new(false))));
 
         app.poll_update();
         assert!(!app.has_update());
