@@ -146,7 +146,7 @@ fn render_app_frame(app: &mut App, frame: &mut Frame) {
     app.active_component().render(frame, chunks[0]);
     render_footer_row(frame, chunks[1], keys, app.update_version());
     if let (true, Some(version)) = (app.is_update_banner_open(), app.update_version()) {
-        render_update_banner(frame, version, area);
+        render_update_banner(frame, version, app.current_version(), area);
     }
     if let Some(error) = &app.error {
         render_error(frame, error, area);
@@ -186,13 +186,12 @@ fn render_footer_row(
     );
 }
 
-fn render_update_banner(frame: &mut Frame, version: &str, area: Rect) {
+fn render_update_banner(frame: &mut Frame, version: &str, current_version: &str, area: Rect) {
     let popup = centered_rect(64, 9, area);
     let inner = render_popup_scaffold(frame, popup, "Update available");
     let command = update_command(version);
     let text = format!(
-        "New version: v{version} (current: v{})\n\nUpdate with:\n{command}\n\nEsc: close",
-        env!("CARGO_PKG_VERSION")
+        "New version: v{version} (current: v{current_version})\n\nUpdate with:\n{command}\n\nEsc: close"
     );
     frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), inner);
 }
@@ -699,6 +698,7 @@ mod tests {
     #[test]
     fn update_banner_snapshot() {
         let (_repo, mut app) = app_with_update("0.4.0");
+        app.set_current_version("0.3.0");
         app.open_update_banner();
         insta::assert_snapshot!(render_app_to_string(&mut app));
     }

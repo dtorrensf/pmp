@@ -25,6 +25,9 @@ pub struct App {
     show_update: bool,
     pending_update: Option<Arc<OnceLock<String>>>,
     update_check_cancel: Option<Arc<AtomicBool>>,
+    /// Version compiled into the running binary, used in the update banner.
+    /// Defaults to `CARGO_PKG_VERSION` and is overridable from tests.
+    current_version: String,
     components: Components,
 }
 
@@ -48,6 +51,7 @@ impl App {
             show_update: false,
             pending_update: None,
             update_check_cancel: None,
+            current_version: env!("CARGO_PKG_VERSION").to_string(),
             components: Components {
                 project_list: ProjectListScreen::new(repo.clone()),
                 dashboard: ProjectDashboard::new(repo.clone()),
@@ -102,6 +106,19 @@ impl App {
 
     pub fn update_version(&self) -> Option<&str> {
         self.update_available.as_deref()
+    }
+
+    /// Returns the version compiled into the running binary, used in the
+    /// update banner as the "current" version the user is running.
+    pub fn current_version(&self) -> &str {
+        &self.current_version
+    }
+
+    /// Overrides the version reported as "current" in the update banner.
+    /// Intended for tests that need a deterministic value independent of
+    /// whatever `CARGO_PKG_VERSION` happens to be at compile time.
+    pub fn set_current_version(&mut self, version: &str) {
+        self.current_version = version.to_string();
     }
 
     pub fn is_update_banner_open(&self) -> bool {
