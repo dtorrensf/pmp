@@ -20,6 +20,7 @@ serde_json = "1"
 signal-hook = "0.3"
 thiserror = "1"
 ratatui-textarea = "0.9"
+tracing = "0.1"
 tokio = { version = "1.52.3", features = ["rt", "macros", "io-util"] }
 ureq = { version = "3", features = ["rustls"] }
 semver = "1"
