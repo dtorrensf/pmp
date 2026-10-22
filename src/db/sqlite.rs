@@ -69,6 +69,12 @@ impl Repository for SqliteRepository {
             [name, description],
         )?;
         let id = conn.last_insert_rowid();
+        // Temporary bridge until versions are part of the Repository API (#89):
+        // every project gets the legacy "v0" version the V3 migration creates.
+        conn.execute(
+            "INSERT INTO versions (project_id, name) VALUES (?1, 'v0')",
+            [id],
+        )?;
         drop(conn);
         self.get_project(id)
     }
@@ -119,8 +125,10 @@ impl Repository for SqliteRepository {
     ) -> Result<Task, AppError> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO tasks (project_id, name, description, status, priority)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO tasks (project_id, version_id, name, description, status, priority)
+             VALUES (?1,
+                     (SELECT id FROM versions WHERE project_id = ?1 AND name = 'v0'),
+                     ?2, ?3, ?4, ?5)",
             params![
                 project_id,
                 name,
@@ -399,6 +407,28 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn migrations_create_versions_and_require_task_version() {
+        let (_dir, repo) = setup();
+        let conn = repo.conn.lock().unwrap();
+        let versions: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='versions';",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(versions, 1);
+        let notnull: i64 = conn
+            .query_row(
+                "SELECT \"notnull\" FROM pragma_table_info('tasks') WHERE name='version_id';",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(notnull, 1);
     }
 
     #[test]
