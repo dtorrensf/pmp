@@ -79,6 +79,62 @@ impl ListScroll {
     }
 }
 
+/// Scroll position for a plain text block, persisted across frames.
+///
+/// Keys call [`TextScroll::page_up`] / [`TextScroll::page_down`], which step
+/// by the last rendered viewport height. Rendering calls
+/// [`TextScroll::sync`], which records the viewport, clamps the stored offset
+/// to the content and returns it for `Paragraph::scroll`. Clamping on render
+/// keeps the offset from running past the end while the user keeps pressing
+/// `PageDown`.
+#[derive(Debug, Default)]
+pub struct TextScroll {
+    offset: Cell<u16>,
+    viewport: Cell<u16>,
+}
+
+impl TextScroll {
+    /// Creates a scroll state at the top of the text.
+    pub const fn new() -> Self {
+        Self {
+            offset: Cell::new(0),
+            viewport: Cell::new(0),
+        }
+    }
+
+    /// Current (last synced) scroll offset in rows.
+    pub fn offset(&self) -> u16 {
+        self.offset.get()
+    }
+
+    /// Scrolls up by one viewport height, stopping at the top.
+    pub fn page_up(&self) {
+        let step = self.viewport.get().max(1);
+        self.offset.set(self.offset.get().saturating_sub(step));
+    }
+
+    /// Scrolls down by one viewport height. The offset is clamped on the
+    /// next [`TextScroll::sync`].
+    pub fn page_down(&self) {
+        let step = self.viewport.get().max(1);
+        self.offset.set(self.offset.get().saturating_add(step));
+    }
+
+    /// Returns to the top, e.g. when the displayed content is replaced.
+    pub fn reset(&self) {
+        self.offset.set(0);
+    }
+
+    /// Records the viewport height, clamps the offset to `total_lines`, and
+    /// returns the offset to pass to `Paragraph::scroll`.
+    pub fn sync(&self, total_lines: usize, viewport_height: u16) -> u16 {
+        self.viewport.set(viewport_height);
+        let clamped = clamp_text_scroll(self.offset.get(), total_lines, viewport_height);
+        self.offset.set(clamped);
+        clamped
+    }
+}
+
 /// Clamps a text scroll position so the viewport never scrolls past the last
 /// line. `total_lines` is the number of rendered (wrapped) lines and
 /// `viewport_height` the number of visible rows.
@@ -287,6 +343,51 @@ mod tests {
     #[test]
     fn wrapped_line_count_zero_width_is_one_row_per_line() {
         assert_eq!(wrapped_line_count("one\ntwo", 0), 2);
+    }
+
+    #[test]
+    fn text_scroll_pages_by_viewport_height() {
+        let scroll = TextScroll::new();
+        scroll.sync(100, 10);
+        scroll.page_down();
+        assert_eq!(scroll.offset(), 10);
+        scroll.page_down();
+        assert_eq!(scroll.offset(), 20);
+        scroll.page_up();
+        assert_eq!(scroll.offset(), 10);
+        scroll.page_up();
+        scroll.page_up();
+        assert_eq!(scroll.offset(), 0);
+    }
+
+    #[test]
+    fn text_scroll_clamps_to_end_on_sync() {
+        let scroll = TextScroll::new();
+        scroll.sync(25, 10);
+        for _ in 0..5 {
+            scroll.page_down();
+        }
+        // Max offset for 25 lines in 10 rows is 15.
+        assert_eq!(scroll.sync(25, 10), 15);
+        assert_eq!(scroll.offset(), 15);
+        // Content shrinks: offset follows.
+        assert_eq!(scroll.sync(5, 10), 0);
+    }
+
+    #[test]
+    fn text_scroll_without_sync_pages_by_one_row() {
+        let scroll = TextScroll::new();
+        scroll.page_down();
+        assert_eq!(scroll.offset(), 1);
+    }
+
+    #[test]
+    fn text_scroll_reset_returns_to_top() {
+        let scroll = TextScroll::new();
+        scroll.sync(100, 10);
+        scroll.page_down();
+        scroll.reset();
+        assert_eq!(scroll.offset(), 0);
     }
 
     #[test]

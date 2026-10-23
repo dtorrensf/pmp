@@ -17,6 +17,9 @@ use crate::domain::task::{Priority, Status, Task, TaskNote};
 use crate::screens::components::fields::{render_field, render_readonly_field};
 use crate::screens::components::keys::{ctrl, key};
 use crate::screens::components::popup::{centered_rect_percent, render_popup_scaffold};
+use crate::screens::components::scroll::{
+    ListScroll, TextScroll, render_scrollbar, wrapped_line_count,
+};
 use crate::screens::{Action, Component, Screen};
 
 pub struct TaskForm {
@@ -39,11 +42,18 @@ pub struct TaskForm {
     popup_selected: usize,
     dep_original_selection: HashSet<i64>,
     popup_filtered_tasks: Vec<Task>,
+    popup_scroll: ListScroll,
+    deps_scroll: TextScroll,
+    notes_scroll: TextScroll,
 }
 
 impl TaskForm {
-    pub const KEYBINDINGS: &[(KeyEvent, &'static str)] =
-        &[(ctrl('s'), "Submit"), (key(KeyCode::Esc), "Cancel")];
+    pub const KEYBINDINGS: &[(KeyEvent, &'static str)] = &[
+        (ctrl('s'), "Submit"),
+        (key(KeyCode::Esc), "Cancel"),
+        (key(KeyCode::PageDown), "Scroll deps/notes"),
+        (key(KeyCode::PageUp), "Scroll deps/notes"),
+    ];
 
     pub fn new(repo: Arc<dyn Repository>) -> Self {
         Self {
@@ -66,6 +76,9 @@ impl TaskForm {
             popup_selected: 0,
             dep_original_selection: HashSet::new(),
             popup_filtered_tasks: Vec::new(),
+            popup_scroll: ListScroll::new(),
+            deps_scroll: TextScroll::new(),
+            notes_scroll: TextScroll::new(),
         }
     }
 
@@ -222,6 +235,9 @@ impl Component for TaskForm {
         self.dep_filter.clear();
         self.popup_selected = 0;
         self.dep_original_selection.clear();
+        self.popup_scroll.reset();
+        self.deps_scroll.reset();
+        self.notes_scroll.reset();
         self.recompute_filtered_tasks();
         Ok(())
     }
@@ -277,6 +293,19 @@ impl Component for TaskForm {
                 KeyCode::Esc => Some(Action::Navigate(self.return_to.clone())),
                 KeyCode::Tab => {
                     self.active_field = (self.active_field + 1) % 6;
+                    None
+                }
+                KeyCode::PageUp | KeyCode::PageDown => {
+                    let scroll = match self.active_field {
+                        4 => &self.deps_scroll,
+                        5 => &self.notes_scroll,
+                        _ => return None,
+                    };
+                    if *code == KeyCode::PageUp {
+                        scroll.page_up();
+                    } else {
+                        scroll.page_down();
+                    }
                     None
                 }
                 KeyCode::Backspace => {
@@ -495,20 +524,28 @@ fn render_notes(form: &TaskForm, frame: &mut Frame, area: Rect) -> Vec<Rect> {
         .constraints([Constraint::Min(1), Constraint::Length(3)])
         .split(inner);
 
+    let list_area = notes_chunks[0];
     if form.notes.is_empty() {
+        form.notes_scroll.sync(0, list_area.height);
         let placeholder =
             Paragraph::new("No notes yet").style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(placeholder, notes_chunks[0]);
+        frame.render_widget(placeholder, list_area);
     } else {
-        let lines: Vec<ratatui::text::Line> = form
+        let rows: Vec<String> = form
             .notes
             .iter()
-            .map(|note| {
-                ratatui::text::Line::from(format!("{} - {}", note.created_at, note.content))
-            })
+            .map(|note| format!("{} - {}", note.created_at, note.content))
             .collect();
-        let list = Paragraph::new(ratatui::text::Text::from(lines)).wrap(Wrap { trim: true });
-        frame.render_widget(list, notes_chunks[0]);
+        let offset = form.notes_scroll.sync(
+            wrapped_line_count(&rows.join("\n"), list_area.width),
+            list_area.height,
+        );
+        let lines: Vec<ratatui::text::Line> =
+            rows.into_iter().map(ratatui::text::Line::from).collect();
+        let list = Paragraph::new(ratatui::text::Text::from(lines))
+            .wrap(Wrap { trim: true })
+            .scroll((offset, 0));
+        frame.render_widget(list, list_area);
     }
 
     render_field(
@@ -546,7 +583,8 @@ fn render_dependencies(form: &TaskForm, frame: &mut Frame, area: Rect) {
         if form.active_field == 4 {
             lines.push(ratatui::text::Line::from("[Enter: manage dependencies]"));
         }
-        let para = Paragraph::new(ratatui::text::Text::from(lines));
+        let offset = form.deps_scroll.sync(lines.len(), inner.height);
+        let para = Paragraph::new(ratatui::text::Text::from(lines)).scroll((offset, 0));
         frame.render_widget(para, inner);
         return;
     }
@@ -573,7 +611,8 @@ fn render_dependencies(form: &TaskForm, frame: &mut Frame, area: Rect) {
         lines.push(ratatui::text::Line::from("[Enter: manage dependencies]"));
     }
 
-    let para = Paragraph::new(ratatui::text::Text::from(lines));
+    let offset = form.deps_scroll.sync(lines.len(), inner.height);
+    let para = Paragraph::new(ratatui::text::Text::from(lines)).scroll((offset, 0));
     frame.render_widget(para, inner);
 }
 
@@ -602,11 +641,20 @@ fn render_dep_popup(form: &TaskForm, frame: &mut Frame, area: Rect) {
         return;
     }
 
-    let lines: Vec<ratatui::text::Line> = form
-        .popup_filtered_tasks
+    // Rows that fit in the list area; the selected row is kept visible.
+    let list_area = chunks[1];
+    let row_height = list_area.height as usize;
+    let range = form.popup_scroll.visible_range(
+        form.popup_filtered_tasks.len(),
+        form.popup_selected,
+        row_height,
+    );
+
+    let lines: Vec<ratatui::text::Line> = form.popup_filtered_tasks[range.clone()]
         .iter()
         .enumerate()
-        .map(|(i, task)| {
+        .map(|(offset, task)| {
+            let i = range.start + offset;
             let checked = task
                 .id
                 .map(|id| form.selected_deps.contains(&id))
@@ -626,7 +674,24 @@ fn render_dep_popup(form: &TaskForm, frame: &mut Frame, area: Rect) {
         .collect();
 
     let list_para = Paragraph::new(ratatui::text::Text::from(lines));
-    frame.render_widget(list_para, chunks[1]);
+    frame.render_widget(list_para, list_area);
+
+    // Scrollbar on the list's right edge when the picker overflows.
+    if row_height > 0 && list_area.width > 0 {
+        let track = Rect::new(
+            list_area.x + list_area.width - 1,
+            list_area.y,
+            1,
+            row_height as u16,
+        );
+        render_scrollbar(
+            frame,
+            track,
+            form.popup_filtered_tasks.len(),
+            row_height,
+            range.start,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -872,7 +937,12 @@ mod tests {
             .collect();
         assert_eq!(
             keys,
-            vec![(KeyCode::Char('s'), "Submit"), (KeyCode::Esc, "Cancel")]
+            vec![
+                (KeyCode::Char('s'), "Submit"),
+                (KeyCode::Esc, "Cancel"),
+                (KeyCode::PageDown, "Scroll deps/notes"),
+                (KeyCode::PageUp, "Scroll deps/notes"),
+            ]
         );
     }
 
@@ -1282,5 +1352,120 @@ mod tests {
         assert!(!form.popup_filtered_tasks.iter().any(|t| t.id == Some(b_id)));
         // Task A itself is also excluded from available_tasks during init, so the popup is empty.
         assert!(form.popup_filtered_tasks.is_empty());
+    }
+
+    #[test]
+    fn dependency_picker_keeps_selected_task_visible() {
+        let repo = Arc::new(StubRepository::default());
+        let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        for i in 0..30 {
+            repo.create_task(
+                project_id,
+                &format!("Dep{i:02}"),
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
+            .unwrap();
+        }
+        let mut form = TaskForm::new(repo.clone());
+        form.set_project_id(project_id);
+        form.init().unwrap();
+        form.active_field = 4;
+        form.handle_event(&key_event(KeyCode::Enter));
+        assert!(form.show_dep_popup());
+
+        let before = render_to_string(&form, 100, 40);
+        assert!(before.contains("Dep00"));
+
+        for _ in 0..25 {
+            form.handle_event(&key_event(KeyCode::Down));
+        }
+        let after = render_to_string(&form, 100, 40);
+        assert_eq!(form.popup_selected, 25);
+        assert!(after.contains("Dep25"), "selection not visible:\n{after}");
+        assert!(
+            !after.contains("Dep00"),
+            "first row should have scrolled out:\n{after}"
+        );
+    }
+
+    #[test]
+    fn page_keys_scroll_notes_only_when_notes_section_is_focused() {
+        let repo = Arc::new(StubRepository::default());
+        let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let task_id = repo
+            .create_task(project_id, "Task", "", Status::Todo, Priority::Low)
+            .unwrap()
+            .id
+            .unwrap();
+        for i in 0..40 {
+            repo.add_task_note(task_id, &format!("note-{i:02}"))
+                .unwrap();
+        }
+        let mut form = TaskForm::new(repo.clone());
+        form.set_project_id(project_id);
+        form.set_task_id(Some(task_id));
+        form.init().unwrap();
+
+        // Not focused: PageDown does nothing to the notes.
+        form.active_field = 0;
+        form.handle_event(&key_event(KeyCode::PageDown));
+        assert_eq!(form.notes_scroll.offset(), 0);
+
+        form.active_field = 5;
+        let top = render_to_string(&form, 80, 30);
+        assert!(top.contains("note-39"));
+        form.handle_event(&key_event(KeyCode::PageDown));
+        let scrolled = render_to_string(&form, 80, 30);
+        assert!(
+            !scrolled.contains("note-00"),
+            "notes did not scroll:\n{scrolled}"
+        );
+
+        // Paging back up returns to the first note.
+        form.handle_event(&key_event(KeyCode::PageUp));
+        form.handle_event(&key_event(KeyCode::PageUp));
+        let back = render_to_string(&form, 80, 30);
+        assert!(back.contains("note-39"));
+    }
+
+    #[test]
+    fn page_keys_scroll_dependencies_when_section_is_focused() {
+        let repo = Arc::new(StubRepository::default());
+        let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let task_id = repo
+            .create_task(project_id, "Task", "", Status::Todo, Priority::Low)
+            .unwrap()
+            .id
+            .unwrap();
+        for i in 0..20 {
+            let dep = repo
+                .create_task(
+                    project_id,
+                    &format!("Dep{i:02}"),
+                    "",
+                    Status::Todo,
+                    Priority::Low,
+                )
+                .unwrap();
+            repo.add_dependency(task_id, dep.id.unwrap()).unwrap();
+        }
+        let mut form = TaskForm::new(repo.clone());
+        form.set_project_id(project_id);
+        form.set_task_id(Some(task_id));
+        form.init().unwrap();
+
+        form.active_field = 4;
+        form.handle_event(&key_event(KeyCode::PageDown));
+        assert!(form.deps_scroll.offset() > 0);
+        // Pressing past the end is clamped on render, not accumulated.
+        for _ in 0..10 {
+            form.handle_event(&key_event(KeyCode::PageDown));
+        }
+        render_to_string(&form, 80, 30);
+        let max = form.deps_scroll.offset();
+        form.handle_event(&key_event(KeyCode::PageUp));
+        assert!(form.deps_scroll.offset() < max);
     }
 }

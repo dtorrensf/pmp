@@ -16,6 +16,7 @@ use crate::domain::project::Project;
 use crate::domain::task::{Status, Task};
 use crate::screens::components::keys::key;
 use crate::screens::components::progress::completion_percentage;
+use crate::screens::components::scroll::{TextScroll, wrapped_line_count};
 use crate::screens::task_list_view::{TaskListMode, TaskListView};
 use crate::screens::{AUTO_REFRESH_INTERVAL, Action, Component, Screen};
 
@@ -24,6 +25,7 @@ pub struct ProjectDashboard {
     project_id: i64,
     project: Option<Project>,
     view: TaskListView,
+    description_scroll: TextScroll,
 }
 
 impl ProjectDashboard {
@@ -41,6 +43,8 @@ impl ProjectDashboard {
         (key(KeyCode::Char('r')), "Refresh"),
         (key(KeyCode::Esc), "Back"),
         (key(KeyCode::Char('q')), "Quit"),
+        (key(KeyCode::PageDown), "Scroll description"),
+        (key(KeyCode::PageUp), "Scroll description"),
     ];
 
     pub fn new(repo: Arc<dyn Repository>) -> Self {
@@ -49,6 +53,7 @@ impl ProjectDashboard {
             project_id: 0,
             project: None,
             view: TaskListView::new(),
+            description_scroll: TextScroll::new(),
         }
     }
 
@@ -76,6 +81,7 @@ impl Component for ProjectDashboard {
         let tasks = self.repo.list_tasks_by_project(self.project_id)?;
         self.view.set_tasks(tasks);
         self.view.set_mode(TaskListMode::Browsing);
+        self.description_scroll.reset();
         Ok(())
     }
 
@@ -104,6 +110,17 @@ impl Component for ProjectDashboard {
             let code = *code;
             if code == KeyCode::Char('q') {
                 return Some(Action::Quit);
+            }
+            match code {
+                KeyCode::PageUp => {
+                    self.description_scroll.page_up();
+                    return None;
+                }
+                KeyCode::PageDown => {
+                    self.description_scroll.page_down();
+                    return None;
+                }
+                _ => {}
             }
             if self.view.is_browsing() {
                 match code {
@@ -160,9 +177,16 @@ impl Component for ProjectDashboard {
             ])
             .split(inner);
 
+        let desc_block = Block::default().borders(Borders::BOTTOM);
+        let desc_inner = desc_block.inner(chunks[0]);
+        let desc_offset = self.description_scroll.sync(
+            wrapped_line_count(project_description, desc_inner.width),
+            desc_inner.height,
+        );
         let desc = Paragraph::new(Text::from(project_description.to_string()))
-            .block(Block::default().borders(Borders::BOTTOM))
-            .wrap(Wrap { trim: true });
+            .block(desc_block)
+            .wrap(Wrap { trim: true })
+            .scroll((desc_offset, 0));
         frame.render_widget(desc, chunks[0]);
 
         // Charts aggregate over ALL project tasks, not the filtered list.
@@ -553,6 +577,42 @@ mod tests {
     }
 
     #[test]
+    fn page_keys_scroll_long_project_description() {
+        let repo = Arc::new(StubRepository::default());
+        let description = (0..30)
+            .map(|i| format!("line{i:02}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let project_id = repo
+            .create_project("Alpha", &description)
+            .unwrap()
+            .id
+            .unwrap();
+        let mut dashboard = ProjectDashboard::new(repo);
+        dashboard.set_project_id(project_id);
+        dashboard.init().unwrap();
+
+        // The description area shows only two rows (3-row block minus its bottom border).
+        let top = render_to_string(&dashboard, 60, 24);
+        assert!(top.contains("line00") && top.contains("line01"));
+
+        dashboard.handle_event(&key_event(KeyCode::PageDown));
+        let scrolled = render_to_string(&dashboard, 60, 24);
+        assert!(
+            !scrolled.contains("line00"),
+            "description did not scroll:\n{scrolled}"
+        );
+        assert!(scrolled.contains("line02"));
+
+        // Scrolling past the end is clamped: the last lines stay visible.
+        for _ in 0..20 {
+            dashboard.handle_event(&key_event(KeyCode::PageDown));
+        }
+        let end = render_to_string(&dashboard, 60, 24);
+        assert!(end.contains("line29"));
+    }
+
+    #[test]
     fn dashboard_keybindings_match_spec() {
         let (_repo, dashboard, _id) = setup_with_tasks();
         let keys: Vec<(KeyCode, &str)> = dashboard
@@ -576,6 +636,8 @@ mod tests {
                 (KeyCode::Char('r'), "Refresh"),
                 (KeyCode::Esc, "Back"),
                 (KeyCode::Char('q'), "Quit"),
+                (KeyCode::PageDown, "Scroll description"),
+                (KeyCode::PageUp, "Scroll description"),
             ]
         );
     }
