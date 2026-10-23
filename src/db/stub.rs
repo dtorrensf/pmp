@@ -107,6 +107,8 @@ impl Repository for StubRepository {
         let task = Task {
             id: Some(self.next_id()),
             project_id,
+            // The stub does not model versions yet (#89); 0 is a placeholder.
+            version_id: 0,
             name: name.to_string(),
             description: description.to_string(),
             status,

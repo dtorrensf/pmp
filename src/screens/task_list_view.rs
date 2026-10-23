@@ -385,6 +385,7 @@ mod tests {
         Task {
             id: None,
             project_id: 1,
+            version_id: 1,
             name: name.to_string(),
             description: String::new(),
             status,

@@ -105,7 +105,7 @@ impl Repository for SqliteRepository {
     fn list_tasks_by_project(&self, project_id: i64) -> Result<Vec<Task>, AppError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, project_id, name, description, status, priority, created_at
+            "SELECT id, project_id, name, description, status, priority, created_at, version_id
              FROM tasks WHERE project_id = ?1
              ORDER BY CASE WHEN status = 'done' THEN 1 ELSE 0 END, priority DESC, created_at DESC",
         )?;
@@ -145,7 +145,7 @@ impl Repository for SqliteRepository {
     fn get_task(&self, id: i64) -> Result<Task, AppError> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT id, project_id, name, description, status, priority, created_at
+            "SELECT id, project_id, name, description, status, priority, created_at, version_id
              FROM tasks WHERE id = ?1",
             [id],
             task_from_row,
@@ -348,6 +348,7 @@ fn task_from_row(row: &Row) -> Result<Task, rusqlite::Error> {
             )
         })?,
         created_at: row.get(6)?,
+        version_id: row.get(7)?,
     })
 }
 
@@ -429,6 +430,30 @@ mod tests {
             )
             .unwrap();
         assert_eq!(notnull, 1);
+    }
+
+    #[test]
+    fn task_carries_version_id_from_database() {
+        let (_dir, repo) = setup();
+        let project = repo.create_project("P", "").unwrap();
+        let project_id = project.id.unwrap();
+        let version_id: i64 = repo
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT id FROM versions WHERE project_id = ?1 AND name = 'v0'",
+                [project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let task = repo
+            .create_task(project_id, "T", "", Status::Todo, Priority::Low)
+            .unwrap();
+        let fetched = repo.get_task(task.id.unwrap()).unwrap();
+        assert_eq!(fetched.version_id, version_id);
+        let listed = repo.list_tasks_by_project(project_id).unwrap();
+        assert_eq!(listed[0].version_id, version_id);
     }
 
     #[test]
