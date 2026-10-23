@@ -739,16 +739,22 @@ mod tests {
             .unwrap();
         let task_id = task.id.unwrap();
 
-        app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id }));
+        app.dispatch(Action::Navigate(Screen::VersionDashboard {
+            project_id,
+            version_id: app.repo.default_version_id(project_id).unwrap(),
+        }));
         // sanity: list is cached at Todo
-        assert_eq!(app.components.dashboard.tasks()[0].status, Status::Todo);
+        assert_eq!(
+            app.components.version_dashboard.tasks()[0].status,
+            Status::Todo
+        );
 
         let next = app.dispatch(Action::UpdateTaskStatus {
             task_id,
             new_status: Status::InProgress,
         });
         assert!(
-            matches!(next, Some(Action::Navigate(Screen::ProjectDashboard { project_id: id })) if id == project_id),
+            matches!(next, Some(Action::Navigate(Screen::VersionDashboard { project_id: id, .. })) if id == project_id),
             "expected navigate to dashboard, got {:?}",
             next
         );
@@ -759,12 +765,12 @@ mod tests {
         }
 
         assert_eq!(
-            app.components.dashboard.tasks()[0].status,
+            app.components.version_dashboard.tasks()[0].status,
             Status::InProgress,
             "dashboard cached list must reflect the cycled status"
         );
         // selection preserved across refresh
-        assert_eq!(app.components.dashboard.selected_task(), 0);
+        assert_eq!(app.components.version_dashboard.selected_task(), 0);
         assert!(app.error.is_none());
     }
 
@@ -1038,8 +1044,11 @@ mod tests {
                 Priority::High,
             )
             .unwrap();
-        app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id }));
-        app.components.dashboard.set_selected_task(2);
+        app.dispatch(Action::Navigate(Screen::VersionDashboard {
+            project_id,
+            version_id: app.repo.default_version_id(project_id).unwrap(),
+        }));
+        app.components.version_dashboard.set_selected_task(2);
 
         let next = app.dispatch(Action::DeleteTask {
             task_id: t3.id.unwrap(),
@@ -1048,7 +1057,7 @@ mod tests {
             app.dispatch(action);
         }
 
-        assert_eq!(app.components.dashboard.selected_task(), 1);
+        assert_eq!(app.components.version_dashboard.selected_task(), 1);
         assert!(repo.get_task(t3.id.unwrap()).is_err());
         assert!(repo.get_task(t1.id.unwrap()).is_ok());
         assert!(repo.get_task(t2.id.unwrap()).is_ok());
@@ -1124,8 +1133,11 @@ mod tests {
         let (repo, mut app) = setup_app();
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
-        app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id }));
-        assert!(app.components.dashboard.tasks().is_empty());
+        app.dispatch(Action::Navigate(Screen::VersionDashboard {
+            project_id,
+            version_id: app.repo.default_version_id(project_id).unwrap(),
+        }));
+        assert!(app.components.version_dashboard.tasks().is_empty());
 
         repo.create_task(
             project_id,
@@ -1138,7 +1150,7 @@ mod tests {
         .unwrap();
         app.dispatch(Action::Refresh);
 
-        assert_eq!(app.components.dashboard.tasks().len(), 1);
+        assert_eq!(app.components.version_dashboard.tasks().len(), 1);
         assert!(app.error.is_none());
     }
 
@@ -1276,13 +1288,16 @@ mod tests {
         let (repo, mut app) = setup_app();
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
-        app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id }));
+        app.dispatch(Action::Navigate(Screen::VersionDashboard {
+            project_id,
+            version_id: repo.default_version_id(project_id).unwrap(),
+        }));
 
         // Open the filter dialog.
         app.components
-            .dashboard
+            .version_dashboard
             .handle_event(&key_event(KeyCode::Char('f')));
-        let before = render_to_string(&app.components.dashboard, 60, 24);
+        let before = render_to_string(&app.components.version_dashboard, 60, 24);
         assert!(before.contains("Filter Tasks"));
 
         // Create a new task in the repo while the dialog is open.
@@ -1299,11 +1314,11 @@ mod tests {
         // Refresh must preserve the dialog and reload the data.
         app.dispatch(Action::Refresh);
 
-        let after = render_to_string(&app.components.dashboard, 60, 24);
+        let after = render_to_string(&app.components.version_dashboard, 60, 24);
         assert!(after.contains("Filter Tasks"));
         assert!(
             app.components
-                .dashboard
+                .version_dashboard
                 .tasks()
                 .iter()
                 .any(|t| t.name == "NewTask")

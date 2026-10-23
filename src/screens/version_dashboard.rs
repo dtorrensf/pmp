@@ -3,6 +3,7 @@
 //! Task list scoped to one version: the task table of `TaskListView` plus the
 //! version header. Replaces the former project-wide task screen (removed in #94).
 use std::sync::Arc;
+use std::time::Duration;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
@@ -17,7 +18,7 @@ use crate::domain::version::Version;
 use crate::screens::components::keys::key;
 use crate::screens::task_list_view::TaskListView;
 pub use crate::screens::task_list_view::{FilterField, FilterState, TaskListMode};
-use crate::screens::{Action, Component, Screen};
+use crate::screens::{AUTO_REFRESH_INTERVAL, Action, Component, Screen};
 
 pub struct VersionDashboard {
     repo: Arc<dyn Repository>,
@@ -70,6 +71,10 @@ impl VersionDashboard {
         self.view.selected()
     }
 
+    pub fn set_selected_task(&mut self, index: usize) {
+        self.view.set_selected(index);
+    }
+
     pub fn tasks(&self) -> &[Task] {
         self.view.tasks()
     }
@@ -105,6 +110,10 @@ impl Component for VersionDashboard {
 
     fn keybindings(&self) -> &'static [(KeyEvent, &'static str)] {
         Self::KEYBINDINGS
+    }
+
+    fn auto_refresh_interval(&self) -> Option<Duration> {
+        self.view.is_browsing().then_some(AUTO_REFRESH_INTERVAL)
     }
 
     fn handle_event(&mut self, event: &Event) -> Option<Action> {

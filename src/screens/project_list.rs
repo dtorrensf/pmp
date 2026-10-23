@@ -28,6 +28,7 @@ pub struct ProjectListScreen {
     repo: Arc<dyn Repository>,
     projects: Vec<crate::domain::project::Project>,
     progress: Vec<u64>,
+    version_counts: Vec<usize>,
     selected: usize,
     mode: ProjectListMode,
 }
@@ -49,6 +50,7 @@ impl ProjectListScreen {
             repo,
             projects: Vec::new(),
             progress: Vec::new(),
+            version_counts: Vec::new(),
             selected: 0,
             mode: ProjectListMode::Browsing,
         }
@@ -72,6 +74,16 @@ impl Component for ProjectListScreen {
                     .list_tasks_by_project(project_id)
                     .unwrap_or_default();
                 completion_percentage(&tasks)
+            })
+            .collect();
+        self.version_counts = self
+            .projects
+            .iter()
+            .map(|project| {
+                self.repo
+                    .list_versions_by_project(project.id.unwrap_or(0))
+                    .map(|versions| versions.len())
+                    .unwrap_or(0)
             })
             .collect();
         self.selected = self.selected.min(self.projects.len().saturating_sub(1));
@@ -170,7 +182,14 @@ fn render_list(screen: &ProjectListScreen, frame: &mut Frame, area: Rect) {
                 Style::default()
             };
             let progress = screen.progress.get(i).copied().unwrap_or(0);
-            let label = format!("{} ({}%)", p.name, progress);
+            let versions = screen.version_counts.get(i).copied().unwrap_or(0);
+            let label = format!(
+                "{} ({} {} · {}%)",
+                p.name,
+                versions,
+                if versions == 1 { "version" } else { "versions" },
+                progress
+            );
             ListItem::new(Line::from(Span::styled(label, style)))
         })
         .collect();

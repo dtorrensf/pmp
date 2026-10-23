@@ -398,7 +398,10 @@ mod tests {
     #[test]
     fn dashboard_auto_refreshes_after_timeouts() {
         let (repo, mut app) = setup_app_with_project();
-        app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id: 1 }));
+        app.dispatch(Action::Navigate(Screen::VersionDashboard {
+            project_id: 1,
+            version_id: app.repo.default_version_id(1).unwrap(),
+        }));
 
         repo.create_task(
             1,
@@ -431,7 +434,10 @@ mod tests {
     #[test]
     fn dashboard_auto_refresh_pauses_while_task_list_dialog_is_open() {
         let (repo, mut app) = setup_app_with_project();
-        app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id: 1 }));
+        app.dispatch(Action::Navigate(Screen::VersionDashboard {
+            project_id: 1,
+            version_id: app.repo.default_version_id(1).unwrap(),
+        }));
         repo.create_task(
             1,
             repo.default_version_id(1).unwrap(),
@@ -504,7 +510,7 @@ mod tests {
 
         let text = render_app_to_string(&mut app);
         assert!(
-            text.contains("Alpha (67%)"),
+            text.contains("Alpha (1 version · 67%)"),
             "project progress should be refreshed"
         );
     }
@@ -595,11 +601,10 @@ mod tests {
         app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id: 1 }));
         let text = render_app_to_string(&mut app);
         let last_line = text.lines().last().unwrap();
-        assert!(last_line.contains("j/Down: Down"));
-        assert!(last_line.contains("Enter: Edit"));
-        assert!(last_line.contains("Tab: Cycle"));
+        assert!(last_line.contains("Enter: Open"));
+        assert!(last_line.contains("c: New Version"));
+        assert!(last_line.contains("r: Cycle Status"));
         assert!(last_line.contains("d: Delete"));
-        assert!(last_line.contains("f: Filter"));
     }
 
     #[test]
