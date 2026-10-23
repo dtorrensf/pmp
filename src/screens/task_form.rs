@@ -21,9 +21,9 @@ use crate::screens::{Action, Component, Screen};
 
 pub struct TaskForm {
     repo: Arc<dyn Repository>,
+    /// Project that owns `version_id`, resolved from the version on init.
     project_id: i64,
-    /// Version the task is saved into. Provisional: resolved to the project's
-    /// default version until the form takes it explicitly (#94).
+    /// Version the task belongs to (set by the screen that opens the form).
     version_id: i64,
     task_id: Option<i64>,
     name: String,
@@ -73,8 +73,8 @@ impl TaskForm {
         }
     }
 
-    pub fn set_project_id(&mut self, project_id: i64) {
-        self.project_id = project_id;
+    pub fn set_version_id(&mut self, version_id: i64) {
+        self.version_id = version_id;
     }
 
     pub fn set_task_id(&mut self, task_id: Option<i64>) {
@@ -196,16 +196,15 @@ impl TaskForm {
 
 impl Component for TaskForm {
     fn init(&mut self) -> anyhow::Result<()> {
+        self.project_id = self.repo.get_version(self.version_id)?.project_id;
         self.available_tasks = self
             .repo
-            .list_tasks_by_project(self.project_id)?
+            .list_tasks_by_version(self.version_id)?
             .into_iter()
             .filter(|t| t.id != self.task_id)
             .collect();
-        self.version_id = self.repo.default_version_id(self.project_id)?;
         if let Some(id) = self.task_id {
             let task = self.repo.get_task(id)?;
-            self.version_id = task.version_id;
             self.name = task.name;
             self.description = TextArea::default();
             self.description.insert_str(&task.description);
@@ -235,7 +234,7 @@ impl Component for TaskForm {
     fn refresh(&mut self) -> anyhow::Result<()> {
         self.available_tasks = self
             .repo
-            .list_tasks_by_project(self.project_id)?
+            .list_tasks_by_version(self.version_id)?
             .into_iter()
             .filter(|t| t.id != self.task_id)
             .collect();
@@ -660,7 +659,7 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.init().unwrap();
         (repo, form, project_id)
     }
@@ -727,7 +726,7 @@ mod tests {
             )
             .unwrap();
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.set_task_id(task.id);
         form.init().unwrap();
 
@@ -751,7 +750,7 @@ mod tests {
             )
             .unwrap();
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.set_task_id(task.id);
         form.init().unwrap();
         form.handle_event(&char_event('V'));
@@ -784,7 +783,7 @@ mod tests {
             )
             .unwrap();
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.set_task_id(task.id);
         form.init().unwrap();
 
@@ -812,7 +811,7 @@ mod tests {
             )
             .unwrap();
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.set_task_id(task.id);
         form.init().unwrap();
         insta::assert_snapshot!(render_to_string(&form, 60, 28));
@@ -833,11 +832,17 @@ mod tests {
     #[test]
     fn esc_returns_to_return_to_screen() {
         let (_repo, mut form, project_id) = setup();
-        form.set_return_to(&Screen::TaskList { project_id });
+        form.set_return_to(&Screen::VersionDashboard {
+            project_id,
+            version_id: _repo.default_version_id(project_id).unwrap(),
+        });
         let action = form.handle_event(&key_event(KeyCode::Esc));
         assert_eq!(
             action,
-            Some(Action::Navigate(Screen::TaskList { project_id }))
+            Some(Action::Navigate(Screen::VersionDashboard {
+                project_id,
+                version_id: _repo.default_version_id(project_id).unwrap(),
+            }))
         );
     }
 
@@ -1329,7 +1334,7 @@ mod tests {
         repo.add_task_note(task_id, "Second note").unwrap();
 
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.set_task_id(Some(task_id));
         form.init().unwrap();
 
@@ -1353,7 +1358,7 @@ mod tests {
             )
             .unwrap();
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.set_task_id(task.id);
         form.init().unwrap();
 
@@ -1376,7 +1381,7 @@ mod tests {
             .unwrap();
         let task_id = task.id.unwrap();
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.set_task_id(Some(task_id));
         form.init().unwrap();
         form.active_field = 5;
@@ -1407,7 +1412,7 @@ mod tests {
             .unwrap();
         let task_id = task.id.unwrap();
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.set_task_id(Some(task_id));
         form.init().unwrap();
         form.active_field = 5;

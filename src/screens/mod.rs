@@ -13,7 +13,6 @@ pub mod keybinding_footer;
 pub mod project_form;
 pub mod project_list;
 pub mod task_form;
-pub mod task_list;
 pub mod task_list_view;
 #[cfg(test)]
 pub mod test_utils;
@@ -24,7 +23,6 @@ pub use dashboard::ProjectDashboard;
 pub use project_form::ProjectForm;
 pub use project_list::ProjectListScreen;
 pub use task_form::TaskForm;
-pub use task_list::TaskListScreen;
 pub use version_dashboard::VersionDashboard;
 pub use version_form::VersionForm;
 
@@ -64,11 +62,8 @@ pub enum Screen {
         project_id: Option<i64>,
     },
     TaskForm {
-        project_id: i64,
+        version_id: i64,
         task_id: Option<i64>,
-    },
-    TaskList {
-        project_id: i64,
     },
     VersionDashboard {
         project_id: i64,
@@ -155,13 +150,16 @@ pub mod tests {
         assert_ne!(
             Screen::ProjectDashboard { project_id: 1 },
             Screen::TaskForm {
-                project_id: 2,
+                version_id: 2,
                 task_id: None
             }
         );
         assert_ne!(
             Screen::ProjectDashboard { project_id: 1 },
-            Screen::TaskList { project_id: 1 }
+            Screen::VersionDashboard {
+                project_id: 1,
+                version_id: 1
+            }
         );
     }
 

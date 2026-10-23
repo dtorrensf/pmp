@@ -573,7 +573,7 @@ mod tests {
         let (_repo, mut app) = setup_app_with_project();
         app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id: 1 }));
         app.dispatch(Action::Navigate(Screen::TaskForm {
-            project_id: 1,
+            version_id: app.repo.default_version_id(1).unwrap(),
             task_id: None,
         }));
         insta::assert_snapshot!(render_app_to_string(&mut app));
@@ -607,7 +607,7 @@ mod tests {
         let (_repo, mut app) = setup_app_with_project();
         app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id: 1 }));
         app.dispatch(Action::Navigate(Screen::TaskForm {
-            project_id: 1,
+            version_id: app.repo.default_version_id(1).unwrap(),
             task_id: None,
         }));
         let text = render_app_to_string(&mut app);
@@ -684,7 +684,7 @@ mod tests {
         let (_repo, mut app) = app_with_update("0.4.0");
         app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id: 1 }));
         app.dispatch(Action::Navigate(Screen::TaskForm {
-            project_id: 1,
+            version_id: app.repo.default_version_id(1).unwrap(),
             task_id: None,
         }));
 

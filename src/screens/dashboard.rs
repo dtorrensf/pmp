@@ -108,11 +108,17 @@ impl Component for ProjectDashboard {
             if self.view.is_browsing() {
                 match code {
                     KeyCode::Char('r') => return Some(Action::Refresh),
+                    // Temporary: until the dashboard lists versions (#93), new
+                    // tasks from here go to the project's default version.
                     KeyCode::Char('c') => {
-                        return Some(Action::Navigate(Screen::TaskForm {
-                            project_id: self.project_id,
-                            task_id: None,
-                        }));
+                        return self.repo.default_version_id(self.project_id).ok().map(
+                            |version_id| {
+                                Action::Navigate(Screen::TaskForm {
+                                    version_id,
+                                    task_id: None,
+                                })
+                            },
+                        );
                     }
                     KeyCode::Char('e') => {
                         return Some(Action::Navigate(Screen::ProjectForm {
@@ -125,7 +131,7 @@ impl Component for ProjectDashboard {
                     _ => {}
                 }
             }
-            self.view.handle_key(code, self.project_id, &*self.repo)
+            self.view.handle_key(code, &*self.repo)
         } else {
             None
         }
@@ -404,7 +410,7 @@ mod tests {
         assert_eq!(
             action,
             Some(Action::Navigate(Screen::TaskForm {
-                project_id,
+                version_id: _repo.default_version_id(project_id).unwrap(),
                 task_id: None,
             }))
         );
@@ -418,7 +424,7 @@ mod tests {
         assert_eq!(
             action,
             Some(Action::Navigate(Screen::TaskForm {
-                project_id,
+                version_id: _repo.default_version_id(project_id).unwrap(),
                 task_id: Some(task_id),
             }))
         );

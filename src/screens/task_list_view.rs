@@ -142,12 +142,7 @@ impl TaskListView {
     /// keys (e.g. `q`, `r`, `c`, `e`, `Esc` while browsing) stay with the
     /// embedding screen, which should consult [`TaskListView::is_browsing`]
     /// before applying them.
-    pub fn handle_key(
-        &mut self,
-        code: KeyCode,
-        project_id: i64,
-        repo: &dyn Repository,
-    ) -> Option<Action> {
+    pub fn handle_key(&mut self, code: KeyCode, repo: &dyn Repository) -> Option<Action> {
         match &mut self.mode {
             TaskListMode::Browsing => match code {
                 KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j') => {
@@ -156,7 +151,7 @@ impl TaskListView {
                 }
                 KeyCode::Enter => self.tasks.get(self.selected).map(|task| {
                     Action::Navigate(Screen::TaskForm {
-                        project_id,
+                        version_id: task.version_id,
                         task_id: task.id,
                     })
                 }),
@@ -401,9 +396,9 @@ mod tests {
         view.set_tasks(vec![task("A", Status::Todo), task("B", Status::Done)]);
 
         // Apply a status filter (Status: Todo) through the filter popup.
-        view.handle_key(KeyCode::Char('f'), 1, &repo);
-        view.handle_key(KeyCode::Right, 1, &repo);
-        view.handle_key(KeyCode::Enter, 1, &repo);
+        view.handle_key(KeyCode::Char('f'), &repo);
+        view.handle_key(KeyCode::Right, &repo);
+        view.handle_key(KeyCode::Enter, &repo);
 
         assert_eq!(view.tasks().len(), 1);
         assert_eq!(view.all_tasks().len(), 2);
@@ -449,13 +444,13 @@ mod tests {
         ]);
 
         // Apply a status filter through the filter popup.
-        view.handle_key(KeyCode::Char('f'), 1, &repo);
-        view.handle_key(KeyCode::Right, 1, &repo); // status -> Todo
-        view.handle_key(KeyCode::Enter, 1, &repo); // apply
+        view.handle_key(KeyCode::Char('f'), &repo);
+        view.handle_key(KeyCode::Right, &repo); // status -> Todo
+        view.handle_key(KeyCode::Enter, &repo); // apply
         assert_eq!(view.tasks().len(), 2);
 
         // Re-enter filtering mode to verify it survives a data reload.
-        view.handle_key(KeyCode::Char('f'), 1, &repo);
+        view.handle_key(KeyCode::Char('f'), &repo);
         assert!(matches!(view.mode(), TaskListMode::Filtering(_)));
 
         // Reload data while the filter dialog is open.

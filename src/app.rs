@@ -10,7 +10,7 @@ use crate::domain::error::AppError;
 use crate::domain::task::Status;
 use crate::screens::{
     Action, Component, ProjectDashboard, ProjectForm, ProjectListScreen, Screen, TaskForm,
-    TaskListScreen, VersionDashboard, VersionForm,
+    VersionDashboard, VersionForm,
 };
 
 pub struct App {
@@ -36,7 +36,6 @@ struct Components {
     dashboard: ProjectDashboard,
     project_form: ProjectForm,
     task_form: TaskForm,
-    task_list: TaskListScreen,
     version_dashboard: VersionDashboard,
     version_form: VersionForm,
 }
@@ -59,7 +58,6 @@ impl App {
                 dashboard: ProjectDashboard::new(repo.clone()),
                 project_form: ProjectForm::new(repo.clone()),
                 task_form: TaskForm::new(repo.clone()),
-                task_list: TaskListScreen::new(repo.clone()),
                 version_dashboard: VersionDashboard::new(repo.clone()),
                 version_form: VersionForm::new(repo.clone()),
             },
@@ -282,8 +280,12 @@ impl App {
                     Screen::ProjectDashboard { project_id } => Screen::ProjectDashboard {
                         project_id: *project_id,
                     },
-                    Screen::TaskList { project_id } => Screen::TaskList {
+                    Screen::VersionDashboard {
+                        project_id,
+                        version_id,
+                    } => Screen::VersionDashboard {
                         project_id: *project_id,
+                        version_id: *version_id,
                     },
                     _ => return None,
                 };
@@ -377,8 +379,12 @@ impl App {
                     Screen::ProjectDashboard { project_id } => Screen::ProjectDashboard {
                         project_id: *project_id,
                     },
-                    Screen::TaskList { project_id } => Screen::TaskList {
+                    Screen::VersionDashboard {
+                        project_id,
+                        version_id,
+                    } => Screen::VersionDashboard {
                         project_id: *project_id,
+                        version_id: *version_id,
                     },
                     _ => return None,
                 };
@@ -449,16 +455,12 @@ impl App {
                 self.components.project_form.init()
             }
             Screen::TaskForm {
-                project_id,
+                version_id,
                 task_id,
             } => {
-                self.components.task_form.set_project_id(*project_id);
+                self.components.task_form.set_version_id(*version_id);
                 self.components.task_form.set_task_id(*task_id);
                 self.components.task_form.init()
-            }
-            Screen::TaskList { project_id } => {
-                self.components.task_list.set_project_id(*project_id);
-                self.components.task_list.init()
             }
             Screen::VersionDashboard {
                 project_id,
@@ -492,16 +494,12 @@ impl App {
                 &mut self.components.project_form
             }
             Screen::TaskForm {
-                project_id,
+                version_id,
                 task_id,
             } => {
-                self.components.task_form.set_project_id(*project_id);
+                self.components.task_form.set_version_id(*version_id);
                 self.components.task_form.set_task_id(*task_id);
                 &mut self.components.task_form
-            }
-            Screen::TaskList { project_id } => {
-                self.components.task_list.set_project_id(*project_id);
-                &mut self.components.task_list
             }
             Screen::VersionDashboard {
                 project_id,
@@ -616,7 +614,7 @@ mod tests {
         let project_id = project.id.unwrap();
         app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id }));
         app.dispatch(Action::Navigate(Screen::TaskForm {
-            project_id,
+            version_id: app.repo.default_version_id(project_id).unwrap(),
             task_id: None,
         }));
         let next = app.dispatch(Action::SaveTask {
@@ -680,7 +678,7 @@ mod tests {
             .unwrap();
         repo.add_dependency(a.id.unwrap(), b.id.unwrap()).unwrap();
 
-        // UpdateTaskStatus is dispatched from the dashboard (Tab in TaskList mode).
+        // UpdateTaskStatus is dispatched from the dashboard (Tab in the version task list).
         app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id }));
         app.dispatch(Action::UpdateTaskStatus {
             task_id: a.id.unwrap(),
@@ -712,7 +710,7 @@ mod tests {
             )
             .unwrap();
 
-        // UpdateTaskStatus is dispatched from the dashboard (Tab in TaskList mode).
+        // UpdateTaskStatus is dispatched from the dashboard (Tab in the version task list).
         app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id }));
         app.dispatch(Action::UpdateTaskStatus {
             task_id: a.id.unwrap(),
@@ -776,15 +774,18 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
 
-        app.dispatch(Action::Navigate(Screen::TaskList { project_id }));
-        app.dispatch(Action::Navigate(Screen::TaskForm {
+        app.dispatch(Action::Navigate(Screen::VersionDashboard {
             project_id,
+            version_id: app.repo.default_version_id(project_id).unwrap(),
+        }));
+        app.dispatch(Action::Navigate(Screen::TaskForm {
+            version_id: app.repo.default_version_id(project_id).unwrap(),
             task_id: None,
         }));
         assert_eq!(
             app.screen,
             Screen::TaskForm {
-                project_id,
+                version_id: app.repo.default_version_id(project_id).unwrap(),
                 task_id: None,
             }
         );
@@ -799,7 +800,7 @@ mod tests {
             depends_on_ids: vec![],
         });
         assert!(
-            matches!(next, Some(Action::Navigate(Screen::TaskList { project_id: id })) if id == project_id),
+            matches!(next, Some(Action::Navigate(Screen::VersionDashboard { project_id: id, .. })) if id == project_id),
             "expected navigate back to task list, got {:?}",
             next
         );
@@ -824,7 +825,7 @@ mod tests {
 
         app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id }));
         app.dispatch(Action::Navigate(Screen::TaskForm {
-            project_id,
+            version_id: app.repo.default_version_id(project_id).unwrap(),
             task_id: Some(task_id),
         }));
         let next = app.dispatch(Action::SaveTask {
@@ -940,15 +941,24 @@ mod tests {
             .unwrap();
         let task_id = task.id.unwrap();
 
-        app.dispatch(Action::Navigate(Screen::TaskList { project_id }));
-        assert_eq!(app.screen, Screen::TaskList { project_id });
+        app.dispatch(Action::Navigate(Screen::VersionDashboard {
+            project_id,
+            version_id: app.repo.default_version_id(project_id).unwrap(),
+        }));
+        assert_eq!(
+            app.screen,
+            Screen::VersionDashboard {
+                project_id,
+                version_id: app.repo.default_version_id(project_id).unwrap()
+            }
+        );
 
         let next = app.dispatch(Action::UpdateTaskStatus {
             task_id,
             new_status: Status::InProgress,
         });
         assert!(
-            matches!(next, Some(Action::Navigate(Screen::TaskList { project_id: id })) if id == project_id),
+            matches!(next, Some(Action::Navigate(Screen::VersionDashboard { project_id: id, .. })) if id == project_id),
             "expected navigate back to task list, got {:?}",
             next
         );
@@ -957,7 +967,7 @@ mod tests {
             app.dispatch(action);
         }
         assert_eq!(
-            app.components.task_list.tasks()[0].status,
+            app.components.version_dashboard.tasks()[0].status,
             Status::InProgress
         );
     }
@@ -979,11 +989,14 @@ mod tests {
             .unwrap();
         let task_id = task.id.unwrap();
 
-        app.dispatch(Action::Navigate(Screen::TaskList { project_id }));
+        app.dispatch(Action::Navigate(Screen::VersionDashboard {
+            project_id,
+            version_id: app.repo.default_version_id(project_id).unwrap(),
+        }));
 
         let next = app.dispatch(Action::DeleteTask { task_id });
         assert!(
-            matches!(next, Some(Action::Navigate(Screen::TaskList { project_id: id })) if id == project_id),
+            matches!(next, Some(Action::Navigate(Screen::VersionDashboard { project_id: id, .. })) if id == project_id),
             "expected navigate back to task list, got {:?}",
             next
         );
@@ -1056,11 +1069,20 @@ mod tests {
         )
         .unwrap();
 
-        app.dispatch(Action::Navigate(Screen::TaskList { project_id }));
+        app.dispatch(Action::Navigate(Screen::VersionDashboard {
+            project_id,
+            version_id: app.repo.default_version_id(project_id).unwrap(),
+        }));
 
-        assert_eq!(app.screen, Screen::TaskList { project_id });
+        assert_eq!(
+            app.screen,
+            Screen::VersionDashboard {
+                project_id,
+                version_id: app.repo.default_version_id(project_id).unwrap()
+            }
+        );
         assert!(app.error.is_none());
-        assert_eq!(app.components.task_list.tasks().len(), 1);
+        assert_eq!(app.components.version_dashboard.tasks().len(), 1);
     }
 
     #[test]
@@ -1069,7 +1091,10 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
 
-        app.dispatch(Action::Navigate(Screen::TaskList { project_id }));
+        app.dispatch(Action::Navigate(Screen::VersionDashboard {
+            project_id,
+            version_id: app.repo.default_version_id(project_id).unwrap(),
+        }));
 
         let keys: Vec<_> = app
             .active_component()
@@ -1122,8 +1147,11 @@ mod tests {
         let (repo, mut app) = setup_app();
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
-        app.dispatch(Action::Navigate(Screen::TaskList { project_id }));
-        assert!(app.components.task_list.tasks().is_empty());
+        app.dispatch(Action::Navigate(Screen::VersionDashboard {
+            project_id,
+            version_id: app.repo.default_version_id(project_id).unwrap(),
+        }));
+        assert!(app.components.version_dashboard.tasks().is_empty());
 
         repo.create_task(
             project_id,
@@ -1136,7 +1164,7 @@ mod tests {
         .unwrap();
         app.dispatch(Action::Refresh);
 
-        assert_eq!(app.components.task_list.tasks().len(), 1);
+        assert_eq!(app.components.version_dashboard.tasks().len(), 1);
         assert!(app.error.is_none());
     }
 
@@ -1158,7 +1186,7 @@ mod tests {
         let task_id = task.id.unwrap();
 
         app.dispatch(Action::Navigate(Screen::TaskForm {
-            project_id,
+            version_id: app.repo.default_version_id(project_id).unwrap(),
             task_id: Some(task_id),
         }));
         let expected_return_to = app.components.task_form.return_to().clone();
@@ -1217,7 +1245,7 @@ mod tests {
         let task_id = task.id.unwrap();
 
         app.dispatch(Action::Navigate(Screen::TaskForm {
-            project_id,
+            version_id: app.repo.default_version_id(project_id).unwrap(),
             task_id: Some(task_id),
         }));
 
@@ -1233,7 +1261,7 @@ mod tests {
         // Navigate away and reopen the task form to prove the note persists.
         app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id }));
         app.dispatch(Action::Navigate(Screen::TaskForm {
-            project_id,
+            version_id: app.repo.default_version_id(project_id).unwrap(),
             task_id: Some(task_id),
         }));
 
@@ -1300,7 +1328,7 @@ mod tests {
         let task_id = task.id.unwrap();
 
         app.dispatch(Action::Navigate(Screen::TaskForm {
-            project_id,
+            version_id: app.repo.default_version_id(project_id).unwrap(),
             task_id: Some(task_id),
         }));
 
@@ -1381,7 +1409,7 @@ mod tests {
         assert_eq!(
             app.screen,
             Screen::TaskForm {
-                project_id,
+                version_id: app.repo.default_version_id(project_id).unwrap(),
                 task_id: Some(task_id),
             }
         );
@@ -1508,7 +1536,7 @@ mod tests {
         assert!(app.screen.accepts_text_input());
 
         app.dispatch(Action::Navigate(Screen::TaskForm {
-            project_id,
+            version_id: app.repo.default_version_id(project_id).unwrap(),
             task_id: None,
         }));
         assert!(app.screen.accepts_text_input());
