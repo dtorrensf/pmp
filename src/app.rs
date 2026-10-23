@@ -10,7 +10,7 @@ use crate::domain::error::AppError;
 use crate::domain::task::Status;
 use crate::screens::{
     Action, Component, ProjectDashboard, ProjectForm, ProjectListScreen, Screen, TaskForm,
-    TaskListScreen,
+    TaskListScreen, VersionDashboard, VersionForm,
 };
 
 pub struct App {
@@ -37,6 +37,8 @@ struct Components {
     project_form: ProjectForm,
     task_form: TaskForm,
     task_list: TaskListScreen,
+    version_dashboard: VersionDashboard,
+    version_form: VersionForm,
 }
 
 impl App {
@@ -58,6 +60,8 @@ impl App {
                 project_form: ProjectForm::new(repo.clone()),
                 task_form: TaskForm::new(repo.clone()),
                 task_list: TaskListScreen::new(repo.clone()),
+                version_dashboard: VersionDashboard::new(repo.clone()),
+                version_form: VersionForm::new(repo.clone()),
             },
         };
         if let Err(e) = app.init_screen(&Screen::ProjectList) {
@@ -156,6 +160,9 @@ impl App {
                         if matches!(screen, Screen::ProjectForm { .. }) {
                             self.components.project_form.set_return_to(&previous);
                         }
+                        if matches!(screen, Screen::VersionForm { .. }) {
+                            self.components.version_form.set_return_to(&previous);
+                        }
                         self.previous_screen = Some(previous);
                         self.screen = screen;
                         self.error = None;
@@ -198,7 +205,7 @@ impl App {
             }
             Action::SaveTask {
                 task_id,
-                project_id,
+                version_id,
                 name,
                 description,
                 status,
@@ -209,6 +216,13 @@ impl App {
                     self.error = Some("Task name cannot be empty".to_string());
                     return None;
                 }
+                let project_id = match self.repo.get_version(version_id) {
+                    Ok(version) => version.project_id,
+                    Err(e) => {
+                        self.error = Some(e.to_string());
+                        return None;
+                    }
+                };
                 // Block Done transition when dependencies are incomplete
                 // (only for existing tasks being edited, not new tasks).
                 if status == Status::Done
@@ -233,19 +247,14 @@ impl App {
                     Some(id) => self
                         .repo
                         .update_task(id, &name, &description, status, priority),
-                    None => self
-                        .repo
-                        .default_version_id(project_id)
-                        .and_then(|version_id| {
-                            self.repo.create_task(
-                                project_id,
-                                version_id,
-                                &name,
-                                &description,
-                                status,
-                                priority,
-                            )
-                        }),
+                    None => self.repo.create_task(
+                        project_id,
+                        version_id,
+                        &name,
+                        &description,
+                        status,
+                        priority,
+                    ),
                 };
                 match result {
                     Ok(task) => {
@@ -301,6 +310,51 @@ impl App {
                         // Refresh the source screen so init_screen re-runs its init()
                         // and the cached task list is updated in place.
                         Some(Action::Navigate(refresh))
+                    }
+                    Err(e) => {
+                        self.error = Some(e.to_string());
+                        None
+                    }
+                }
+            }
+            Action::SaveVersion {
+                version_id,
+                project_id,
+                name,
+                description,
+                status,
+            } => {
+                if name.trim().is_empty() {
+                    self.error = Some("Version name cannot be empty".to_string());
+                    return None;
+                }
+                let result = match version_id {
+                    Some(id) => self.repo.update_version(id, &name, &description, status),
+                    None => self.repo.create_version(project_id, &name, &description),
+                };
+                match result {
+                    Ok(_) => {
+                        self.error = None;
+                        Some(Action::Navigate(Screen::ProjectDashboard { project_id }))
+                    }
+                    Err(e) => {
+                        self.error = Some(e.to_string());
+                        None
+                    }
+                }
+            }
+            Action::DeleteVersion { version_id } => {
+                let project_id = match self.repo.get_version(version_id) {
+                    Ok(version) => version.project_id,
+                    Err(e) => {
+                        self.error = Some(e.to_string());
+                        return None;
+                    }
+                };
+                match self.repo.delete_version(version_id) {
+                    Ok(()) => {
+                        self.error = None;
+                        Some(Action::Navigate(Screen::ProjectDashboard { project_id }))
                     }
                     Err(e) => {
                         self.error = Some(e.to_string());
@@ -406,6 +460,23 @@ impl App {
                 self.components.task_list.set_project_id(*project_id);
                 self.components.task_list.init()
             }
+            Screen::VersionDashboard {
+                project_id,
+                version_id,
+            } => {
+                self.components
+                    .version_dashboard
+                    .set_ids(*project_id, *version_id);
+                self.components.version_dashboard.init()
+            }
+            Screen::VersionForm {
+                project_id,
+                version_id,
+            } => {
+                self.components.version_form.set_project_id(*project_id);
+                self.components.version_form.set_version_id(*version_id);
+                self.components.version_form.init()
+            }
         }
     }
 
@@ -432,6 +503,23 @@ impl App {
                 self.components.task_list.set_project_id(*project_id);
                 &mut self.components.task_list
             }
+            Screen::VersionDashboard {
+                project_id,
+                version_id,
+            } => {
+                self.components
+                    .version_dashboard
+                    .set_ids(*project_id, *version_id);
+                &mut self.components.version_dashboard
+            }
+            Screen::VersionForm {
+                project_id,
+                version_id,
+            } => {
+                self.components.version_form.set_project_id(*project_id);
+                self.components.version_form.set_version_id(*version_id);
+                &mut self.components.version_form
+            }
         }
     }
 }
@@ -445,6 +533,7 @@ mod tests {
     use crate::db::repository::Repository;
     use crate::db::stub::StubRepository;
     use crate::domain::task::{Priority, Status};
+    use crate::domain::version::VersionStatus;
     use crate::screens::test_utils::{char_event, key_event, render_to_string};
     use crate::screens::{Action, Screen};
 
@@ -532,7 +621,7 @@ mod tests {
         }));
         let next = app.dispatch(Action::SaveTask {
             task_id: None,
-            project_id,
+            version_id: app.repo.default_version_id(project_id).unwrap(),
             name: "Task 1".to_string(),
             description: "".to_string(),
             status: Status::Todo,
@@ -553,7 +642,7 @@ mod tests {
         let project_id = project.id.unwrap();
         let next = app.dispatch(Action::SaveTask {
             task_id: None,
-            project_id,
+            version_id: app.repo.default_version_id(project_id).unwrap(),
             name: "".to_string(),
             description: "".to_string(),
             status: Status::Todo,
@@ -702,7 +791,7 @@ mod tests {
 
         let next = app.dispatch(Action::SaveTask {
             task_id: None,
-            project_id,
+            version_id: app.repo.default_version_id(project_id).unwrap(),
             name: "Task 1".to_string(),
             description: "".to_string(),
             status: Status::Todo,
@@ -740,7 +829,7 @@ mod tests {
         }));
         let next = app.dispatch(Action::SaveTask {
             task_id: Some(task_id),
-            project_id,
+            version_id: app.repo.default_version_id(project_id).unwrap(),
             name: "New".to_string(),
             description: "".to_string(),
             status: Status::InProgress,
@@ -790,7 +879,7 @@ mod tests {
 
         app.dispatch(Action::SaveTask {
             task_id: Some(a_id),
-            project_id,
+            version_id: app.repo.default_version_id(project_id).unwrap(),
             name: "A".to_string(),
             description: "".to_string(),
             status: Status::Done,
@@ -1350,15 +1439,76 @@ mod tests {
     }
 
     #[test]
+    fn save_version_rejects_blank_name_without_touching_repo() {
+        let repo = Arc::new(StubRepository::default());
+        let project_id = repo.create_project("P", "").unwrap().id.unwrap();
+        let mut app = App::new(repo.clone());
+        let next = app.dispatch(Action::SaveVersion {
+            version_id: None,
+            project_id,
+            name: "  ".to_string(),
+            description: String::new(),
+            status: VersionStatus::Open,
+        });
+        assert!(next.is_none());
+        assert!(app.error.is_some());
+        assert_eq!(repo.list_versions_by_project(project_id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn save_version_creates_and_returns_to_project_dashboard() {
+        let repo = Arc::new(StubRepository::default());
+        let project_id = repo.create_project("P", "").unwrap().id.unwrap();
+        let mut app = App::new(repo.clone());
+        let next = app.dispatch(Action::SaveVersion {
+            version_id: None,
+            project_id,
+            name: "v0.1.0".to_string(),
+            description: String::new(),
+            status: VersionStatus::Open,
+        });
+        assert_eq!(
+            next,
+            Some(Action::Navigate(Screen::ProjectDashboard { project_id }))
+        );
+        assert!(
+            repo.list_versions_by_project(project_id)
+                .unwrap()
+                .iter()
+                .any(|v| v.name == "v0.1.0")
+        );
+    }
+
+    #[test]
+    fn delete_version_removes_it_and_navigates_to_project() {
+        let repo = Arc::new(StubRepository::default());
+        let project_id = repo.create_project("P", "").unwrap().id.unwrap();
+        let version_id = repo
+            .create_version(project_id, "v1.0.0", "")
+            .unwrap()
+            .id
+            .unwrap();
+        let mut app = App::new(repo.clone());
+        let next = app.dispatch(Action::DeleteVersion { version_id });
+        assert_eq!(
+            next,
+            Some(Action::Navigate(Screen::ProjectDashboard { project_id }))
+        );
+        assert!(repo.get_version(version_id).is_err());
+    }
+
+    #[test]
     fn accepts_text_input_only_on_forms() {
-        let mut app = App::new(Arc::new(StubRepository::default()));
+        let repo = Arc::new(StubRepository::default());
+        let project_id = repo.create_project("P", "").unwrap().id.unwrap();
+        let mut app = App::new(repo);
         assert!(!app.screen.accepts_text_input());
 
         app.dispatch(Action::Navigate(Screen::ProjectForm { project_id: None }));
         assert!(app.screen.accepts_text_input());
 
         app.dispatch(Action::Navigate(Screen::TaskForm {
-            project_id: 1,
+            project_id,
             task_id: None,
         }));
         assert!(app.screen.accepts_text_input());

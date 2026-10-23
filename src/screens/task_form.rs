@@ -22,6 +22,9 @@ use crate::screens::{Action, Component, Screen};
 pub struct TaskForm {
     repo: Arc<dyn Repository>,
     project_id: i64,
+    /// Version the task is saved into. Provisional: resolved to the project's
+    /// default version until the form takes it explicitly (#94).
+    version_id: i64,
     task_id: Option<i64>,
     name: String,
     description: TextArea<'static>,
@@ -49,6 +52,7 @@ impl TaskForm {
         Self {
             repo,
             project_id: 0,
+            version_id: 0,
             task_id: None,
             name: String::new(),
             description: TextArea::default(),
@@ -198,8 +202,10 @@ impl Component for TaskForm {
             .into_iter()
             .filter(|t| t.id != self.task_id)
             .collect();
+        self.version_id = self.repo.default_version_id(self.project_id)?;
         if let Some(id) = self.task_id {
             let task = self.repo.get_task(id)?;
+            self.version_id = task.version_id;
             self.name = task.name;
             self.description = TextArea::default();
             self.description.insert_str(&task.description);
@@ -260,7 +266,7 @@ impl Component for TaskForm {
                 }
                 return Some(Action::SaveTask {
                     task_id: self.task_id,
-                    project_id: self.project_id,
+                    version_id: self.version_id,
                     name: self.name.clone(),
                     description: self.description.lines().join("\n"),
                     status: self.status,
@@ -697,7 +703,7 @@ mod tests {
             action,
             Some(Action::SaveTask {
                 task_id: None,
-                project_id,
+                version_id: _repo.default_version_id(project_id).unwrap(),
                 name: "Task".to_string(),
                 description: "D".to_string(),
                 status: Status::InProgress,
@@ -754,7 +760,7 @@ mod tests {
             action,
             Some(Action::SaveTask {
                 task_id: task.id,
-                project_id,
+                version_id: repo.default_version_id(project_id).unwrap(),
                 name: "AuthV".to_string(),
                 description: "".to_string(),
                 status: Status::Todo,
