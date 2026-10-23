@@ -14,6 +14,7 @@ use crate::screens::components::confirm_dialog::ConfirmDialog;
 use crate::screens::components::fields::render_readonly_field;
 use crate::screens::components::list_navigation::move_selection;
 use crate::screens::components::popup::{centered_rect, render_popup_scaffold};
+use crate::screens::components::scroll::{ListScroll, render_scrollbar};
 use crate::screens::{Action, Screen};
 
 #[derive(Debug, Clone)]
@@ -53,6 +54,7 @@ pub struct TaskListView {
     all_tasks: Vec<Task>,
     tasks: Vec<Task>,
     selected: usize,
+    scroll: ListScroll,
     filter_status: Option<Status>,
     filter_priority: Option<Priority>,
     mode: TaskListMode,
@@ -64,6 +66,7 @@ impl TaskListView {
             all_tasks: Vec::new(),
             tasks: Vec::new(),
             selected: 0,
+            scroll: ListScroll::new(),
             filter_status: None,
             filter_priority: None,
             mode: TaskListMode::Browsing,
@@ -280,16 +283,22 @@ impl TaskListView {
             return;
         }
 
+        // Rows that fit below the top border and the header row.
+        let row_height = area.height.saturating_sub(3) as usize;
+        let range = self
+            .scroll
+            .visible_range(self.tasks.len(), self.selected, row_height);
+
         let header = Row::new(vec!["Name", "Status", "Priority"]).style(
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         );
-        let rows: Vec<Row> = self
-            .tasks
+        let rows: Vec<Row> = self.tasks[range.clone()]
             .iter()
             .enumerate()
-            .map(|(i, task)| {
+            .map(|(offset, task)| {
+                let i = range.start + offset;
                 let style = if i == self.selected {
                     Style::default().add_modifier(Modifier::REVERSED)
                 } else {
@@ -314,6 +323,12 @@ impl TaskListView {
             .header(header)
             .block(Block::default().title(title).borders(Borders::ALL));
         frame.render_widget(table, area);
+
+        // Scrollbar on the right border, aligned with the data rows.
+        if row_height > 0 && area.width > 0 {
+            let track = Rect::new(area.x + area.width - 1, area.y + 2, 1, row_height as u16);
+            render_scrollbar(frame, track, self.tasks.len(), row_height, range.start);
+        }
     }
 }
 
@@ -391,6 +406,80 @@ mod tests {
             priority: Priority::Low,
             created_at: String::new(),
         }
+    }
+
+    fn render_view(view: &TaskListView, width: u16, height: u16) -> String {
+        use crate::screens::test_utils::buffer_to_string;
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| view.render(frame, frame.area()))
+            .unwrap();
+        buffer_to_string(terminal.backend().buffer())
+    }
+
+    fn numbered_tasks(count: usize) -> Vec<Task> {
+        (0..count)
+            .map(|i| task(&format!("Task{i:02}"), Status::Todo))
+            .collect()
+    }
+
+    #[test]
+    fn selected_row_stays_visible_when_list_overflows() {
+        let repo = StubRepository::default();
+        let mut view = TaskListView::new();
+        view.set_tasks(numbered_tasks(30));
+
+        // Height 13 => 10 data rows (border + header + border take 3).
+        let before = render_view(&view, 40, 13);
+        assert!(before.contains("Task00"));
+        assert!(!before.contains("Task10"));
+
+        for _ in 0..12 {
+            view.handle_key(KeyCode::Down, 1, &repo);
+        }
+        let after = render_view(&view, 40, 13);
+        assert_eq!(view.selected(), 12);
+        assert!(after.contains("Task12"), "selection not visible:\n{after}");
+        assert!(
+            !after.contains("Task00"),
+            "top row should have scrolled out:\n{after}"
+        );
+    }
+
+    #[test]
+    fn jumping_to_last_task_renders_the_tail_of_the_list() {
+        let repo = StubRepository::default();
+        let mut view = TaskListView::new();
+        view.set_tasks(numbered_tasks(30));
+        view.set_selected(29);
+        view.handle_key(KeyCode::Down, 1, &repo); // clamped at last task
+        let rendered = render_view(&view, 40, 13);
+        assert!(rendered.contains("Task29"));
+        assert!(!rendered.contains("Task09"));
+    }
+
+    #[test]
+    fn moving_up_inside_view_keeps_rows_in_place() {
+        let repo = StubRepository::default();
+        let mut view = TaskListView::new();
+        view.set_tasks(numbered_tasks(30));
+        for _ in 0..15 {
+            view.handle_key(KeyCode::Down, 1, &repo);
+        }
+        let before = render_view(&view, 40, 13);
+        view.handle_key(KeyCode::Up, 1, &repo);
+        let after = render_view(&view, 40, 13);
+        assert!(before.contains("Task06") && after.contains("Task06"));
+        assert!(after.contains("Task14"));
+    }
+
+    #[test]
+    fn short_list_renders_without_scrolling() {
+        let mut view = TaskListView::new();
+        view.set_tasks(numbered_tasks(3));
+        let rendered = render_view(&view, 40, 13);
+        assert!(rendered.contains("Task00") && rendered.contains("Task02"));
     }
 
     #[test]
