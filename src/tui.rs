@@ -317,12 +317,33 @@ mod tests {
         let repo = Arc::new(StubRepository::default());
         let project = repo.create_project("Alpha", "First project").unwrap();
         let project_id = project.id.unwrap();
-        repo.create_task(project_id, "Task 1", "", Status::Todo, Priority::Low)
-            .unwrap();
-        repo.create_task(project_id, "Task 2", "", Status::Todo, Priority::Low)
-            .unwrap();
-        repo.create_task(project_id, "Task 3", "", Status::Done, Priority::Low)
-            .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "Task 1",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "Task 2",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "Task 3",
+            "",
+            Status::Done,
+            Priority::Low,
+        )
+        .unwrap();
         let mut app = App::new(repo.clone());
         app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id }));
         app.dispatch(Action::Navigate(Screen::ProjectList));
@@ -379,8 +400,15 @@ mod tests {
         let (repo, mut app) = setup_app_with_project();
         app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id: 1 }));
 
-        repo.create_task(1, "Auto", "", Status::Todo, Priority::Low)
-            .unwrap();
+        repo.create_task(
+            1,
+            repo.default_version_id(1).unwrap(),
+            "Auto",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
 
         let events: Vec<Option<Event>> =
             std::iter::repeat_n(None, auto_refresh_ticks(AUTO_REFRESH_INTERVAL))
@@ -404,8 +432,15 @@ mod tests {
     fn dashboard_auto_refresh_pauses_while_task_list_dialog_is_open() {
         let (repo, mut app) = setup_app_with_project();
         app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id: 1 }));
-        repo.create_task(1, "Dialog task", "", Status::Todo, Priority::Low)
-            .unwrap();
+        repo.create_task(
+            1,
+            repo.default_version_id(1).unwrap(),
+            "Dialog task",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
 
         let open_filter_events: Vec<Option<Event>> = std::iter::once(Some(char_event('f')))
             .chain(std::iter::repeat_n(

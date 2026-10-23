@@ -1,6 +1,6 @@
 ---
 source: src/mcp/server.rs
-assertion_line: 785
+assertion_line: 848
 expression: result
 ---
 {
@@ -8,7 +8,7 @@ expression: result
     {
       "uri": "pmp://projects/1/tasks",
       "mimeType": "application/json",
-      "text": "[\n  {\n    \"id\": 3,\n    \"project_id\": 1,\n    \"version_id\": 0,\n    \"name\": \"High task\",\n    \"description\": \"\",\n    \"status\": \"in_progress\",\n    \"priority\": 3,\n    \"created_at\": \"now\"\n  },\n  {\n    \"id\": 2,\n    \"project_id\": 1,\n    \"version_id\": 0,\n    \"name\": \"Low task\",\n    \"description\": \"\",\n    \"status\": \"todo\",\n    \"priority\": 1,\n    \"created_at\": \"now\"\n  }\n]"
+      "text": "[\n  {\n    \"id\": 4,\n    \"project_id\": 1,\n    \"version_id\": 2,\n    \"name\": \"High task\",\n    \"description\": \"\",\n    \"status\": \"in_progress\",\n    \"priority\": 3,\n    \"created_at\": \"now\"\n  },\n  {\n    \"id\": 3,\n    \"project_id\": 1,\n    \"version_id\": 2,\n    \"name\": \"Low task\",\n    \"description\": \"\",\n    \"status\": \"todo\",\n    \"priority\": 1,\n    \"created_at\": \"now\"\n  }\n]"
     }
   ]
 }

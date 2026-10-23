@@ -201,8 +201,10 @@ impl PmpServer {
             let description =
                 compose_description(&params.context, &params.requirements, &params.benefits);
             let priority = get_priority(params.priority.as_deref().unwrap_or("Medium"));
+            let version_id = repo.default_version_id(params.project_id)?;
             repo.create_task(
                 params.project_id,
+                version_id,
                 &params.name,
                 &description,
                 Status::Todo,
@@ -591,6 +593,7 @@ mod tests {
     use crate::domain::error::AppError;
     use crate::domain::project::Project;
     use crate::domain::task::{Priority, Status, Task, TaskNote};
+    use crate::domain::version::{Version, VersionStatus};
 
     use super::{
         AddTaskNoteParams, CreateTaskParams, ListTasksParams, NoteIdParams, PmpServer,
@@ -606,12 +609,27 @@ mod tests {
         let (server, repo) = server();
         let project = repo.create_project("Alpha", "").unwrap();
         let pid = project.id.unwrap();
-        repo.create_task(pid, "Low Todo", "", Status::Todo, Priority::Low)
-            .unwrap();
-        repo.create_task(pid, "High Done", "", Status::Done, Priority::High)
-            .unwrap();
         repo.create_task(
             pid,
+            repo.default_version_id(pid).unwrap(),
+            "Low Todo",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
+        repo.create_task(
+            pid,
+            repo.default_version_id(pid).unwrap(),
+            "High Done",
+            "",
+            Status::Done,
+            Priority::High,
+        )
+        .unwrap();
+        repo.create_task(
+            pid,
+            repo.default_version_id(pid).unwrap(),
             "Medium InProgress",
             "",
             Status::InProgress,
@@ -656,12 +674,43 @@ mod tests {
         fn create_task(
             &self,
             _: i64,
+            _: i64,
             _: &str,
             _: &str,
             _: Status,
             _: Priority,
         ) -> Result<Task, AppError> {
             unimplemented!()
+        }
+
+        fn list_versions_by_project(&self, _: i64) -> Result<Vec<Version>, AppError> {
+            Err(AppError::DbError(rusqlite::Error::InvalidQuery))
+        }
+
+        fn create_version(&self, _: i64, _: &str, _: &str) -> Result<Version, AppError> {
+            unimplemented!()
+        }
+
+        fn get_version(&self, _: i64) -> Result<Version, AppError> {
+            unimplemented!()
+        }
+
+        fn update_version(
+            &self,
+            _: i64,
+            _: &str,
+            _: &str,
+            _: VersionStatus,
+        ) -> Result<Version, AppError> {
+            unimplemented!()
+        }
+
+        fn delete_version(&self, _: i64) -> Result<(), AppError> {
+            unimplemented!()
+        }
+
+        fn list_tasks_by_version(&self, _: i64) -> Result<Vec<Task>, AppError> {
+            Err(AppError::DbError(rusqlite::Error::InvalidQuery))
         }
 
         fn get_task(&self, _: i64) -> Result<Task, AppError> {
@@ -774,10 +823,24 @@ mod tests {
         let (server, repo) = server();
         let project = repo.create_project("Alpha", "First project").unwrap();
         let pid = project.id.unwrap();
-        repo.create_task(pid, "Low task", "", Status::Todo, Priority::Low)
-            .unwrap();
-        repo.create_task(pid, "High task", "", Status::InProgress, Priority::High)
-            .unwrap();
+        repo.create_task(
+            pid,
+            repo.default_version_id(pid).unwrap(),
+            "Low task",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
+        repo.create_task(
+            pid,
+            repo.default_version_id(pid).unwrap(),
+            "High task",
+            "",
+            Status::InProgress,
+            Priority::High,
+        )
+        .unwrap();
         let result = server
             .read_resource(&format!("pmp://projects/{}/tasks", pid))
             .await
@@ -942,10 +1005,24 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let pid = project.id.unwrap();
         let task_a = repo
-            .create_task(pid, "Task A", "", Status::Todo, Priority::High)
+            .create_task(
+                pid,
+                repo.default_version_id(pid).unwrap(),
+                "Task A",
+                "",
+                Status::Todo,
+                Priority::High,
+            )
             .unwrap();
         let task_b = repo
-            .create_task(pid, "Task B", "", Status::Todo, Priority::High)
+            .create_task(
+                pid,
+                repo.default_version_id(pid).unwrap(),
+                "Task B",
+                "",
+                Status::Todo,
+                Priority::High,
+            )
             .unwrap();
         let task_a_id = task_a.id.unwrap();
         let task_b_id = task_b.id.unwrap();
@@ -969,10 +1046,24 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let pid = project.id.unwrap();
         let task_a = repo
-            .create_task(pid, "Task A", "", Status::Done, Priority::High)
+            .create_task(
+                pid,
+                repo.default_version_id(pid).unwrap(),
+                "Task A",
+                "",
+                Status::Done,
+                Priority::High,
+            )
             .unwrap();
         let task_b = repo
-            .create_task(pid, "Task B", "", Status::Todo, Priority::High)
+            .create_task(
+                pid,
+                repo.default_version_id(pid).unwrap(),
+                "Task B",
+                "",
+                Status::Todo,
+                Priority::High,
+            )
             .unwrap();
         let task_a_id = task_a.id.unwrap();
         let task_b_id = task_b.id.unwrap();
@@ -1121,10 +1212,24 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let pid = project.id.unwrap();
         let dependency = repo
-            .create_task(pid, "Dependency", "", Status::Done, Priority::Medium)
+            .create_task(
+                pid,
+                repo.default_version_id(pid).unwrap(),
+                "Dependency",
+                "",
+                Status::Done,
+                Priority::Medium,
+            )
             .unwrap();
         let task = repo
-            .create_task(pid, "Task", "", Status::Todo, Priority::Medium)
+            .create_task(
+                pid,
+                repo.default_version_id(pid).unwrap(),
+                "Task",
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
             .unwrap();
         let dependency_id = dependency.id.unwrap();
         let task_id = task.id.unwrap();
@@ -1171,13 +1276,34 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let pid = project.id.unwrap();
         let a = repo
-            .create_task(pid, "A", "", Status::Todo, Priority::Medium)
+            .create_task(
+                pid,
+                repo.default_version_id(pid).unwrap(),
+                "A",
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
             .unwrap();
         let b = repo
-            .create_task(pid, "B", "", Status::Todo, Priority::Medium)
+            .create_task(
+                pid,
+                repo.default_version_id(pid).unwrap(),
+                "B",
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
             .unwrap();
         let c = repo
-            .create_task(pid, "C", "", Status::Todo, Priority::Medium)
+            .create_task(
+                pid,
+                repo.default_version_id(pid).unwrap(),
+                "C",
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
             .unwrap();
         let a_id = a.id.unwrap();
         let b_id = b.id.unwrap();
@@ -1272,10 +1398,24 @@ mod tests {
         let repo = Arc::new(StubRepository::default());
         let project = repo.create_project("Alpha", "").unwrap();
         let pid = project.id.unwrap();
-        repo.create_task(pid, "Low task", "", Status::Todo, Priority::Low)
-            .unwrap();
-        repo.create_task(pid, "High task", "", Status::Done, Priority::High)
-            .unwrap();
+        repo.create_task(
+            pid,
+            repo.default_version_id(pid).unwrap(),
+            "Low task",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
+        repo.create_task(
+            pid,
+            repo.default_version_id(pid).unwrap(),
+            "High task",
+            "",
+            Status::Done,
+            Priority::High,
+        )
+        .unwrap();
 
         let (client, server_stream) = tokio::io::duplex(1024);
         let server = tokio::spawn(async move {
@@ -1393,7 +1533,14 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let pid = project.id.unwrap();
         let task = repo
-            .create_task(pid, "Task", "", Status::Todo, Priority::Medium)
+            .create_task(
+                pid,
+                repo.default_version_id(pid).unwrap(),
+                "Task",
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
             .unwrap();
         let task_id = task.id.unwrap();
         repo.add_task_note(task_id, "first note").unwrap();
@@ -1427,7 +1574,14 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let pid = project.id.unwrap();
         let task = repo
-            .create_task(pid, "Task", "", Status::Todo, Priority::Medium)
+            .create_task(
+                pid,
+                repo.default_version_id(pid).unwrap(),
+                "Task",
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
             .unwrap();
         let task_id = task.id.unwrap();
 
@@ -1455,7 +1609,14 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let pid = project.id.unwrap();
         let task = repo
-            .create_task(pid, "Task", "", Status::Todo, Priority::Medium)
+            .create_task(
+                pid,
+                repo.default_version_id(pid).unwrap(),
+                "Task",
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
             .unwrap();
         let task_id = task.id.unwrap();
 
@@ -1491,7 +1652,14 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let pid = project.id.unwrap();
         let task = repo
-            .create_task(pid, "Task", "", Status::Todo, Priority::Medium)
+            .create_task(
+                pid,
+                repo.default_version_id(pid).unwrap(),
+                "Task",
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
             .unwrap();
         let task_id = task.id.unwrap();
         let note = repo.add_task_note(task_id, "to delete").unwrap();

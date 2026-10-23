@@ -161,16 +161,51 @@ mod tests {
         let repo = Arc::new(StubRepository::default());
         let project = repo.create_project("Alpha", "First project").unwrap();
         let project_id = project.id.unwrap();
-        repo.create_task(project_id, "T1", "", Status::Todo, Priority::Low)
-            .unwrap();
-        repo.create_task(project_id, "T2", "", Status::Todo, Priority::Medium)
-            .unwrap();
-        repo.create_task(project_id, "T3", "", Status::Todo, Priority::High)
-            .unwrap();
-        repo.create_task(project_id, "T4", "", Status::InProgress, Priority::Low)
-            .unwrap();
-        repo.create_task(project_id, "T5", "", Status::Done, Priority::Medium)
-            .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "T1",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "T2",
+            "",
+            Status::Todo,
+            Priority::Medium,
+        )
+        .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "T3",
+            "",
+            Status::Todo,
+            Priority::High,
+        )
+        .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "T4",
+            "",
+            Status::InProgress,
+            Priority::Low,
+        )
+        .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "T5",
+            "",
+            Status::Done,
+            Priority::Medium,
+        )
+        .unwrap();
         let mut screen = TaskListScreen::new(repo.clone());
         screen.set_project_id(project_id);
         screen.init().unwrap();
@@ -215,8 +250,15 @@ mod tests {
         let repo = Arc::new(StubRepository::default());
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
-        repo.create_task(project_id, "Only", "", Status::Todo, Priority::Low)
-            .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "Only",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
         let mut screen = TaskListScreen::new(repo);
         screen.set_project_id(project_id);
         screen.view.set_selected(5);
@@ -457,7 +499,14 @@ mod tests {
         let (repo, mut screen, _id) = setup_with_tasks();
         let task_id = screen.tasks()[screen.selected_task()].id.unwrap();
         let dep = repo
-            .create_task(screen.project_id, "Dep", "", Status::Todo, Priority::Low)
+            .create_task(
+                screen.project_id,
+                repo.default_version_id(screen.project_id).unwrap(),
+                "Dep",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         repo.add_dependency(dep.id.unwrap(), task_id).unwrap();
 

@@ -57,6 +57,38 @@ impl VersionStatus {
     }
 }
 
+/// Name of the version every project receives on creation (the same legacy
+/// bucket the V3 migration creates for existing projects).
+pub const DEFAULT_VERSION_NAME: &str = "v0";
+
+/// Name suggested when a project has no valid semver version yet.
+pub const FIRST_VERSION_NAME: &str = "v0.1.0";
+
+/// Rejects names that are empty or only whitespace.
+pub fn validate_version_name(name: &str) -> Result<(), AppError> {
+    if name.trim().is_empty() {
+        return Err(AppError::Validation(
+            "version name cannot be empty".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Suggests the next version name: the highest valid semver name among
+/// `existing` with its minor bumped (`v1.2.3` -> `v1.3.0`). Names that are not
+/// semver (such as the legacy `v0`) are ignored; with none valid, returns
+/// `v0.1.0`. The optional `v` prefix is accepted when parsing.
+pub fn next_version_name<'a>(existing: impl IntoIterator<Item = &'a str>) -> String {
+    let highest = existing
+        .into_iter()
+        .filter_map(|name| semver::Version::parse(name.strip_prefix('v').unwrap_or(name)).ok())
+        .max();
+    match highest {
+        Some(v) => format!("v{}.{}.0", v.major, v.minor + 1),
+        None => FIRST_VERSION_NAME.to_string(),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Version {
     pub id: Option<i64>,
@@ -180,6 +212,34 @@ mod tests {
     fn version_status_style_returns_colored_style() {
         assert_eq!(VersionStatus::Open.style().fg, Some(Color::Blue));
         assert_eq!(VersionStatus::Released.style().fg, Some(Color::Green));
+    }
+
+    #[test]
+    fn validate_version_name_rejects_blank() {
+        assert!(matches!(
+            validate_version_name(""),
+            Err(AppError::Validation(_))
+        ));
+        assert!(matches!(
+            validate_version_name("   "),
+            Err(AppError::Validation(_))
+        ));
+        assert!(validate_version_name("v1.0.0").is_ok());
+    }
+
+    #[test]
+    fn next_version_name_defaults_when_no_semver_exists() {
+        assert_eq!(next_version_name([]), "v0.1.0");
+        assert_eq!(next_version_name([DEFAULT_VERSION_NAME]), "v0.1.0");
+        assert_eq!(next_version_name(["release-candidate"]), "v0.1.0");
+    }
+
+    #[test]
+    fn next_version_name_bumps_minor_of_highest_version() {
+        assert_eq!(next_version_name(["v0.1.0"]), "v0.2.0");
+        assert_eq!(next_version_name(["v0.1.0", "v1.2.3", "v0.9.0"]), "v1.3.0");
+        assert_eq!(next_version_name(["1.4.0"]), "v1.5.0");
+        assert_eq!(next_version_name(["v0", "v2.0.0"]), "v2.1.0");
     }
 
     #[test]

@@ -177,10 +177,24 @@ pub mod tests {
         let project = repo.create_project("P", "").unwrap();
         let project_id = project.id.unwrap();
         let a = repo
-            .create_task(project_id, "A", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "A",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let b = repo
-            .create_task(project_id, "B", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "B",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let a_id = a.id.unwrap();
         let b_id = b.id.unwrap();
@@ -199,13 +213,34 @@ pub mod tests {
         let project = repo.create_project("P", "").unwrap();
         let project_id = project.id.unwrap();
         let a = repo
-            .create_task(project_id, "A", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "A",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let b = repo
-            .create_task(project_id, "B", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "B",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let c = repo
-            .create_task(project_id, "C", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "C",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let a_id = a.id.unwrap();
         let b_id = b.id.unwrap();
@@ -225,13 +260,34 @@ pub mod tests {
         let project = repo.create_project("P", "").unwrap();
         let project_id = project.id.unwrap();
         let low = repo
-            .create_task(project_id, "Low", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Low",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let high_old = repo
-            .create_task(project_id, "HighOld", "", Status::Todo, Priority::High)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "HighOld",
+                "",
+                Status::Todo,
+                Priority::High,
+            )
             .unwrap();
         let high_new = repo
-            .create_task(project_id, "HighNew", "", Status::Todo, Priority::High)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "HighNew",
+                "",
+                Status::Todo,
+                Priority::High,
+            )
             .unwrap();
 
         {

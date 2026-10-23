@@ -233,10 +233,19 @@ impl App {
                     Some(id) => self
                         .repo
                         .update_task(id, &name, &description, status, priority),
-                    None => {
-                        self.repo
-                            .create_task(project_id, &name, &description, status, priority)
-                    }
+                    None => self
+                        .repo
+                        .default_version_id(project_id)
+                        .and_then(|version_id| {
+                            self.repo.create_task(
+                                project_id,
+                                version_id,
+                                &name,
+                                &description,
+                                status,
+                                priority,
+                            )
+                        }),
                 };
                 match result {
                     Ok(task) => {
@@ -561,10 +570,24 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
         let a = repo
-            .create_task(project_id, "A", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "A",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let b = repo
-            .create_task(project_id, "B", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "B",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         repo.add_dependency(a.id.unwrap(), b.id.unwrap()).unwrap();
 
@@ -590,7 +613,14 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
         let a = repo
-            .create_task(project_id, "A", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "A",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
 
         // UpdateTaskStatus is dispatched from the dashboard (Tab in TaskList mode).
@@ -611,7 +641,14 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
         let task = repo
-            .create_task(project_id, "T1", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "T1",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let task_id = task.id.unwrap();
 
@@ -685,7 +722,14 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
         let task = repo
-            .create_task(project_id, "Old", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Old",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let task_id = task.id.unwrap();
 
@@ -721,10 +765,24 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
         let a = repo
-            .create_task(project_id, "A", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "A",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let b = repo
-            .create_task(project_id, "B", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "B",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let a_id = a.id.unwrap();
         let b_id = b.id.unwrap();
@@ -755,7 +813,14 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
         let task = repo
-            .create_task(project_id, "T", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "T",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let task_id = task.id.unwrap();
         app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id }));
@@ -775,7 +840,14 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
         let task = repo
-            .create_task(project_id, "T1", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "T1",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let task_id = task.id.unwrap();
 
@@ -807,7 +879,14 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
         let task = repo
-            .create_task(project_id, "T", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "T",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let task_id = task.id.unwrap();
 
@@ -828,13 +907,34 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
         let t1 = repo
-            .create_task(project_id, "T1", "", Status::Todo, Priority::High)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "T1",
+                "",
+                Status::Todo,
+                Priority::High,
+            )
             .unwrap();
         let t2 = repo
-            .create_task(project_id, "T2", "", Status::Todo, Priority::High)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "T2",
+                "",
+                Status::Todo,
+                Priority::High,
+            )
             .unwrap();
         let t3 = repo
-            .create_task(project_id, "T3", "", Status::Todo, Priority::High)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "T3",
+                "",
+                Status::Todo,
+                Priority::High,
+            )
             .unwrap();
         app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id }));
         app.components.dashboard.set_selected_task(2);
@@ -857,8 +957,15 @@ mod tests {
         let (repo, mut app) = setup_app();
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
-        repo.create_task(project_id, "T1", "", Status::Todo, Priority::Low)
-            .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "T1",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
 
         app.dispatch(Action::Navigate(Screen::TaskList { project_id }));
 
@@ -906,8 +1013,15 @@ mod tests {
         app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id }));
         assert!(app.components.dashboard.tasks().is_empty());
 
-        repo.create_task(project_id, "T1", "", Status::Todo, Priority::Low)
-            .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "T1",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
         app.dispatch(Action::Refresh);
 
         assert_eq!(app.components.dashboard.tasks().len(), 1);
@@ -922,8 +1036,15 @@ mod tests {
         app.dispatch(Action::Navigate(Screen::TaskList { project_id }));
         assert!(app.components.task_list.tasks().is_empty());
 
-        repo.create_task(project_id, "T1", "", Status::Todo, Priority::Low)
-            .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "T1",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
         app.dispatch(Action::Refresh);
 
         assert_eq!(app.components.task_list.tasks().len(), 1);
@@ -936,7 +1057,14 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
         let task = repo
-            .create_task(project_id, "T1", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "T1",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let task_id = task.id.unwrap();
 
@@ -962,7 +1090,14 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
         let task = repo
-            .create_task(project_id, "T1", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "T1",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let task_id = task.id.unwrap();
 
@@ -981,7 +1116,14 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
         let task = repo
-            .create_task(project_id, "T1", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "T1",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let task_id = task.id.unwrap();
 
@@ -1027,8 +1169,15 @@ mod tests {
         assert!(before.contains("Filter Tasks"));
 
         // Create a new task in the repo while the dialog is open.
-        repo.create_task(project_id, "NewTask", "", Status::Todo, Priority::Low)
-            .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "NewTask",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
 
         // Refresh must preserve the dialog and reload the data.
         app.dispatch(Action::Refresh);
@@ -1050,7 +1199,14 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
         let task = repo
-            .create_task(project_id, "Task", "desc", Status::Todo, Priority::Medium)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Task",
+                "desc",
+                Status::Todo,
+                Priority::Medium,
+            )
             .unwrap();
         let task_id = task.id.unwrap();
 

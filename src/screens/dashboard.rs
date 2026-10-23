@@ -236,16 +236,51 @@ mod tests {
         let repo = Arc::new(StubRepository::default());
         let project = repo.create_project("Alpha", "First project").unwrap();
         let project_id = project.id.unwrap();
-        repo.create_task(project_id, "T1", "", Status::Todo, Priority::Low)
-            .unwrap();
-        repo.create_task(project_id, "T2", "", Status::Todo, Priority::Medium)
-            .unwrap();
-        repo.create_task(project_id, "T3", "", Status::Todo, Priority::High)
-            .unwrap();
-        repo.create_task(project_id, "T4", "", Status::InProgress, Priority::Low)
-            .unwrap();
-        repo.create_task(project_id, "T5", "", Status::Done, Priority::Medium)
-            .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "T1",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "T2",
+            "",
+            Status::Todo,
+            Priority::Medium,
+        )
+        .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "T3",
+            "",
+            Status::Todo,
+            Priority::High,
+        )
+        .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "T4",
+            "",
+            Status::InProgress,
+            Priority::Low,
+        )
+        .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "T5",
+            "",
+            Status::Done,
+            Priority::Medium,
+        )
+        .unwrap();
         let mut dashboard = ProjectDashboard::new(repo.clone());
         dashboard.set_project_id(project_id);
         dashboard.init().unwrap();
@@ -323,10 +358,24 @@ mod tests {
         let repo = Arc::new(StubRepository::default());
         let project = repo.create_project("Done", "All done").unwrap();
         let project_id = project.id.unwrap();
-        repo.create_task(project_id, "D1", "", Status::Done, Priority::Low)
-            .unwrap();
-        repo.create_task(project_id, "D2", "", Status::Done, Priority::Medium)
-            .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "D1",
+            "",
+            Status::Done,
+            Priority::Low,
+        )
+        .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "D2",
+            "",
+            Status::Done,
+            Priority::Medium,
+        )
+        .unwrap();
         let mut dashboard = ProjectDashboard::new(repo.clone());
         dashboard.set_project_id(project_id);
         dashboard.init().unwrap();
