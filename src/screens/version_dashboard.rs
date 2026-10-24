@@ -564,6 +564,42 @@ mod tests {
     }
 
     #[test]
+    fn long_task_list_scrolls_to_selected_task() {
+        let repo = Arc::new(StubRepository::default());
+        let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version_id = repo.default_version_id(project_id).unwrap();
+        for i in 0..30 {
+            repo.create_task(
+                project_id,
+                version_id,
+                &format!("Task{i:02}"),
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
+            .unwrap();
+        }
+        let mut screen = VersionDashboard::new(repo.clone());
+        screen.set_ids(project_id, version_id);
+        screen.init().unwrap();
+
+        let before = render_to_string(&screen, 60, 16);
+        assert!(before.contains("Task00"));
+        assert!(!before.contains("Task29"));
+
+        for _ in 0..29 {
+            screen.handle_event(&key_event(KeyCode::Down));
+        }
+        assert_eq!(screen.selected_task(), 29);
+        let after = render_to_string(&screen, 60, 16);
+        assert!(after.contains("Task29"), "selection not visible:\n{after}");
+        assert!(
+            !after.contains("Task00"),
+            "top row should have scrolled out:\n{after}"
+        );
+    }
+
+    #[test]
     fn version_dashboard_with_tasks_snapshot() {
         let (_repo, screen, _id) = setup_with_tasks();
         insta::assert_snapshot!(render_to_string(&screen, 60, 24));

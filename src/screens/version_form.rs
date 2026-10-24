@@ -339,6 +339,23 @@ mod tests {
     }
 
     #[test]
+    fn long_description_keeps_cursor_line_visible() {
+        let mut form = form_for_create();
+        form.active_field = DESCRIPTION;
+        for i in 0..20 {
+            for c in format!("line{i:02}").chars() {
+                form.handle_event(&key_event(KeyCode::Char(c)));
+            }
+            if i < 19 {
+                form.handle_event(&key_event(KeyCode::Enter));
+            }
+        }
+        let text = render_to_string(&form, 60, 24);
+        assert!(text.contains("line19"), "cursor line not visible:\n{text}");
+        assert!(!text.contains("line00"), "textarea did not scroll:\n{text}");
+    }
+
+    #[test]
     fn submit_emits_save_version_for_create() {
         let mut form = form_for_create();
         let project_id = form.project_id;

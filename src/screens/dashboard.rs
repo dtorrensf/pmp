@@ -20,7 +20,9 @@ use crate::screens::components::confirm_dialog::ConfirmDialog;
 use crate::screens::components::keys::key;
 use crate::screens::components::list_navigation::move_selection;
 use crate::screens::components::progress::completion_percentage;
-use crate::screens::components::scroll::{TextScroll, wrapped_line_count};
+use crate::screens::components::scroll::{
+    ListScroll, TextScroll, render_scrollbar, wrapped_line_count,
+};
 use crate::screens::{AUTO_REFRESH_INTERVAL, Action, Component, Screen};
 
 /// One row of the versions list: the version plus its task progress.
@@ -56,6 +58,7 @@ pub struct ProjectDashboard {
     selected: usize,
     confirm_delete: Option<ConfirmDialog>,
     description_scroll: TextScroll,
+    versions_scroll: ListScroll,
 }
 
 impl ProjectDashboard {
@@ -85,6 +88,7 @@ impl ProjectDashboard {
             selected: 0,
             confirm_delete: None,
             description_scroll: TextScroll::new(),
+            versions_scroll: ListScroll::new(),
         }
     }
 
@@ -344,11 +348,16 @@ impl ProjectDashboard {
             frame.render_widget(paragraph, area);
             return;
         }
-        let items: Vec<ListItem> = self
-            .versions
+        // Rows that fit inside the top and bottom borders.
+        let row_height = area.height.saturating_sub(2) as usize;
+        let range =
+            self.versions_scroll
+                .visible_range(self.versions.len(), self.selected, row_height);
+        let items: Vec<ListItem> = self.versions[range.clone()]
             .iter()
             .enumerate()
-            .map(|(i, row)| {
+            .map(|(offset, row)| {
+                let i = range.start + offset;
                 let style = if i == self.selected {
                     Style::default().add_modifier(Modifier::REVERSED)
                 } else {
@@ -358,6 +367,12 @@ impl ProjectDashboard {
             })
             .collect();
         frame.render_widget(List::new(items).block(block), area);
+
+        // Scrollbar on the right border, aligned with the data rows.
+        if row_height > 0 && area.width > 0 {
+            let track = Rect::new(area.x + area.width - 1, area.y + 1, 1, row_height as u16);
+            render_scrollbar(frame, track, self.versions.len(), row_height, range.start);
+        }
     }
 }
 
@@ -610,6 +625,38 @@ mod tests {
     fn dashboard_with_versions_snapshot() {
         let (_repo, dashboard, _id) = setup_with_tasks();
         insta::assert_snapshot!(render_to_string(&dashboard, 70, 30));
+    }
+
+    #[test]
+    fn long_versions_list_scrolls_to_selected_version() {
+        let repo = Arc::new(StubRepository::default());
+        let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        for i in 0..12 {
+            repo.create_version(project_id, &format!("Ver{i:02}"), "")
+                .unwrap();
+        }
+        let mut dashboard = ProjectDashboard::new(repo);
+        dashboard.set_project_id(project_id);
+        dashboard.init().unwrap();
+
+        let first = dashboard.versions()[0].version.name.clone();
+        let last_index = dashboard.versions().len() - 1;
+        let last = dashboard.versions()[last_index].version.name.clone();
+
+        let before = render_to_string(&dashboard, 60, 24);
+        assert!(before.contains(&first));
+        assert!(!before.contains(&last));
+
+        for _ in 0..last_index {
+            dashboard.handle_event(&key_event(KeyCode::Down));
+        }
+        assert_eq!(dashboard.selected_version(), last_index);
+        let after = render_to_string(&dashboard, 60, 24);
+        assert!(after.contains(&last), "selection not visible:\n{after}");
+        assert!(
+            !after.contains(&first),
+            "first version should have scrolled out:\n{after}"
+        );
     }
 
     #[test]
