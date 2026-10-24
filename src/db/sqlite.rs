@@ -10,6 +10,7 @@ use crate::db::repository::Repository;
 use crate::domain::error::AppError;
 use crate::domain::project::Project;
 use crate::domain::task::{Priority, Status, Task, TaskNote};
+use crate::domain::version::{self, Version, VersionStatus};
 
 mod embedded {
     use refinery::embed_migrations;
@@ -69,6 +70,11 @@ impl Repository for SqliteRepository {
             [name, description],
         )?;
         let id = conn.last_insert_rowid();
+        // Every project starts with the default version, as the V3 backfill does.
+        conn.execute(
+            "INSERT INTO versions (project_id, name) VALUES (?1, ?2)",
+            params![id, version::DEFAULT_VERSION_NAME],
+        )?;
         drop(conn);
         self.get_project(id)
     }
@@ -99,7 +105,7 @@ impl Repository for SqliteRepository {
     fn list_tasks_by_project(&self, project_id: i64) -> Result<Vec<Task>, AppError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, project_id, name, description, status, priority, created_at
+            "SELECT id, project_id, name, description, status, priority, created_at, version_id
              FROM tasks WHERE project_id = ?1
              ORDER BY CASE WHEN status = 'done' THEN 1 ELSE 0 END, priority DESC, created_at DESC",
         )?;
@@ -109,20 +115,124 @@ impl Repository for SqliteRepository {
         Ok(tasks)
     }
 
+    fn list_versions_by_project(&self, project_id: i64) -> Result<Vec<Version>, AppError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, project_id, name, description, status, created_at
+             FROM versions WHERE project_id = ?1
+             ORDER BY CASE WHEN status = 'released' THEN 1 ELSE 0 END, id DESC",
+        )?;
+        let versions = stmt
+            .query_map([project_id], version_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(versions)
+    }
+
+    fn create_version(
+        &self,
+        project_id: i64,
+        name: &str,
+        description: &str,
+    ) -> Result<Version, AppError> {
+        version::validate_version_name(name)?;
+        self.get_project(project_id)?;
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO versions (project_id, name, description) VALUES (?1, ?2, ?3)",
+            params![project_id, name, description],
+        )
+        .map_err(|e| version_write_error(e, name))?;
+        let id = conn.last_insert_rowid();
+        drop(conn);
+        self.get_version(id)
+    }
+
+    fn get_version(&self, id: i64) -> Result<Version, AppError> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, project_id, name, description, status, created_at
+             FROM versions WHERE id = ?1",
+            [id],
+            version_from_row,
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => AppError::NotFound,
+            _ => e.into(),
+        })
+    }
+
+    fn update_version(
+        &self,
+        id: i64,
+        name: &str,
+        description: &str,
+        status: VersionStatus,
+    ) -> Result<Version, AppError> {
+        version::validate_version_name(name)?;
+        let conn = self.conn.lock().unwrap();
+        let updated = conn
+            .execute(
+                "UPDATE versions SET name = ?1, description = ?2, status = ?3 WHERE id = ?4",
+                params![name, description, status.as_str(), id],
+            )
+            .map_err(|e| version_write_error(e, name))?;
+        drop(conn);
+        if updated == 0 {
+            return Err(AppError::NotFound);
+        }
+        self.get_version(id)
+    }
+
+    fn delete_version(&self, id: i64) -> Result<(), AppError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM versions WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    fn list_tasks_by_version(&self, version_id: i64) -> Result<Vec<Task>, AppError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, project_id, name, description, status, priority, created_at, version_id
+             FROM tasks WHERE version_id = ?1
+             ORDER BY CASE WHEN status = 'done' THEN 1 ELSE 0 END, priority DESC, created_at DESC",
+        )?;
+        let tasks = stmt
+            .query_map([version_id], task_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(tasks)
+    }
+
     fn create_task(
         &self,
         project_id: i64,
+        version_id: i64,
         name: &str,
         description: &str,
         status: Status,
         priority: Priority,
     ) -> Result<Task, AppError> {
+        let version_project: Option<i64> = self
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT project_id FROM versions WHERE id = ?1",
+                [version_id],
+                |row| row.get(0),
+            )
+            .ok();
+        if version_project != Some(project_id) {
+            return Err(AppError::Validation(
+                "version does not belong to the project".to_string(),
+            ));
+        }
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO tasks (project_id, name, description, status, priority)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO tasks (project_id, version_id, name, description, status, priority)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 project_id,
+                version_id,
                 name,
                 description,
                 status.as_str(),
@@ -137,7 +247,7 @@ impl Repository for SqliteRepository {
     fn get_task(&self, id: i64) -> Result<Task, AppError> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT id, project_id, name, description, status, priority, created_at
+            "SELECT id, project_id, name, description, status, priority, created_at, version_id
              FROM tasks WHERE id = ?1",
             [id],
             task_from_row,
@@ -180,6 +290,13 @@ impl Repository for SqliteRepository {
     fn add_dependency(&self, task_id: i64, depends_on_id: i64) -> Result<(), AppError> {
         if task_id == depends_on_id {
             return Err(AppError::DependencyCycle);
+        }
+        let task = self.get_task(task_id)?;
+        let depends_on = self.get_task(depends_on_id)?;
+        if task.version_id != depends_on.version_id {
+            return Err(AppError::Validation(
+                "dependencies must be within the same version".to_string(),
+            ));
         }
         let graph = self.load_dependency_graph()?;
         if would_create_cycle(&graph, task_id, depends_on_id) {
@@ -340,7 +457,34 @@ fn task_from_row(row: &Row) -> Result<Task, rusqlite::Error> {
             )
         })?,
         created_at: row.get(6)?,
+        version_id: row.get(7)?,
     })
+}
+
+fn version_from_row(row: &Row) -> Result<Version, rusqlite::Error> {
+    let status: String = row.get(4)?;
+    Ok(Version {
+        id: Some(row.get(0)?),
+        project_id: row.get(1)?,
+        name: row.get(2)?,
+        description: row.get(3)?,
+        status: VersionStatus::try_from_str(&status).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
+        })?,
+        created_at: row.get(5)?,
+    })
+}
+
+/// Maps a UNIQUE(project_id, name) violation to a validation error.
+fn version_write_error(err: rusqlite::Error, name: &str) -> AppError {
+    match err {
+        rusqlite::Error::SqliteFailure(ref failure, _)
+            if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+        {
+            AppError::Validation(format!("version already exists: {name}"))
+        }
+        other => other.into(),
+    }
 }
 
 fn task_note_from_row(row: &Row) -> Result<TaskNote, rusqlite::Error> {
@@ -402,6 +546,59 @@ mod tests {
     }
 
     #[test]
+    fn migrations_create_versions_and_require_task_version() {
+        let (_dir, repo) = setup();
+        let conn = repo.conn.lock().unwrap();
+        let versions: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='versions';",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(versions, 1);
+        let notnull: i64 = conn
+            .query_row(
+                "SELECT \"notnull\" FROM pragma_table_info('tasks') WHERE name='version_id';",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(notnull, 1);
+    }
+
+    #[test]
+    fn task_carries_version_id_from_database() {
+        let (_dir, repo) = setup();
+        let project = repo.create_project("P", "").unwrap();
+        let project_id = project.id.unwrap();
+        let version_id: i64 = repo
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT id FROM versions WHERE project_id = ?1 AND name = 'v0'",
+                [project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let task = repo
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "T",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
+            .unwrap();
+        let fetched = repo.get_task(task.id.unwrap()).unwrap();
+        assert_eq!(fetched.version_id, version_id);
+        let listed = repo.list_tasks_by_project(project_id).unwrap();
+        assert_eq!(listed[0].version_id, version_id);
+    }
+
+    #[test]
     fn migrations_create_task_notes_table() {
         let (_dir, repo) = setup();
         let count: i64 = repo
@@ -441,7 +638,14 @@ mod tests {
         let project_id = project.id.unwrap();
 
         let task = repo
-            .create_task(project_id, "T1", "desc", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "T1",
+                "desc",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         assert_eq!(task.name, "T1");
         assert!(task.id.is_some());
@@ -478,10 +682,24 @@ mod tests {
         let (_dir, repo) = setup();
         let project = repo.create_project("P", "").unwrap();
         let a = repo
-            .create_task(project.id.unwrap(), "A", "", Status::Todo, Priority::Low)
+            .create_task(
+                project.id.unwrap(),
+                repo.default_version_id(project.id.unwrap()).unwrap(),
+                "A",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let b = repo
-            .create_task(project.id.unwrap(), "B", "", Status::Todo, Priority::Low)
+            .create_task(
+                project.id.unwrap(),
+                repo.default_version_id(project.id.unwrap()).unwrap(),
+                "B",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let a_id = a.id.unwrap();
         let b_id = b.id.unwrap();
@@ -496,7 +714,14 @@ mod tests {
         let (_dir, repo) = setup();
         let project = repo.create_project("P", "").unwrap();
         let a = repo
-            .create_task(project.id.unwrap(), "A", "", Status::Todo, Priority::Low)
+            .create_task(
+                project.id.unwrap(),
+                repo.default_version_id(project.id.unwrap()).unwrap(),
+                "A",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let result = repo.add_dependency(a.id.unwrap(), a.id.unwrap());
         assert!(matches!(result, Err(AppError::DependencyCycle)));
@@ -507,13 +732,34 @@ mod tests {
         let (_dir, repo) = setup();
         let project = repo.create_project("P", "").unwrap();
         let a = repo
-            .create_task(project.id.unwrap(), "A", "", Status::Todo, Priority::Low)
+            .create_task(
+                project.id.unwrap(),
+                repo.default_version_id(project.id.unwrap()).unwrap(),
+                "A",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let b = repo
-            .create_task(project.id.unwrap(), "B", "", Status::Todo, Priority::Low)
+            .create_task(
+                project.id.unwrap(),
+                repo.default_version_id(project.id.unwrap()).unwrap(),
+                "B",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let c = repo
-            .create_task(project.id.unwrap(), "C", "", Status::Todo, Priority::Low)
+            .create_task(
+                project.id.unwrap(),
+                repo.default_version_id(project.id.unwrap()).unwrap(),
+                "C",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let a_id = a.id.unwrap();
         let b_id = b.id.unwrap();
@@ -529,10 +775,24 @@ mod tests {
         let (_dir, repo) = setup();
         let project = repo.create_project("P", "").unwrap();
         let a = repo
-            .create_task(project.id.unwrap(), "A", "", Status::Done, Priority::Low)
+            .create_task(
+                project.id.unwrap(),
+                repo.default_version_id(project.id.unwrap()).unwrap(),
+                "A",
+                "",
+                Status::Done,
+                Priority::Low,
+            )
             .unwrap();
         let b = repo
-            .create_task(project.id.unwrap(), "B", "", Status::Todo, Priority::Low)
+            .create_task(
+                project.id.unwrap(),
+                repo.default_version_id(project.id.unwrap()).unwrap(),
+                "B",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let a_id = a.id.unwrap();
         let b_id = b.id.unwrap();
@@ -548,7 +808,14 @@ mod tests {
         let project = repo.create_project("P", "").unwrap();
         let project_id = project.id.unwrap();
         let task = repo
-            .create_task(project_id, "T1", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "T1",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let task_id = task.id.unwrap();
 
@@ -563,10 +830,24 @@ mod tests {
         let project = repo.create_project("P", "").unwrap();
         let project_id = project.id.unwrap();
         let a = repo
-            .create_task(project_id, "A", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "A",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let b = repo
-            .create_task(project_id, "B", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "B",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let a_id = a.id.unwrap();
         let b_id = b.id.unwrap();
@@ -583,13 +864,34 @@ mod tests {
         let project = repo.create_project("P", "").unwrap();
         let project_id = project.id.unwrap();
         let a = repo
-            .create_task(project_id, "A", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "A",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let b = repo
-            .create_task(project_id, "B", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "B",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let c = repo
-            .create_task(project_id, "C", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "C",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let a_id = a.id.unwrap();
         let b_id = b.id.unwrap();
@@ -607,13 +909,34 @@ mod tests {
         let project = repo.create_project("P", "").unwrap();
         let project_id = project.id.unwrap();
         let low = repo
-            .create_task(project_id, "Low", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Low",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let high_old = repo
-            .create_task(project_id, "HighOld", "", Status::Todo, Priority::High)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "HighOld",
+                "",
+                Status::Todo,
+                Priority::High,
+            )
             .unwrap();
         let high_new = repo
-            .create_task(project_id, "HighNew", "", Status::Todo, Priority::High)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "HighNew",
+                "",
+                Status::Todo,
+                Priority::High,
+            )
             .unwrap();
 
         repo.conn
@@ -645,7 +968,14 @@ mod tests {
         let project = repo.create_project("P", "").unwrap();
         let project_id = project.id.unwrap();
         let task = repo
-            .create_task(project_id, "T1", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "T1",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let task_id = task.id.unwrap();
 
@@ -668,7 +998,14 @@ mod tests {
         let project = repo.create_project("P", "").unwrap();
         let project_id = project.id.unwrap();
         let task = repo
-            .create_task(project_id, "T1", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "T1",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let task_id = task.id.unwrap();
 

@@ -30,6 +30,7 @@ With PMP, you get a local, blazing-fast, keyboard-driven project manager powered
 - 🧠 **Built-in MCP Server**: With a simple `pmp mcp` command, the app exposes your projects and tasks via the *Model Context Protocol*, making integration with AI and other modern tools seamless.
 - 🔒 **Total Privacy**: All your data is stored locally using SQLite. Your data is yours alone!
 - 🔗 **Task Dependencies**: Prevents moving tasks to "Done" if their dependencies haven't been resolved yet.
+- 🏷️ **Versions**: Group a project's tasks into versions (for example `v0.2.0`), follow each version's progress, and mark it as released. Tasks and dependencies stay within their version.
 
 ---
 

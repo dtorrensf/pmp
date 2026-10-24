@@ -24,7 +24,10 @@ use crate::screens::{Action, Component, Screen};
 
 pub struct TaskForm {
     repo: Arc<dyn Repository>,
+    /// Project that owns `version_id`, resolved from the version on init.
     project_id: i64,
+    /// Version the task belongs to (set by the screen that opens the form).
+    version_id: i64,
     task_id: Option<i64>,
     name: String,
     description: TextArea<'static>,
@@ -59,6 +62,7 @@ impl TaskForm {
         Self {
             repo,
             project_id: 0,
+            version_id: 0,
             task_id: None,
             name: String::new(),
             description: TextArea::default(),
@@ -82,8 +86,8 @@ impl TaskForm {
         }
     }
 
-    pub fn set_project_id(&mut self, project_id: i64) {
-        self.project_id = project_id;
+    pub fn set_version_id(&mut self, version_id: i64) {
+        self.version_id = version_id;
     }
 
     pub fn set_task_id(&mut self, task_id: Option<i64>) {
@@ -205,9 +209,10 @@ impl TaskForm {
 
 impl Component for TaskForm {
     fn init(&mut self) -> anyhow::Result<()> {
+        self.project_id = self.repo.get_version(self.version_id)?.project_id;
         self.available_tasks = self
             .repo
-            .list_tasks_by_project(self.project_id)?
+            .list_tasks_by_version(self.version_id)?
             .into_iter()
             .filter(|t| t.id != self.task_id)
             .collect();
@@ -245,7 +250,7 @@ impl Component for TaskForm {
     fn refresh(&mut self) -> anyhow::Result<()> {
         self.available_tasks = self
             .repo
-            .list_tasks_by_project(self.project_id)?
+            .list_tasks_by_version(self.version_id)?
             .into_iter()
             .filter(|t| t.id != self.task_id)
             .collect();
@@ -276,7 +281,7 @@ impl Component for TaskForm {
                 }
                 return Some(Action::SaveTask {
                     task_id: self.task_id,
-                    project_id: self.project_id,
+                    version_id: self.version_id,
                     name: self.name.clone(),
                     description: self.description.lines().join("\n"),
                     status: self.status,
@@ -719,7 +724,7 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.init().unwrap();
         (repo, form, project_id)
     }
@@ -762,7 +767,7 @@ mod tests {
             action,
             Some(Action::SaveTask {
                 task_id: None,
-                project_id,
+                version_id: _repo.default_version_id(project_id).unwrap(),
                 name: "Task".to_string(),
                 description: "D".to_string(),
                 status: Status::InProgress,
@@ -778,6 +783,7 @@ mod tests {
         let task = repo
             .create_task(
                 project_id,
+                repo.default_version_id(project_id).unwrap(),
                 "Auth",
                 "secret",
                 Status::InProgress,
@@ -785,7 +791,7 @@ mod tests {
             )
             .unwrap();
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.set_task_id(task.id);
         form.init().unwrap();
 
@@ -799,10 +805,17 @@ mod tests {
     fn enter_in_edit_emits_save_with_task_id() {
         let (repo, _form, project_id) = setup();
         let task = repo
-            .create_task(project_id, "Auth", "", Status::Todo, Priority::Medium)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Auth",
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
             .unwrap();
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.set_task_id(task.id);
         form.init().unwrap();
         form.handle_event(&char_event('V'));
@@ -811,7 +824,7 @@ mod tests {
             action,
             Some(Action::SaveTask {
                 task_id: task.id,
-                project_id,
+                version_id: repo.default_version_id(project_id).unwrap(),
                 name: "AuthV".to_string(),
                 description: "".to_string(),
                 status: Status::Todo,
@@ -825,10 +838,17 @@ mod tests {
     fn title_shows_edit_when_task_id_set() {
         let (repo, _form, project_id) = setup();
         let task = repo
-            .create_task(project_id, "Auth", "", Status::Todo, Priority::Medium)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Auth",
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
             .unwrap();
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.set_task_id(task.id);
         form.init().unwrap();
 
@@ -848,6 +868,7 @@ mod tests {
         let task = repo
             .create_task(
                 project_id,
+                repo.default_version_id(project_id).unwrap(),
                 "Auth",
                 "desc",
                 Status::InProgress,
@@ -855,7 +876,7 @@ mod tests {
             )
             .unwrap();
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.set_task_id(task.id);
         form.init().unwrap();
         insta::assert_snapshot!(render_to_string(&form, 60, 28));
@@ -876,11 +897,17 @@ mod tests {
     #[test]
     fn esc_returns_to_return_to_screen() {
         let (_repo, mut form, project_id) = setup();
-        form.set_return_to(&Screen::TaskList { project_id });
+        form.set_return_to(&Screen::VersionDashboard {
+            project_id,
+            version_id: _repo.default_version_id(project_id).unwrap(),
+        });
         let action = form.handle_event(&key_event(KeyCode::Esc));
         assert_eq!(
             action,
-            Some(Action::Navigate(Screen::TaskList { project_id }))
+            Some(Action::Navigate(Screen::VersionDashboard {
+                project_id,
+                version_id: _repo.default_version_id(project_id).unwrap(),
+            }))
         );
     }
 
@@ -960,7 +987,14 @@ mod tests {
     fn refresh_after_add_task_note_preserves_form_state() {
         let (repo, mut form, project_id) = setup();
         let task = repo
-            .create_task(project_id, "Task", "desc", Status::Todo, Priority::Medium)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Task",
+                "desc",
+                Status::Todo,
+                Priority::Medium,
+            )
             .unwrap();
         let task_id = task.id.unwrap();
         form.set_task_id(Some(task_id));
@@ -977,7 +1011,14 @@ mod tests {
 
         // Add a dependency and open the popup.
         let dep = repo
-            .create_task(project_id, "Dep", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Dep",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let dep_id = dep.id.unwrap();
         repo.add_dependency(task_id, dep_id).unwrap();
@@ -1014,8 +1055,15 @@ mod tests {
     #[test]
     fn popup_opens_on_enter_at_field_4() {
         let (repo, mut form, project_id) = setup();
-        repo.create_task(project_id, "Dep", "", Status::Todo, Priority::Low)
-            .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "Dep",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
         form.init().unwrap();
         form.active_field = 4;
         let action = form.handle_event(&key_event(KeyCode::Enter));
@@ -1028,8 +1076,15 @@ mod tests {
     #[test]
     fn popup_dependency_list_uses_canonical_status_style() {
         let (repo, mut form, project_id) = setup();
-        repo.create_task(project_id, "Dep", "", Status::InProgress, Priority::Low)
-            .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "Dep",
+            "",
+            Status::InProgress,
+            Priority::Low,
+        )
+        .unwrap();
         form.init().unwrap();
         form.active_field = 4;
         form.handle_event(&key_event(KeyCode::Enter));
@@ -1049,7 +1104,14 @@ mod tests {
     fn popup_escape_restores_original_selection() {
         let (repo, mut form, project_id) = setup();
         let dep = repo
-            .create_task(project_id, "Dep", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Dep",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let dep_id = dep.id.unwrap();
         form.init().unwrap();
@@ -1067,7 +1129,14 @@ mod tests {
     fn popup_enter_confirms_selection() {
         let (repo, mut form, project_id) = setup();
         let dep = repo
-            .create_task(project_id, "Dep", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Dep",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let dep_id = dep.id.unwrap();
         form.init().unwrap();
@@ -1085,7 +1154,14 @@ mod tests {
     fn popup_space_toggles_selection() {
         let (repo, mut form, project_id) = setup();
         let dep = repo
-            .create_task(project_id, "Dep", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Dep",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let dep_id = dep.id.unwrap();
         form.init().unwrap();
@@ -1100,10 +1176,24 @@ mod tests {
     #[test]
     fn popup_jk_navigation() {
         let (repo, mut form, project_id) = setup();
-        repo.create_task(project_id, "First", "", Status::Todo, Priority::Low)
-            .unwrap();
-        repo.create_task(project_id, "Second", "", Status::Todo, Priority::Low)
-            .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "First",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "Second",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
         form.init().unwrap();
         form.active_field = 4;
         form.handle_event(&key_event(KeyCode::Enter));
@@ -1128,10 +1218,24 @@ mod tests {
     #[test]
     fn popup_filter_narrows_list() {
         let (repo, mut form, project_id) = setup();
-        repo.create_task(project_id, "Auth", "", Status::Todo, Priority::Low)
-            .unwrap();
-        repo.create_task(project_id, "API", "", Status::Todo, Priority::Low)
-            .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "Auth",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "API",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
         form.init().unwrap();
         form.active_field = 4;
         form.handle_event(&key_event(KeyCode::Enter));
@@ -1144,8 +1248,15 @@ mod tests {
     #[test]
     fn popup_filter_empty_state() {
         let (repo, mut form, project_id) = setup();
-        repo.create_task(project_id, "Auth", "", Status::Todo, Priority::Low)
-            .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "Auth",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
         form.init().unwrap();
         form.active_field = 4;
         form.handle_event(&key_event(KeyCode::Enter));
@@ -1158,10 +1269,24 @@ mod tests {
     #[test]
     fn popup_backspace_removes_char_and_refilters() {
         let (repo, mut form, project_id) = setup();
-        repo.create_task(project_id, "Auth", "", Status::Todo, Priority::Low)
-            .unwrap();
-        repo.create_task(project_id, "API", "", Status::Todo, Priority::Low)
-            .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "Auth",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "API",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
         form.init().unwrap();
         form.active_field = 4;
         form.handle_event(&key_event(KeyCode::Enter));
@@ -1185,7 +1310,14 @@ mod tests {
     fn compact_dependencies_renders_selected_with_status() {
         let (repo, mut form, project_id) = setup();
         let dep = repo
-            .create_task(project_id, "Dep", "", Status::Done, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Dep",
+                "",
+                Status::Done,
+                Priority::Low,
+            )
             .unwrap();
         let dep_id = dep.id.unwrap();
         form.init().unwrap();
@@ -1201,7 +1333,14 @@ mod tests {
     fn compact_dependencies_use_canonical_status_style() {
         let (repo, mut form, project_id) = setup();
         let dep = repo
-            .create_task(project_id, "Dep", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Dep",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let dep_id = dep.id.unwrap();
         form.init().unwrap();
@@ -1251,14 +1390,21 @@ mod tests {
     fn notes_list_renders_existing_notes() {
         let (repo, _form, project_id) = setup();
         let task = repo
-            .create_task(project_id, "Auth", "", Status::Todo, Priority::Medium)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Auth",
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
             .unwrap();
         let task_id = task.id.unwrap();
         repo.add_task_note(task_id, "First note").unwrap();
         repo.add_task_note(task_id, "Second note").unwrap();
 
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.set_task_id(Some(task_id));
         form.init().unwrap();
 
@@ -1272,10 +1418,17 @@ mod tests {
     fn empty_notes_renders_placeholder() {
         let (repo, _form, project_id) = setup();
         let task = repo
-            .create_task(project_id, "Auth", "", Status::Todo, Priority::Medium)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Auth",
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
             .unwrap();
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.set_task_id(task.id);
         form.init().unwrap();
 
@@ -1287,11 +1440,18 @@ mod tests {
     fn enter_in_notes_field_emits_add_task_note() {
         let (repo, _form, project_id) = setup();
         let task = repo
-            .create_task(project_id, "Auth", "", Status::Todo, Priority::Medium)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Auth",
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
             .unwrap();
         let task_id = task.id.unwrap();
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.set_task_id(Some(task_id));
         form.init().unwrap();
         form.active_field = 5;
@@ -1311,11 +1471,18 @@ mod tests {
     fn empty_note_does_not_emit_action() {
         let (repo, _form, project_id) = setup();
         let task = repo
-            .create_task(project_id, "Auth", "", Status::Todo, Priority::Medium)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Auth",
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
             .unwrap();
         let task_id = task.id.unwrap();
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.set_task_id(Some(task_id));
         form.init().unwrap();
         form.active_field = 5;
@@ -1337,10 +1504,24 @@ mod tests {
     fn cycle_creating_task_excluded_from_popup() {
         let (repo, mut form, project_id) = setup();
         let a = repo
-            .create_task(project_id, "A", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "A",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let b = repo
-            .create_task(project_id, "B", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "B",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let a_id = a.id.unwrap();
         let b_id = b.id.unwrap();
@@ -1358,9 +1539,11 @@ mod tests {
     fn dependency_picker_keeps_selected_task_visible() {
         let repo = Arc::new(StubRepository::default());
         let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version_id = repo.default_version_id(project_id).unwrap();
         for i in 0..30 {
             repo.create_task(
                 project_id,
+                version_id,
                 &format!("Dep{i:02}"),
                 "",
                 Status::Todo,
@@ -1369,7 +1552,7 @@ mod tests {
             .unwrap();
         }
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(version_id);
         form.init().unwrap();
         form.active_field = 4;
         form.handle_event(&key_event(KeyCode::Enter));
@@ -1394,8 +1577,16 @@ mod tests {
     fn page_keys_scroll_notes_only_when_notes_section_is_focused() {
         let repo = Arc::new(StubRepository::default());
         let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version_id = repo.default_version_id(project_id).unwrap();
         let task_id = repo
-            .create_task(project_id, "Task", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                version_id,
+                "Task",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap()
             .id
             .unwrap();
@@ -1404,7 +1595,7 @@ mod tests {
                 .unwrap();
         }
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(version_id);
         form.set_task_id(Some(task_id));
         form.init().unwrap();
 
@@ -1434,8 +1625,16 @@ mod tests {
     fn page_keys_scroll_dependencies_when_section_is_focused() {
         let repo = Arc::new(StubRepository::default());
         let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version_id = repo.default_version_id(project_id).unwrap();
         let task_id = repo
-            .create_task(project_id, "Task", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                version_id,
+                "Task",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap()
             .id
             .unwrap();
@@ -1443,6 +1642,7 @@ mod tests {
             let dep = repo
                 .create_task(
                     project_id,
+                    version_id,
                     &format!("Dep{i:02}"),
                     "",
                     Status::Todo,
@@ -1452,7 +1652,7 @@ mod tests {
             repo.add_dependency(task_id, dep.id.unwrap()).unwrap();
         }
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(version_id);
         form.set_task_id(Some(task_id));
         form.init().unwrap();
 

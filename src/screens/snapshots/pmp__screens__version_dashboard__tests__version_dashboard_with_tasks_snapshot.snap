@@ -1,8 +1,9 @@
 ---
-source: src/screens/task_list.rs
-expression: render_to_string(&screen)
+source: src/screens/version_dashboard.rs
+assertion_line: 557
+expression: "render_to_string(&screen, 60, 24)"
 ---
-┌ALPHA─────────────────────────────────────────────────────┐
+┌v0 · Open─────────────────────────────────────────────────┐
 │┌Tasks───────────────────────────────────────────────────┐│
 ││Name                       Status         Priority      ││
 ││T3                         Todo           High          ││

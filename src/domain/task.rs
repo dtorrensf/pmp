@@ -196,6 +196,7 @@ impl<'de> Deserialize<'de> for Priority {
 pub struct Task {
     pub id: Option<i64>,
     pub project_id: i64,
+    pub version_id: i64,
     pub name: String,
     pub description: String,
     pub status: Status,
@@ -299,6 +300,7 @@ mod tests {
         let task = Task {
             id: None,
             project_id: 1,
+            version_id: 2,
             name: "Task A".to_string(),
             description: "".to_string(),
             status: Status::Todo,
@@ -307,6 +309,7 @@ mod tests {
         };
         assert!(task.id.is_none());
         assert_eq!(task.project_id, 1);
+        assert_eq!(task.version_id, 2);
         assert_eq!(task.name, "Task A");
         assert_eq!(task.status, Status::Todo);
         assert_eq!(task.priority, Priority::Medium);

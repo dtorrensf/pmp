@@ -28,6 +28,7 @@ mod tests {
         Task {
             id: None,
             project_id: 1,
+            version_id: 1,
             name: "T".to_string(),
             description: "".to_string(),
             status,

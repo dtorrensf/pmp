@@ -1,9 +1,10 @@
 ---
 source: src/tui.rs
+assertion_line: 743
 expression: render_app_to_string(&mut app)
 ---
 ┌Projects──────────────────────────────────────────────────────────────────────┐
-│Alpha (33%)                                                                   │
+│Alpha (1 version · 33%)                                                       │
 │                                                                              │
 │                                                                              │
 │                                                                              │

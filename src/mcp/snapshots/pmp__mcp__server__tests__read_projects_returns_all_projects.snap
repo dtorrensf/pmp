@@ -1,5 +1,6 @@
 ---
 source: src/mcp/server.rs
+assertion_line: 807
 expression: result
 ---
 {
@@ -7,7 +8,7 @@ expression: result
     {
       "uri": "pmp://projects",
       "mimeType": "application/json",
-      "text": "[\n  {\n    \"id\": 1,\n    \"name\": \"Alpha\",\n    \"description\": \"First project\",\n    \"created_at\": \"now\"\n  },\n  {\n    \"id\": 2,\n    \"name\": \"Beta\",\n    \"description\": \"Second project\",\n    \"created_at\": \"now\"\n  }\n]"
+      "text": "[\n  {\n    \"id\": 1,\n    \"name\": \"Alpha\",\n    \"description\": \"First project\",\n    \"created_at\": \"now\"\n  },\n  {\n    \"id\": 3,\n    \"name\": \"Beta\",\n    \"description\": \"Second project\",\n    \"created_at\": \"now\"\n  }\n]"
     }
   ]
 }

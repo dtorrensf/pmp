@@ -13,16 +13,18 @@ pub mod keybinding_footer;
 pub mod project_form;
 pub mod project_list;
 pub mod task_form;
-pub mod task_list;
 pub mod task_list_view;
 #[cfg(test)]
 pub mod test_utils;
+pub mod version_dashboard;
+pub mod version_form;
 
 pub use dashboard::ProjectDashboard;
 pub use project_form::ProjectForm;
 pub use project_list::ProjectListScreen;
 pub use task_form::TaskForm;
-pub use task_list::TaskListScreen;
+pub use version_dashboard::VersionDashboard;
+pub use version_form::VersionForm;
 
 pub trait Component {
     fn init(&mut self) -> anyhow::Result<()> {
@@ -60,11 +62,16 @@ pub enum Screen {
         project_id: Option<i64>,
     },
     TaskForm {
-        project_id: i64,
+        version_id: i64,
         task_id: Option<i64>,
     },
-    TaskList {
+    VersionDashboard {
         project_id: i64,
+        version_id: i64,
+    },
+    VersionForm {
+        project_id: i64,
+        version_id: Option<i64>,
     },
 }
 
@@ -72,7 +79,10 @@ impl Screen {
     /// `true` when this screen has a text field that must receive printable
     /// keys, so global shortcuts should not intercept them.
     pub fn accepts_text_input(&self) -> bool {
-        matches!(self, Self::ProjectForm { .. } | Self::TaskForm { .. })
+        matches!(
+            self,
+            Self::ProjectForm { .. } | Self::TaskForm { .. } | Self::VersionForm { .. }
+        )
     }
 }
 
@@ -89,7 +99,7 @@ pub enum Action {
     },
     SaveTask {
         task_id: Option<i64>,
-        project_id: i64,
+        version_id: i64,
         name: String,
         description: String,
         status: crate::domain::task::Status,
@@ -99,6 +109,16 @@ pub enum Action {
     UpdateTaskStatus {
         task_id: i64,
         new_status: crate::domain::task::Status,
+    },
+    SaveVersion {
+        version_id: Option<i64>,
+        project_id: i64,
+        name: String,
+        description: String,
+        status: crate::domain::version::VersionStatus,
+    },
+    DeleteVersion {
+        version_id: i64,
     },
     DeleteTask {
         task_id: i64,
@@ -130,13 +150,16 @@ pub mod tests {
         assert_ne!(
             Screen::ProjectDashboard { project_id: 1 },
             Screen::TaskForm {
-                project_id: 2,
+                version_id: 2,
                 task_id: None
             }
         );
         assert_ne!(
             Screen::ProjectDashboard { project_id: 1 },
-            Screen::TaskList { project_id: 1 }
+            Screen::VersionDashboard {
+                project_id: 1,
+                version_id: 1
+            }
         );
     }
 
@@ -177,10 +200,24 @@ pub mod tests {
         let project = repo.create_project("P", "").unwrap();
         let project_id = project.id.unwrap();
         let a = repo
-            .create_task(project_id, "A", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "A",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let b = repo
-            .create_task(project_id, "B", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "B",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let a_id = a.id.unwrap();
         let b_id = b.id.unwrap();
@@ -199,13 +236,34 @@ pub mod tests {
         let project = repo.create_project("P", "").unwrap();
         let project_id = project.id.unwrap();
         let a = repo
-            .create_task(project_id, "A", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "A",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let b = repo
-            .create_task(project_id, "B", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "B",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let c = repo
-            .create_task(project_id, "C", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "C",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let a_id = a.id.unwrap();
         let b_id = b.id.unwrap();
@@ -225,13 +283,34 @@ pub mod tests {
         let project = repo.create_project("P", "").unwrap();
         let project_id = project.id.unwrap();
         let low = repo
-            .create_task(project_id, "Low", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Low",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let high_old = repo
-            .create_task(project_id, "HighOld", "", Status::Todo, Priority::High)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "HighOld",
+                "",
+                Status::Todo,
+                Priority::High,
+            )
             .unwrap();
         let high_new = repo
-            .create_task(project_id, "HighNew", "", Status::Todo, Priority::High)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "HighNew",
+                "",
+                Status::Todo,
+                Priority::High,
+            )
             .unwrap();
 
         {

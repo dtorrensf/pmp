@@ -317,12 +317,33 @@ mod tests {
         let repo = Arc::new(StubRepository::default());
         let project = repo.create_project("Alpha", "First project").unwrap();
         let project_id = project.id.unwrap();
-        repo.create_task(project_id, "Task 1", "", Status::Todo, Priority::Low)
-            .unwrap();
-        repo.create_task(project_id, "Task 2", "", Status::Todo, Priority::Low)
-            .unwrap();
-        repo.create_task(project_id, "Task 3", "", Status::Done, Priority::Low)
-            .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "Task 1",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "Task 2",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "Task 3",
+            "",
+            Status::Done,
+            Priority::Low,
+        )
+        .unwrap();
         let mut app = App::new(repo.clone());
         app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id }));
         app.dispatch(Action::Navigate(Screen::ProjectList));
@@ -377,10 +398,20 @@ mod tests {
     #[test]
     fn dashboard_auto_refreshes_after_timeouts() {
         let (repo, mut app) = setup_app_with_project();
-        app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id: 1 }));
+        app.dispatch(Action::Navigate(Screen::VersionDashboard {
+            project_id: 1,
+            version_id: app.repo.default_version_id(1).unwrap(),
+        }));
 
-        repo.create_task(1, "Auto", "", Status::Todo, Priority::Low)
-            .unwrap();
+        repo.create_task(
+            1,
+            repo.default_version_id(1).unwrap(),
+            "Auto",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
 
         let events: Vec<Option<Event>> =
             std::iter::repeat_n(None, auto_refresh_ticks(AUTO_REFRESH_INTERVAL))
@@ -403,9 +434,19 @@ mod tests {
     #[test]
     fn dashboard_auto_refresh_pauses_while_task_list_dialog_is_open() {
         let (repo, mut app) = setup_app_with_project();
-        app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id: 1 }));
-        repo.create_task(1, "Dialog task", "", Status::Todo, Priority::Low)
-            .unwrap();
+        app.dispatch(Action::Navigate(Screen::VersionDashboard {
+            project_id: 1,
+            version_id: app.repo.default_version_id(1).unwrap(),
+        }));
+        repo.create_task(
+            1,
+            repo.default_version_id(1).unwrap(),
+            "Dialog task",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
 
         let open_filter_events: Vec<Option<Event>> = std::iter::once(Some(char_event('f')))
             .chain(std::iter::repeat_n(
@@ -469,7 +510,7 @@ mod tests {
 
         let text = render_app_to_string(&mut app);
         assert!(
-            text.contains("Alpha (67%)"),
+            text.contains("Alpha (1 version · 67%)"),
             "project progress should be refreshed"
         );
     }
@@ -538,7 +579,7 @@ mod tests {
         let (_repo, mut app) = setup_app_with_project();
         app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id: 1 }));
         app.dispatch(Action::Navigate(Screen::TaskForm {
-            project_id: 1,
+            version_id: app.repo.default_version_id(1).unwrap(),
             task_id: None,
         }));
         insta::assert_snapshot!(render_app_to_string(&mut app));
@@ -560,11 +601,10 @@ mod tests {
         app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id: 1 }));
         let text = render_app_to_string(&mut app);
         let last_line = text.lines().last().unwrap();
-        assert!(last_line.contains("j/Down: Down"));
-        assert!(last_line.contains("Enter: Edit"));
-        assert!(last_line.contains("Tab: Cycle"));
+        assert!(last_line.contains("Enter: Open"));
+        assert!(last_line.contains("c: New Version"));
+        assert!(last_line.contains("r: Cycle Status"));
         assert!(last_line.contains("d: Delete"));
-        assert!(last_line.contains("f: Filter"));
     }
 
     #[test]
@@ -572,7 +612,7 @@ mod tests {
         let (_repo, mut app) = setup_app_with_project();
         app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id: 1 }));
         app.dispatch(Action::Navigate(Screen::TaskForm {
-            project_id: 1,
+            version_id: app.repo.default_version_id(1).unwrap(),
             task_id: None,
         }));
         let text = render_app_to_string(&mut app);
@@ -649,7 +689,7 @@ mod tests {
         let (_repo, mut app) = app_with_update("0.4.0");
         app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id: 1 }));
         app.dispatch(Action::Navigate(Screen::TaskForm {
-            project_id: 1,
+            version_id: app.repo.default_version_id(1).unwrap(),
             task_id: None,
         }));
 

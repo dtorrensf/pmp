@@ -6,6 +6,7 @@ use crate::db::repository::Repository;
 use crate::domain::error::AppError;
 use crate::domain::project::Project;
 use crate::domain::task::{Priority, Status, Task, TaskDependency, TaskNote};
+use crate::domain::version::{self, Version, VersionStatus};
 
 pub struct StubRepository {
     pub projects: Mutex<Vec<Project>>,
@@ -13,6 +14,7 @@ pub struct StubRepository {
     pub next_id: Mutex<i64>,
     pub dependencies: Mutex<Vec<TaskDependency>>,
     pub task_notes: Mutex<Vec<TaskNote>>,
+    pub versions: Mutex<Vec<Version>>,
 }
 
 impl Default for StubRepository {
@@ -23,6 +25,7 @@ impl Default for StubRepository {
             next_id: Mutex::new(1),
             dependencies: Mutex::new(Vec::new()),
             task_notes: Mutex::new(Vec::new()),
+            versions: Mutex::new(Vec::new()),
         }
     }
 }
@@ -34,6 +37,37 @@ impl StubRepository {
         *id += 1;
         current
     }
+
+    fn ensure_version_in_project(&self, version_id: i64, project_id: i64) -> Result<(), AppError> {
+        let belongs = self
+            .versions
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|v| v.id == Some(version_id) && v.project_id == project_id);
+        if belongs {
+            Ok(())
+        } else {
+            Err(AppError::Validation(
+                "version does not belong to the project".to_string(),
+            ))
+        }
+    }
+}
+
+/// Orders tasks: not-done first, then priority descending, then newest first.
+fn sort_tasks(tasks: &mut [Task]) {
+    tasks.sort_by(|a, b| {
+        let done_order = (a.status == Status::Done).cmp(&(b.status == Status::Done));
+        if done_order != std::cmp::Ordering::Equal {
+            return done_order;
+        }
+        let priority_order = i64::from(b.priority).cmp(&i64::from(a.priority));
+        if priority_order != std::cmp::Ordering::Equal {
+            return priority_order;
+        }
+        b.created_at.cmp(&a.created_at)
+    });
 }
 
 impl Repository for StubRepository {
@@ -49,6 +83,14 @@ impl Repository for StubRepository {
             created_at: "now".to_string(),
         };
         self.projects.lock().unwrap().push(project.clone());
+        self.versions.lock().unwrap().push(Version {
+            id: Some(self.next_id()),
+            project_id: project.id.unwrap(),
+            name: version::DEFAULT_VERSION_NAME.to_string(),
+            description: String::new(),
+            status: VersionStatus::Open,
+            created_at: "now".to_string(),
+        });
         Ok(project)
     }
 
@@ -82,31 +124,142 @@ impl Repository for StubRepository {
             .filter(|t| t.project_id == project_id)
             .cloned()
             .collect();
-        tasks.sort_by(|a, b| {
-            let done_order = (a.status == Status::Done).cmp(&(b.status == Status::Done));
-            if done_order != std::cmp::Ordering::Equal {
-                return done_order;
-            }
-            let priority_order = i64::from(b.priority).cmp(&i64::from(a.priority));
-            if priority_order != std::cmp::Ordering::Equal {
-                return priority_order;
-            }
-            b.created_at.cmp(&a.created_at)
+        sort_tasks(&mut tasks);
+        Ok(tasks)
+    }
+
+    fn list_versions_by_project(&self, project_id: i64) -> Result<Vec<Version>, AppError> {
+        let mut versions: Vec<Version> = self
+            .versions
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|v| v.project_id == project_id)
+            .cloned()
+            .collect();
+        versions.sort_by(|a, b| {
+            (a.status == VersionStatus::Released)
+                .cmp(&(b.status == VersionStatus::Released))
+                .then_with(|| b.id.cmp(&a.id))
         });
+        Ok(versions)
+    }
+
+    fn create_version(
+        &self,
+        project_id: i64,
+        name: &str,
+        description: &str,
+    ) -> Result<Version, AppError> {
+        version::validate_version_name(name)?;
+        self.get_project(project_id)?;
+        let versions = self.versions.lock().unwrap();
+        if versions
+            .iter()
+            .any(|v| v.project_id == project_id && v.name == name)
+        {
+            return Err(AppError::Validation(format!(
+                "version already exists: {name}"
+            )));
+        }
+        drop(versions);
+        let version = Version {
+            id: Some(self.next_id()),
+            project_id,
+            name: name.to_string(),
+            description: description.to_string(),
+            status: VersionStatus::Open,
+            created_at: "now".to_string(),
+        };
+        self.versions.lock().unwrap().push(version.clone());
+        Ok(version)
+    }
+
+    fn get_version(&self, id: i64) -> Result<Version, AppError> {
+        self.versions
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|v| v.id == Some(id))
+            .cloned()
+            .ok_or(AppError::NotFound)
+    }
+
+    fn update_version(
+        &self,
+        id: i64,
+        name: &str,
+        description: &str,
+        status: VersionStatus,
+    ) -> Result<Version, AppError> {
+        version::validate_version_name(name)?;
+        let mut versions = self.versions.lock().unwrap();
+        let project_id = versions
+            .iter()
+            .find(|v| v.id == Some(id))
+            .map(|v| v.project_id)
+            .ok_or(AppError::NotFound)?;
+        if versions
+            .iter()
+            .any(|v| v.id != Some(id) && v.project_id == project_id && v.name == name)
+        {
+            return Err(AppError::Validation(format!(
+                "version already exists: {name}"
+            )));
+        }
+        let version = versions
+            .iter_mut()
+            .find(|v| v.id == Some(id))
+            .ok_or(AppError::NotFound)?;
+        version.name = name.to_string();
+        version.description = description.to_string();
+        version.status = status;
+        Ok(version.clone())
+    }
+
+    fn delete_version(&self, id: i64) -> Result<(), AppError> {
+        let task_ids: Vec<i64> = self
+            .tasks
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|t| t.version_id == id)
+            .filter_map(|t| t.id)
+            .collect();
+        for task_id in &task_ids {
+            self.delete_task(*task_id)?;
+        }
+        self.versions.lock().unwrap().retain(|v| v.id != Some(id));
+        Ok(())
+    }
+
+    fn list_tasks_by_version(&self, version_id: i64) -> Result<Vec<Task>, AppError> {
+        let mut tasks: Vec<Task> = self
+            .tasks
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|t| t.version_id == version_id)
+            .cloned()
+            .collect();
+        sort_tasks(&mut tasks);
         Ok(tasks)
     }
 
     fn create_task(
         &self,
         project_id: i64,
+        version_id: i64,
         name: &str,
         description: &str,
         status: Status,
         priority: Priority,
     ) -> Result<Task, AppError> {
+        self.ensure_version_in_project(version_id, project_id)?;
         let task = Task {
             id: Some(self.next_id()),
             project_id,
+            version_id,
             name: name.to_string(),
             description: description.to_string(),
             status,
@@ -158,8 +311,12 @@ impl Repository for StubRepository {
     }
 
     fn add_dependency(&self, task_id: i64, depends_on_id: i64) -> Result<(), AppError> {
-        if self.get_task(task_id).is_err() || self.get_task(depends_on_id).is_err() {
-            return Err(AppError::NotFound);
+        let task = self.get_task(task_id)?;
+        let depends_on = self.get_task(depends_on_id)?;
+        if task.version_id != depends_on.version_id {
+            return Err(AppError::Validation(
+                "dependencies must be within the same version".to_string(),
+            ));
         }
         if self.would_create_cycle(task_id, depends_on_id)? {
             return Err(AppError::DependencyCycle);
@@ -224,9 +381,13 @@ impl Repository for StubRepository {
             deps.retain(|d| d.task_id != *tid && d.depends_on_id != *tid);
         }
         drop(deps);
+        let mut notes = self.task_notes.lock().unwrap();
+        notes.retain(|n| !task_ids.contains(&n.task_id));
+        drop(notes);
         let mut tasks = self.tasks.lock().unwrap();
         tasks.retain(|t| t.project_id != id);
         drop(tasks);
+        self.versions.lock().unwrap().retain(|v| v.project_id != id);
         let mut projects = self.projects.lock().unwrap();
         projects.retain(|p| p.id != Some(id));
         Ok(())
@@ -329,18 +490,39 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
         let ids = [
-            repo.create_task(project_id, "A", "", Status::Todo, Priority::Medium)
-                .unwrap()
-                .id
-                .unwrap(),
-            repo.create_task(project_id, "B", "", Status::Todo, Priority::Medium)
-                .unwrap()
-                .id
-                .unwrap(),
-            repo.create_task(project_id, "C", "", Status::Todo, Priority::Medium)
-                .unwrap()
-                .id
-                .unwrap(),
+            repo.create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "A",
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
+            .unwrap()
+            .id
+            .unwrap(),
+            repo.create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "B",
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
+            .unwrap()
+            .id
+            .unwrap(),
+            repo.create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "C",
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
+            .unwrap()
+            .id
+            .unwrap(),
         ];
         (repo, ids)
     }
@@ -383,7 +565,14 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
         let task = repo
-            .create_task(project_id, "T1", "", Status::Todo, Priority::Medium)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "T1",
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
             .unwrap();
         let task_id = task.id.unwrap();
 
@@ -406,7 +595,14 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
         let task = repo
-            .create_task(project_id, "T1", "", Status::Todo, Priority::Medium)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "T1",
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
             .unwrap();
         let task_id = task.id.unwrap();
 

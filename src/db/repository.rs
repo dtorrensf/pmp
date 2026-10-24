@@ -3,6 +3,7 @@
 use crate::domain::error::AppError;
 use crate::domain::project::Project;
 use crate::domain::task::{Priority, Status, Task, TaskNote};
+use crate::domain::version::{Version, VersionStatus};
 
 pub trait Repository: Send + Sync {
     fn list_projects(&self) -> Result<Vec<Project>, AppError>;
@@ -10,9 +11,43 @@ pub trait Repository: Send + Sync {
     fn update_project(&self, id: i64, name: &str, description: &str) -> Result<Project, AppError>;
     fn get_project(&self, id: i64) -> Result<Project, AppError>;
     fn list_tasks_by_project(&self, project_id: i64) -> Result<Vec<Task>, AppError>;
+    fn list_versions_by_project(&self, project_id: i64) -> Result<Vec<Version>, AppError>;
+    fn create_version(
+        &self,
+        project_id: i64,
+        name: &str,
+        description: &str,
+    ) -> Result<Version, AppError>;
+    fn get_version(&self, id: i64) -> Result<Version, AppError>;
+    fn update_version(
+        &self,
+        id: i64,
+        name: &str,
+        description: &str,
+        status: VersionStatus,
+    ) -> Result<Version, AppError>;
+    fn delete_version(&self, id: i64) -> Result<(), AppError>;
+    fn list_tasks_by_version(&self, version_id: i64) -> Result<Vec<Task>, AppError>;
+    /// Suggests the next semver version name for the project (see
+    /// `domain::version::next_version_name`).
+    fn next_version_name(&self, project_id: i64) -> Result<String, AppError> {
+        let versions = self.list_versions_by_project(project_id)?;
+        Ok(crate::domain::version::next_version_name(
+            versions.iter().map(|v| v.name.as_str()),
+        ))
+    }
+    /// Version that receives tasks when none is chosen explicitly: the newest
+    /// open version, falling back to the newest version of any status.
+    fn default_version_id(&self, project_id: i64) -> Result<i64, AppError> {
+        self.list_versions_by_project(project_id)?
+            .first()
+            .and_then(|v| v.id)
+            .ok_or(AppError::NotFound)
+    }
     fn create_task(
         &self,
         project_id: i64,
+        version_id: i64,
         name: &str,
         description: &str,
         status: Status,
