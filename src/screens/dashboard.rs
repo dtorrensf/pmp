@@ -7,7 +7,7 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span, Text},
     widgets::{Bar, BarChart, BarGroup, Block, Borders, Gauge, List, ListItem, Paragraph, Wrap},
 };
@@ -25,26 +25,63 @@ use crate::screens::components::scroll::{
 };
 use crate::screens::{AUTO_REFRESH_INTERVAL, Action, Component, Screen};
 
+/// Width, in cells, of the stacked progress bar of each version.
+const VERSION_BAR_WIDTH: usize = 10;
+
 /// One row of the versions list: the version plus its task progress.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VersionRow {
     pub version: Version,
+    pub todo: u64,
+    pub in_progress: u64,
     pub done: u64,
     pub total: u64,
     pub percentage: u64,
 }
 
 impl VersionRow {
-    /// Label shown in the list, e.g. `v0.1.0  3/8 (37%)  Open`.
-    pub fn label(&self) -> String {
-        format!(
-            "{}  {}/{} ({}%)  {}",
-            self.version.name,
-            self.done,
-            self.total,
-            self.percentage,
-            self.version.status.label()
-        )
+    /// Name column, e.g. `v0.1.0 [Open]`.
+    fn name_column(&self) -> String {
+        format!("{} [{}]", self.version.name, self.version.status.label())
+    }
+
+    /// One list line: name, stacked bar, percentage and counts per status, e.g.
+    /// `v0.1.0 [Open]  ██████████ (100%)  todo(0) in-progress(0) done(1)`.
+    /// `name_width` pads the name column so the bars line up across rows.
+    pub fn line(&self, name_width: usize) -> Line<'static> {
+        let parts = [
+            ("todo", self.todo, Status::Todo),
+            ("in-progress", self.in_progress, Status::InProgress),
+            ("done", self.done, Status::Done),
+        ];
+        let mut spans = vec![
+            Span::styled(
+                format!("{:<name_width$}", self.name_column()),
+                self.version.status.style(),
+            ),
+            Span::raw("  "),
+        ];
+        if self.total == 0 {
+            spans.push(Span::styled(
+                "▱".repeat(VERSION_BAR_WIDTH),
+                Style::default().fg(Color::DarkGray),
+            ));
+        } else {
+            let cells = bar_segments([self.todo, self.in_progress, self.done], VERSION_BAR_WIDTH);
+            for ((_, _, status), n) in parts.iter().zip(cells) {
+                if n > 0 {
+                    spans.push(Span::styled("█".repeat(n), status.style()));
+                }
+            }
+        }
+        spans.push(Span::raw(format!(" ({}%)  ", self.percentage)));
+        for (i, (label, count, status)) in parts.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::raw(" "));
+            }
+            spans.push(Span::styled(format!("{label}({count})"), status.style()));
+        }
+        Line::from(spans)
     }
 }
 
@@ -131,7 +168,7 @@ impl ProjectDashboard {
                     .filter(|t| t.version_id == version.id.unwrap_or(-1))
                     .collect();
                 let total = tasks.len() as u64;
-                let done = tasks.iter().filter(|t| t.status == Status::Done).count() as u64;
+                let [todo, in_progress, done] = status_counts(tasks.iter().copied());
                 let percentage = if total == 0 {
                     0
                 } else {
@@ -139,6 +176,8 @@ impl ProjectDashboard {
                 };
                 VersionRow {
                     version,
+                    todo,
+                    in_progress,
                     done,
                     total,
                     percentage,
@@ -353,17 +392,18 @@ impl ProjectDashboard {
         let range =
             self.versions_scroll
                 .visible_range(self.versions.len(), self.selected, row_height);
-        let items: Vec<ListItem> = self.versions[range.clone()]
+        let lines = version_lines(&self.versions);
+        let items: Vec<ListItem> = lines[range.clone()]
             .iter()
             .enumerate()
-            .map(|(offset, row)| {
+            .map(|(offset, line)| {
                 let i = range.start + offset;
-                let style = if i == self.selected {
-                    Style::default().add_modifier(Modifier::REVERSED)
-                } else {
-                    row.version.status.style()
-                };
-                ListItem::new(Line::from(Span::styled(row.label(), style)))
+                // A marker in front of the selected version; the same width
+                // on the others keeps the columns aligned.
+                let marker = if i == self.selected { "> " } else { "  " };
+                let mut line = line.clone();
+                line.spans.insert(0, Span::raw(marker));
+                ListItem::new(line)
             })
             .collect();
         frame.render_widget(List::new(items).block(block), area);
@@ -376,7 +416,7 @@ impl ProjectDashboard {
     }
 }
 
-fn status_counts(tasks: &[Task]) -> [u64; 3] {
+fn status_counts<'a>(tasks: impl IntoIterator<Item = &'a Task>) -> [u64; 3] {
     let mut counts = [0u64; 3];
     for task in tasks {
         match task.status {
@@ -386,6 +426,42 @@ fn status_counts(tasks: &[Task]) -> [u64; 3] {
         }
     }
     counts
+}
+
+/// Lines for the versions list. The name column is padded to the longest
+/// name so every bar starts at the same column.
+fn version_lines(rows: &[VersionRow]) -> Vec<Line<'static>> {
+    let name_width = rows
+        .iter()
+        .map(|row| row.name_column().chars().count())
+        .max()
+        .unwrap_or(0);
+    rows.iter().map(|row| row.line(name_width)).collect()
+}
+
+/// Splits `width` cells among the three status counts, proportionally, using
+/// the largest-remainder method so the segments always add up to `width`.
+/// Returns zeros when there are no tasks.
+fn bar_segments(counts: [u64; 3], width: usize) -> [usize; 3] {
+    let total: u64 = counts.iter().sum();
+    if total == 0 {
+        return [0; 3];
+    }
+    let width = width as u64;
+    let mut cells = [0u64; 3];
+    let mut remainders = [0u64; 3];
+    for i in 0..3 {
+        let exact = counts[i] * width;
+        cells[i] = exact / total;
+        remainders[i] = exact % total;
+    }
+    let mut order = [0usize, 1, 2];
+    order.sort_by_key(|&i| std::cmp::Reverse(remainders[i]));
+    let missing = width - cells.iter().sum::<u64>();
+    for &i in order.iter().take(missing as usize) {
+        cells[i] += 1;
+    }
+    cells.map(|c| c as usize)
 }
 
 #[cfg(test)]
@@ -461,12 +537,27 @@ mod tests {
         assert_eq!(dashboard.auto_refresh_interval(), None);
     }
 
+    /// Concatenated text of a line, without styles.
+    fn plain(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
     #[test]
-    fn versions_are_listed_with_progress_label() {
+    fn versions_are_listed_with_bar_and_counts() {
         let (_repo, dashboard, _id) = setup_with_tasks();
-        let labels: Vec<String> = dashboard.versions().iter().map(VersionRow::label).collect();
-        assert_eq!(labels[0], "v0.1.0  1/1 (100%)  Open");
-        assert_eq!(labels[1], "v0  1/5 (20%)  Open");
+        let lines: Vec<String> = dashboard
+            .versions()
+            .iter()
+            .map(|row| plain(&row.line(0)))
+            .collect();
+        assert_eq!(
+            lines[0],
+            "v0.1.0 [Open]  ██████████ (100%)  todo(0) in-progress(0) done(1)"
+        );
+        assert_eq!(
+            lines[1],
+            "v0 [Open]  ██████████ (20%)  todo(3) in-progress(1) done(1)"
+        );
     }
 
     #[test]
@@ -477,7 +568,60 @@ mod tests {
             .iter()
             .find(|r| r.version.name == "v0")
             .unwrap();
-        assert_eq!((v0.done, v0.total, v0.percentage), (1, 5, 20));
+        assert_eq!(
+            (v0.todo, v0.in_progress, v0.done, v0.total, v0.percentage),
+            (3, 1, 1, 5, 20)
+        );
+    }
+
+    #[test]
+    fn bar_segments_split_proportionally() {
+        assert_eq!(bar_segments([3, 1, 1], 10), [6, 2, 2]);
+        assert_eq!(bar_segments([0, 0, 4], 10), [0, 0, 10]);
+    }
+
+    #[test]
+    fn bar_segments_always_fill_the_width() {
+        // 1/3 each: the leftover cell goes to the first segment on a tie.
+        assert_eq!(bar_segments([1, 1, 1], 10), [4, 3, 3]);
+        assert_eq!(bar_segments([1, 2, 4], 10).iter().sum::<usize>(), 10);
+        assert_eq!(bar_segments([7, 0, 3], 10).iter().sum::<usize>(), 10);
+    }
+
+    #[test]
+    fn bar_segments_are_zero_without_tasks() {
+        assert_eq!(bar_segments([0, 0, 0], 10), [0, 0, 0]);
+    }
+
+    #[test]
+    fn version_without_tasks_shows_empty_bar() {
+        let repo = Arc::new(StubRepository::default());
+        let project_id = repo.create_project("Empty", "").unwrap().id.unwrap();
+        let mut dashboard = ProjectDashboard::new(repo.clone());
+        dashboard.set_project_id(project_id);
+        dashboard.init().unwrap();
+        assert_eq!(
+            plain(&dashboard.versions()[0].line(0)),
+            "v0 [Open]  ▱▱▱▱▱▱▱▱▱▱ (0%)  todo(0) in-progress(0) done(0)"
+        );
+    }
+
+    #[test]
+    fn version_bars_line_up_across_rows() {
+        let (repo, mut dashboard, project_id) = setup_with_tasks();
+        repo.create_version(project_id, "v10.0.0-rc1", "").unwrap();
+        dashboard.refresh().unwrap();
+        let columns: Vec<usize> = version_lines(dashboard.versions())
+            .iter()
+            .map(|line| {
+                plain(line)
+                    .chars()
+                    .position(|c| c == '█' || c == '▱')
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(columns.len(), 3);
+        assert!(columns.iter().all(|&c| c == columns[0]), "{columns:?}");
     }
 
     #[test]
