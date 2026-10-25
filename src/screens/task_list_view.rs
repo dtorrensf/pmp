@@ -14,6 +14,7 @@ use crate::screens::components::confirm_dialog::ConfirmDialog;
 use crate::screens::components::fields::render_readonly_field;
 use crate::screens::components::list_navigation::move_selection;
 use crate::screens::components::popup::{centered_rect, render_popup_scaffold};
+use crate::screens::components::scroll::{ListScroll, render_scrollbar};
 use crate::screens::{Action, Screen};
 
 #[derive(Debug, Clone)]
@@ -53,6 +54,7 @@ pub struct TaskListView {
     all_tasks: Vec<Task>,
     tasks: Vec<Task>,
     selected: usize,
+    scroll: ListScroll,
     filter_status: Option<Status>,
     filter_priority: Option<Priority>,
     mode: TaskListMode,
@@ -64,6 +66,7 @@ impl TaskListView {
             all_tasks: Vec::new(),
             tasks: Vec::new(),
             selected: 0,
+            scroll: ListScroll::new(),
             filter_status: None,
             filter_priority: None,
             mode: TaskListMode::Browsing,
@@ -142,12 +145,7 @@ impl TaskListView {
     /// keys (e.g. `q`, `r`, `c`, `e`, `Esc` while browsing) stay with the
     /// embedding screen, which should consult [`TaskListView::is_browsing`]
     /// before applying them.
-    pub fn handle_key(
-        &mut self,
-        code: KeyCode,
-        project_id: i64,
-        repo: &dyn Repository,
-    ) -> Option<Action> {
+    pub fn handle_key(&mut self, code: KeyCode, repo: &dyn Repository) -> Option<Action> {
         match &mut self.mode {
             TaskListMode::Browsing => match code {
                 KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j') => {
@@ -156,7 +154,7 @@ impl TaskListView {
                 }
                 KeyCode::Enter => self.tasks.get(self.selected).map(|task| {
                     Action::Navigate(Screen::TaskForm {
-                        project_id,
+                        version_id: task.version_id,
                         task_id: task.id,
                     })
                 }),
@@ -280,22 +278,40 @@ impl TaskListView {
             return;
         }
 
-        let header = Row::new(vec!["Name", "Status", "Priority"]).style(
+        // Rows that fit below the top border and the header row.
+        let row_height = area.height.saturating_sub(3) as usize;
+        let range = self
+            .scroll
+            .visible_range(self.tasks.len(), self.selected, row_height);
+
+        // Wide enough for the largest id in the list and for the "ID" header.
+        let id_width = self
+            .tasks
+            .iter()
+            .filter_map(|task| task.id)
+            .map(|id| id.to_string().len())
+            .max()
+            .unwrap_or(1)
+            .max("ID".len()) as u16
+            + 2;
+
+        let header = Row::new(vec!["ID", "Name", "Status", "Priority"]).style(
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         );
-        let rows: Vec<Row> = self
-            .tasks
+        let rows: Vec<Row> = self.tasks[range.clone()]
             .iter()
             .enumerate()
-            .map(|(i, task)| {
+            .map(|(offset, task)| {
+                let i = range.start + offset;
                 let style = if i == self.selected {
                     Style::default().add_modifier(Modifier::REVERSED)
                 } else {
                     task.status.row_style()
                 };
                 Row::new(vec![
+                    Cell::from(task.id.map_or_else(|| "-".to_string(), |id| id.to_string())),
                     Cell::from(task.name.clone()),
                     Cell::from(task.status.label()).style(task.status.style()),
                     Cell::from(task.priority.label()).style(task.priority.style()),
@@ -305,15 +321,22 @@ impl TaskListView {
             .collect();
 
         let widths = [
-            Constraint::Percentage(50),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
+            Constraint::Length(id_width),
+            Constraint::Percentage(47),
+            Constraint::Percentage(26),
+            Constraint::Percentage(26),
         ];
         let title = filter_title(self.filter_status, self.filter_priority);
         let table = Table::new(rows, widths)
             .header(header)
             .block(Block::default().title(title).borders(Borders::ALL));
         frame.render_widget(table, area);
+
+        // Scrollbar on the right border, aligned with the data rows.
+        if row_height > 0 && area.width > 0 {
+            let track = Rect::new(area.x + area.width - 1, area.y + 2, 1, row_height as u16);
+            render_scrollbar(frame, track, self.tasks.len(), row_height, range.start);
+        }
     }
 }
 
@@ -385,12 +408,100 @@ mod tests {
         Task {
             id: None,
             project_id: 1,
+            version_id: 1,
             name: name.to_string(),
             description: String::new(),
             status,
             priority: Priority::Low,
             created_at: String::new(),
         }
+    }
+
+    fn render_view(view: &TaskListView, width: u16, height: u16) -> String {
+        use crate::screens::test_utils::buffer_to_string;
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| view.render(frame, frame.area()))
+            .unwrap();
+        buffer_to_string(terminal.backend().buffer())
+    }
+
+    fn numbered_tasks(count: usize) -> Vec<Task> {
+        (0..count)
+            .map(|i| task(&format!("Task{i:02}"), Status::Todo))
+            .collect()
+    }
+
+    #[test]
+    fn selected_row_stays_visible_when_list_overflows() {
+        let repo = StubRepository::default();
+        let mut view = TaskListView::new();
+        view.set_tasks(numbered_tasks(30));
+
+        // Height 13 => 10 data rows (border + header + border take 3).
+        let before = render_view(&view, 40, 13);
+        assert!(before.contains("Task00"));
+        assert!(!before.contains("Task10"));
+
+        for _ in 0..12 {
+            view.handle_key(KeyCode::Down, &repo);
+        }
+        let after = render_view(&view, 40, 13);
+        assert_eq!(view.selected(), 12);
+        assert!(after.contains("Task12"), "selection not visible:\n{after}");
+        assert!(
+            !after.contains("Task00"),
+            "top row should have scrolled out:\n{after}"
+        );
+    }
+
+    #[test]
+    fn jumping_to_last_task_renders_the_tail_of_the_list() {
+        let repo = StubRepository::default();
+        let mut view = TaskListView::new();
+        view.set_tasks(numbered_tasks(30));
+        view.set_selected(29);
+        view.handle_key(KeyCode::Down, &repo); // clamped at last task
+        let rendered = render_view(&view, 40, 13);
+        assert!(rendered.contains("Task29"));
+        assert!(!rendered.contains("Task09"));
+    }
+
+    #[test]
+    fn moving_up_inside_view_keeps_rows_in_place() {
+        let repo = StubRepository::default();
+        let mut view = TaskListView::new();
+        view.set_tasks(numbered_tasks(30));
+        for _ in 0..15 {
+            view.handle_key(KeyCode::Down, &repo);
+        }
+        let before = render_view(&view, 40, 13);
+        view.handle_key(KeyCode::Up, &repo);
+        let after = render_view(&view, 40, 13);
+        assert!(before.contains("Task06") && after.contains("Task06"));
+        assert!(after.contains("Task14"));
+    }
+
+    #[test]
+    fn short_list_renders_without_scrolling() {
+        let mut view = TaskListView::new();
+        view.set_tasks(numbered_tasks(3));
+        let rendered = render_view(&view, 40, 13);
+        assert!(rendered.contains("Task00") && rendered.contains("Task02"));
+    }
+
+    #[test]
+    fn rows_show_task_id_column() {
+        let mut with_id = task("Alpha", Status::Todo);
+        with_id.id = Some(42);
+        let mut view = TaskListView::new();
+        view.set_tasks(vec![with_id, task("Beta", Status::Done)]);
+
+        let rendered = render_view(&view, 60, 10);
+        assert!(rendered.contains("ID"), "missing ID header:\n{rendered}");
+        assert!(rendered.contains("42"), "missing task id:\n{rendered}");
+        assert!(rendered.contains("Beta"));
     }
 
     #[test]
@@ -400,9 +511,9 @@ mod tests {
         view.set_tasks(vec![task("A", Status::Todo), task("B", Status::Done)]);
 
         // Apply a status filter (Status: Todo) through the filter popup.
-        view.handle_key(KeyCode::Char('f'), 1, &repo);
-        view.handle_key(KeyCode::Right, 1, &repo);
-        view.handle_key(KeyCode::Enter, 1, &repo);
+        view.handle_key(KeyCode::Char('f'), &repo);
+        view.handle_key(KeyCode::Right, &repo);
+        view.handle_key(KeyCode::Enter, &repo);
 
         assert_eq!(view.tasks().len(), 1);
         assert_eq!(view.all_tasks().len(), 2);
@@ -448,13 +559,13 @@ mod tests {
         ]);
 
         // Apply a status filter through the filter popup.
-        view.handle_key(KeyCode::Char('f'), 1, &repo);
-        view.handle_key(KeyCode::Right, 1, &repo); // status -> Todo
-        view.handle_key(KeyCode::Enter, 1, &repo); // apply
+        view.handle_key(KeyCode::Char('f'), &repo);
+        view.handle_key(KeyCode::Right, &repo); // status -> Todo
+        view.handle_key(KeyCode::Enter, &repo); // apply
         assert_eq!(view.tasks().len(), 2);
 
         // Re-enter filtering mode to verify it survives a data reload.
-        view.handle_key(KeyCode::Char('f'), 1, &repo);
+        view.handle_key(KeyCode::Char('f'), &repo);
         assert!(matches!(view.mode(), TaskListMode::Filtering(_)));
 
         // Reload data while the filter dialog is open.

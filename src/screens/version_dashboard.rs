@@ -1,6 +1,9 @@
 // Copyright (C) 2026 Diego Torréns Farias
 // SPDX-License-Identifier: AGPL-3.0-or-later
+//! Task list scoped to one version: the task table of `TaskListView` plus the
+//! version header. Replaces the former project-wide task screen (removed in #94).
 use std::sync::Arc;
+use std::time::Duration;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
@@ -10,21 +13,22 @@ use ratatui::{
 };
 
 use crate::db::repository::Repository;
-use crate::domain::project::Project;
 use crate::domain::task::{Priority, Status, Task};
+use crate::domain::version::Version;
 use crate::screens::components::keys::key;
 use crate::screens::task_list_view::TaskListView;
 pub use crate::screens::task_list_view::{FilterField, FilterState, TaskListMode};
-use crate::screens::{Action, Component, Screen};
+use crate::screens::{AUTO_REFRESH_INTERVAL, Action, Component, Screen};
 
-pub struct TaskListScreen {
+pub struct VersionDashboard {
     repo: Arc<dyn Repository>,
     project_id: i64,
-    project: Option<Project>,
+    version_id: i64,
+    version: Option<Version>,
     view: TaskListView,
 }
 
-impl TaskListScreen {
+impl VersionDashboard {
     pub const KEYBINDINGS: &[(KeyEvent, &'static str)] = &[
         (key(KeyCode::Char('j')), "Down"),
         (key(KeyCode::Char('k')), "Up"),
@@ -44,17 +48,31 @@ impl TaskListScreen {
         Self {
             repo,
             project_id: 0,
-            project: None,
+            version_id: 0,
+            version: None,
             view: TaskListView::new(),
         }
     }
 
-    pub fn set_project_id(&mut self, project_id: i64) {
+    pub fn set_ids(&mut self, project_id: i64, version_id: i64) {
         self.project_id = project_id;
+        self.version_id = version_id;
+    }
+
+    pub fn project_id(&self) -> i64 {
+        self.project_id
+    }
+
+    pub fn version_id(&self) -> i64 {
+        self.version_id
     }
 
     pub fn selected_task(&self) -> usize {
         self.view.selected()
+    }
+
+    pub fn set_selected_task(&mut self, index: usize) {
+        self.view.set_selected(index);
     }
 
     pub fn tasks(&self) -> &[Task] {
@@ -68,26 +86,34 @@ impl TaskListScreen {
     pub fn filter_priority(&self) -> Option<Priority> {
         self.view.filter_priority()
     }
+
+    fn load_tasks(&mut self) -> anyhow::Result<()> {
+        let version = self.repo.get_version(self.version_id)?;
+        self.project_id = version.project_id;
+        self.version = Some(version);
+        let tasks = self.repo.list_tasks_by_version(self.version_id)?;
+        self.view.set_tasks(tasks);
+        Ok(())
+    }
 }
 
-impl Component for TaskListScreen {
+impl Component for VersionDashboard {
     fn init(&mut self) -> anyhow::Result<()> {
-        self.project = Some(self.repo.get_project(self.project_id)?);
-        let tasks = self.repo.list_tasks_by_project(self.project_id)?;
-        self.view.set_tasks(tasks);
+        self.load_tasks()?;
         self.view.set_mode(TaskListMode::Browsing);
         Ok(())
     }
 
     fn refresh(&mut self) -> anyhow::Result<()> {
-        self.project = Some(self.repo.get_project(self.project_id)?);
-        let tasks = self.repo.list_tasks_by_project(self.project_id)?;
-        self.view.set_tasks(tasks);
-        Ok(())
+        self.load_tasks()
     }
 
     fn keybindings(&self) -> &'static [(KeyEvent, &'static str)] {
         Self::KEYBINDINGS
+    }
+
+    fn auto_refresh_interval(&self) -> Option<Duration> {
+        self.view.is_browsing().then_some(AUTO_REFRESH_INTERVAL)
     }
 
     fn handle_event(&mut self, event: &Event) -> Option<Action> {
@@ -106,7 +132,7 @@ impl Component for TaskListScreen {
                     KeyCode::Char('r') => return Some(Action::Refresh),
                     KeyCode::Char('c') => {
                         return Some(Action::Navigate(Screen::TaskForm {
-                            project_id: self.project_id,
+                            version_id: self.version_id,
                             task_id: None,
                         }));
                     }
@@ -118,26 +144,20 @@ impl Component for TaskListScreen {
                     _ => {}
                 }
             }
-            self.view.handle_key(code, self.project_id, &*self.repo)
+            self.view.handle_key(code, &*self.repo)
         } else {
             None
         }
     }
 
     fn render(&self, frame: &mut Frame, area: Rect) {
-        let project_name = self
-            .project
-            .as_ref()
-            .map(|p| p.name.as_str())
-            .unwrap_or("Project")
-            .to_uppercase();
-
-        let block = Block::default()
-            .title(project_name.to_string())
-            .borders(Borders::ALL);
+        let title = match &self.version {
+            Some(v) => format!("{} · {}", v.name, v.status.label()),
+            None => "Version".to_string(),
+        };
+        let block = Block::default().title(title).borders(Borders::ALL);
         let inner = block.inner(area);
         frame.render_widget(block, area);
-
         self.view.render(frame, inner);
     }
 }
@@ -157,29 +177,64 @@ mod tests {
 
     use super::*;
 
-    fn setup_with_tasks() -> (Arc<StubRepository>, TaskListScreen, i64) {
+    fn setup_with_tasks() -> (Arc<StubRepository>, VersionDashboard, i64) {
         let repo = Arc::new(StubRepository::default());
         let project = repo.create_project("Alpha", "First project").unwrap();
         let project_id = project.id.unwrap();
-        repo.create_task(project_id, "T1", "", Status::Todo, Priority::Low)
-            .unwrap();
-        repo.create_task(project_id, "T2", "", Status::Todo, Priority::Medium)
-            .unwrap();
-        repo.create_task(project_id, "T3", "", Status::Todo, Priority::High)
-            .unwrap();
-        repo.create_task(project_id, "T4", "", Status::InProgress, Priority::Low)
-            .unwrap();
-        repo.create_task(project_id, "T5", "", Status::Done, Priority::Medium)
-            .unwrap();
-        let mut screen = TaskListScreen::new(repo.clone());
-        screen.set_project_id(project_id);
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "T1",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "T2",
+            "",
+            Status::Todo,
+            Priority::Medium,
+        )
+        .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "T3",
+            "",
+            Status::Todo,
+            Priority::High,
+        )
+        .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "T4",
+            "",
+            Status::InProgress,
+            Priority::Low,
+        )
+        .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "T5",
+            "",
+            Status::Done,
+            Priority::Medium,
+        )
+        .unwrap();
+        let mut screen = VersionDashboard::new(repo.clone());
+        screen.set_ids(project_id, repo.default_version_id(project_id).unwrap());
         screen.init().unwrap();
         (repo, screen, project_id)
     }
 
     #[test]
     fn task_list_keybindings_match_spec() {
-        let keys: Vec<(KeyCode, &str)> = TaskListScreen::KEYBINDINGS
+        let keys: Vec<(KeyCode, &str)> = VersionDashboard::KEYBINDINGS
             .iter()
             .map(|(event, label)| (event.code, *label))
             .collect();
@@ -206,8 +261,7 @@ mod tests {
     fn init_loads_project_and_tasks() {
         let (_repo, screen, _id) = setup_with_tasks();
         assert_eq!(screen.tasks().len(), 5);
-        assert!(screen.project.is_some());
-        assert_eq!(screen.project.unwrap().name, "Alpha");
+        assert_eq!(screen.version.as_ref().map(|v| v.name.as_str()), Some("v0"));
     }
 
     #[test]
@@ -215,10 +269,17 @@ mod tests {
         let repo = Arc::new(StubRepository::default());
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
-        repo.create_task(project_id, "Only", "", Status::Todo, Priority::Low)
-            .unwrap();
-        let mut screen = TaskListScreen::new(repo);
-        screen.set_project_id(project_id);
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "Only",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
+        let mut screen = VersionDashboard::new(repo.clone());
+        screen.set_ids(project_id, repo.default_version_id(project_id).unwrap());
         screen.view.set_selected(5);
         screen.init().unwrap();
         assert_eq!(screen.selected_task(), 0);
@@ -229,8 +290,8 @@ mod tests {
         let repo = Arc::new(StubRepository::default());
         let project = repo.create_project("Empty", "").unwrap();
         let project_id = project.id.unwrap();
-        let mut screen = TaskListScreen::new(repo);
-        screen.set_project_id(project_id);
+        let mut screen = VersionDashboard::new(repo.clone());
+        screen.set_ids(project_id, repo.default_version_id(project_id).unwrap());
         screen.init().unwrap();
 
         let backend = TestBackend::new(60, 20);
@@ -244,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn render_shows_project_name_border() {
+    fn render_shows_version_header() {
         let (_repo, screen, _id) = setup_with_tasks();
         let backend = TestBackend::new(60, 20);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -253,15 +314,19 @@ mod tests {
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let text = buffer_to_string(&buffer);
-        assert!(text.contains("ALPHA"));
+        assert!(text.contains("v0 · Open"));
     }
 
     #[test]
     fn empty_list_renders_no_tasks_message() {
         let repo = Arc::new(StubRepository::default());
         let project = repo.create_project("Empty", "").unwrap();
-        let mut screen = TaskListScreen::new(repo);
-        screen.project = Some(project);
+        let mut screen = VersionDashboard::new(repo.clone());
+        screen.set_ids(
+            project.id.unwrap(),
+            repo.default_version_id(project.id.unwrap()).unwrap(),
+        );
+        screen.init().unwrap();
 
         let backend = TestBackend::new(60, 20);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -341,12 +406,12 @@ mod tests {
 
     #[test]
     fn t_key_navigates_to_new_task_form() {
-        let (_repo, mut screen, project_id) = setup_with_tasks();
+        let (_repo, mut screen, _project_id) = setup_with_tasks();
         let action = screen.handle_event(&key_event(KeyCode::Char('c')));
         assert_eq!(
             action,
             Some(Action::Navigate(Screen::TaskForm {
-                project_id,
+                version_id: screen.version_id(),
                 task_id: None,
             }))
         );
@@ -393,13 +458,13 @@ mod tests {
 
     #[test]
     fn enter_on_selected_navigates_to_edit_form() {
-        let (_repo, mut screen, project_id) = setup_with_tasks();
+        let (_repo, mut screen, _project_id) = setup_with_tasks();
         let task_id = screen.tasks()[screen.selected_task()].id.unwrap();
         let action = screen.handle_event(&key_event(KeyCode::Enter));
         assert_eq!(
             action,
             Some(Action::Navigate(Screen::TaskForm {
-                project_id,
+                version_id: screen.version_id(),
                 task_id: Some(task_id),
             }))
         );
@@ -445,9 +510,9 @@ mod tests {
         let repo = Arc::new(StubRepository::default());
         let project = repo.create_project("Empty", "").unwrap();
         let project_id = project.id.unwrap();
-        let mut screen = TaskListScreen::new(repo);
-        screen.project = Some(project);
-        screen.project_id = project_id;
+        let mut screen = VersionDashboard::new(repo.clone());
+        screen.set_ids(project_id, repo.default_version_id(project_id).unwrap());
+        screen.init().unwrap();
         let action = screen.handle_event(&key_event(KeyCode::Tab));
         assert_eq!(action, None);
     }
@@ -457,7 +522,14 @@ mod tests {
         let (repo, mut screen, _id) = setup_with_tasks();
         let task_id = screen.tasks()[screen.selected_task()].id.unwrap();
         let dep = repo
-            .create_task(screen.project_id, "Dep", "", Status::Todo, Priority::Low)
+            .create_task(
+                screen.project_id,
+                repo.default_version_id(screen.project_id).unwrap(),
+                "Dep",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         repo.add_dependency(dep.id.unwrap(), task_id).unwrap();
 
@@ -492,22 +564,62 @@ mod tests {
     }
 
     #[test]
-    fn task_list_with_tasks_snapshot() {
+    fn long_task_list_scrolls_to_selected_task() {
+        let repo = Arc::new(StubRepository::default());
+        let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version_id = repo.default_version_id(project_id).unwrap();
+        for i in 0..30 {
+            repo.create_task(
+                project_id,
+                version_id,
+                &format!("Task{i:02}"),
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
+            .unwrap();
+        }
+        let mut screen = VersionDashboard::new(repo.clone());
+        screen.set_ids(project_id, version_id);
+        screen.init().unwrap();
+
+        let before = render_to_string(&screen, 60, 16);
+        assert!(before.contains("Task00"));
+        assert!(!before.contains("Task29"));
+
+        for _ in 0..29 {
+            screen.handle_event(&key_event(KeyCode::Down));
+        }
+        assert_eq!(screen.selected_task(), 29);
+        let after = render_to_string(&screen, 60, 16);
+        assert!(after.contains("Task29"), "selection not visible:\n{after}");
+        assert!(
+            !after.contains("Task00"),
+            "top row should have scrolled out:\n{after}"
+        );
+    }
+
+    #[test]
+    fn version_dashboard_with_tasks_snapshot() {
         let (_repo, screen, _id) = setup_with_tasks();
         insta::assert_snapshot!(render_to_string(&screen, 60, 24));
     }
 
     #[test]
-    fn task_list_empty_snapshot() {
+    fn version_dashboard_empty_snapshot() {
         let repo = Arc::new(StubRepository::default());
         let project = repo.create_project("Empty", "No tasks here").unwrap();
-        let mut screen = TaskListScreen::new(repo);
-        screen.project = Some(project);
+        let mut screen = VersionDashboard::new(repo.clone());
+        screen.set_ids(
+            project.id.unwrap(),
+            repo.default_version_id(project.id.unwrap()).unwrap(),
+        );
+        screen.init().unwrap();
         insta::assert_snapshot!(render_to_string(&screen, 60, 24));
     }
 
     #[test]
-    fn task_list_confirm_delete_leaf_snapshot() {
+    fn version_dashboard_confirm_delete_leaf_snapshot() {
         let (_repo, mut screen, _id) = setup_with_tasks();
         screen
             .view
@@ -519,7 +631,7 @@ mod tests {
     }
 
     #[test]
-    fn task_list_confirm_delete_with_deps_snapshot() {
+    fn version_dashboard_confirm_delete_with_deps_snapshot() {
         let (_repo, mut screen, _id) = setup_with_tasks();
         screen
             .view

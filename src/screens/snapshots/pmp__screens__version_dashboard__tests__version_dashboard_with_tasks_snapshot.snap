@@ -1,15 +1,16 @@
 ---
-source: src/screens/task_list.rs
-expression: render_to_string(&screen)
+source: src/screens/version_dashboard.rs
+assertion_line: 605
+expression: "render_to_string(&screen, 60, 24)"
 ---
-┌ALPHA─────────────────────────────────────────────────────┐
+┌v0 · Open─────────────────────────────────────────────────┐
 │┌Tasks───────────────────────────────────────────────────┐│
-││Name                       Status         Priority      ││
-││T3                         Todo           High          ││
-││T2                         Todo           Medium        ││
-││T1                         Todo           Low           ││
-││T4                         In Progress    Low           ││
-││T5                         Done           Medium        ││
+││ID   Name                 Status         Priority       ││
+││5    T3                   Todo           High           ││
+││4    T2                   Todo           Medium         ││
+││3    T1                   Todo           Low            ││
+││6    T4                   In Progress    Low            ││
+││7    T5                   Done           Medium         ││
 ││                                                        ││
 ││                                                        ││
 ││                                                        ││

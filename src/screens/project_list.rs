@@ -17,6 +17,7 @@ use crate::screens::components::confirm_dialog::ConfirmDialog;
 use crate::screens::components::keys::key;
 use crate::screens::components::list_navigation::move_selection;
 use crate::screens::components::progress::completion_percentage;
+use crate::screens::components::scroll::{ListScroll, render_scrollbar};
 use crate::screens::{AUTO_REFRESH_INTERVAL, Action, Component, Screen};
 
 pub enum ProjectListMode {
@@ -28,7 +29,9 @@ pub struct ProjectListScreen {
     repo: Arc<dyn Repository>,
     projects: Vec<crate::domain::project::Project>,
     progress: Vec<u64>,
+    version_counts: Vec<usize>,
     selected: usize,
+    scroll: ListScroll,
     mode: ProjectListMode,
 }
 
@@ -49,7 +52,9 @@ impl ProjectListScreen {
             repo,
             projects: Vec::new(),
             progress: Vec::new(),
+            version_counts: Vec::new(),
             selected: 0,
+            scroll: ListScroll::new(),
             mode: ProjectListMode::Browsing,
         }
     }
@@ -72,6 +77,16 @@ impl Component for ProjectListScreen {
                     .list_tasks_by_project(project_id)
                     .unwrap_or_default();
                 completion_percentage(&tasks)
+            })
+            .collect();
+        self.version_counts = self
+            .projects
+            .iter()
+            .map(|project| {
+                self.repo
+                    .list_versions_by_project(project.id.unwrap_or(0))
+                    .map(|versions| versions.len())
+                    .unwrap_or(0)
             })
             .collect();
         self.selected = self.selected.min(self.projects.len().saturating_sub(1));
@@ -159,23 +174,42 @@ fn render_list(screen: &ProjectListScreen, frame: &mut Frame, area: Rect) {
         return;
     }
 
-    let items: Vec<ListItem> = screen
-        .projects
+    // Rows that fit inside the top and bottom borders.
+    let row_height = area.height.saturating_sub(2) as usize;
+    let range = screen
+        .scroll
+        .visible_range(screen.projects.len(), screen.selected, row_height);
+
+    let items: Vec<ListItem> = screen.projects[range.clone()]
         .iter()
         .enumerate()
-        .map(|(i, p)| {
+        .map(|(offset, p)| {
+            let i = range.start + offset;
             let style = if i == screen.selected {
                 Style::default().add_modifier(Modifier::REVERSED)
             } else {
                 Style::default()
             };
             let progress = screen.progress.get(i).copied().unwrap_or(0);
-            let label = format!("{} ({}%)", p.name, progress);
+            let versions = screen.version_counts.get(i).copied().unwrap_or(0);
+            let label = format!(
+                "{} ({} {} · {}%)",
+                p.name,
+                versions,
+                if versions == 1 { "version" } else { "versions" },
+                progress
+            );
             ListItem::new(Line::from(Span::styled(label, style)))
         })
         .collect();
     let list = List::new(items).block(block);
     frame.render_widget(list, area);
+
+    // Scrollbar on the right border, aligned with the data rows.
+    if row_height > 0 && area.width > 0 {
+        let track = Rect::new(area.x + area.width - 1, area.y + 1, 1, row_height as u16);
+        render_scrollbar(frame, track, screen.projects.len(), row_height, range.start);
+    }
 }
 
 #[cfg(test)]
@@ -323,6 +357,32 @@ mod tests {
         assert_eq!(screen.auto_refresh_interval(), Some(AUTO_REFRESH_INTERVAL));
         screen.handle_event(&char_event('d'));
         assert_eq!(screen.auto_refresh_interval(), None);
+    }
+
+    #[test]
+    fn selected_project_stays_visible_when_list_overflows() {
+        let repo = Arc::new(StubRepository::default());
+        for i in 0..30 {
+            repo.create_project(&format!("Proj{i:02}"), "").unwrap();
+        }
+        let mut screen = ProjectListScreen::new(repo);
+        screen.init().unwrap();
+
+        // Height 12 => 10 rows between the borders.
+        let before = render_to_string(&screen, 40, 12);
+        assert!(before.contains("Proj00"));
+        assert!(!before.contains("Proj12"));
+
+        for _ in 0..14 {
+            screen.handle_event(&char_event('j'));
+        }
+        let after = render_to_string(&screen, 40, 12);
+        assert_eq!(screen.selected, 14);
+        assert!(after.contains("Proj14"), "selection not visible:\n{after}");
+        assert!(
+            !after.contains("Proj00"),
+            "top row should have scrolled out:\n{after}"
+        );
     }
 
     #[test]

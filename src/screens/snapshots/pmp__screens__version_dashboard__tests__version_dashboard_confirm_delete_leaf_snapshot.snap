@@ -1,10 +1,10 @@
 ---
-source: src/screens/task_list.rs
-assertion_line: 676
-expression: render_to_string(&screen)
+source: src/screens/version_dashboard.rs
+assertion_line: 579
+expression: "render_to_string(&screen, 60, 24)"
 ---
-┌ALPHA─────────────────────────────────────────────────────┐
-│ Deleting will remove 1 dependency links. Continue? (y/N) │
+┌v0 · Open─────────────────────────────────────────────────┐
+│                   Delete task T3? (y/N)                  │
 │                                                          │
 │                                                          │
 │                                                          │

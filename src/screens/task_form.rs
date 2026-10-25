@@ -14,14 +14,22 @@ use ratatui_textarea::TextArea;
 
 use crate::db::repository::Repository;
 use crate::domain::task::{Priority, Status, Task, TaskNote};
-use crate::screens::components::fields::{render_field, render_readonly_field};
+use crate::screens::components::fields::{
+    render_description_field, render_field, render_readonly_field,
+};
 use crate::screens::components::keys::{ctrl, key};
 use crate::screens::components::popup::{centered_rect_percent, render_popup_scaffold};
+use crate::screens::components::scroll::{
+    ListScroll, TextScroll, render_scrollbar, wrapped_line_count,
+};
 use crate::screens::{Action, Component, Screen};
 
 pub struct TaskForm {
     repo: Arc<dyn Repository>,
+    /// Project that owns `version_id`, resolved from the version on init.
     project_id: i64,
+    /// Version the task belongs to (set by the screen that opens the form).
+    version_id: i64,
     task_id: Option<i64>,
     name: String,
     description: TextArea<'static>,
@@ -39,16 +47,24 @@ pub struct TaskForm {
     popup_selected: usize,
     dep_original_selection: HashSet<i64>,
     popup_filtered_tasks: Vec<Task>,
+    popup_scroll: ListScroll,
+    deps_scroll: TextScroll,
+    notes_scroll: TextScroll,
 }
 
 impl TaskForm {
-    pub const KEYBINDINGS: &[(KeyEvent, &'static str)] =
-        &[(ctrl('s'), "Submit"), (key(KeyCode::Esc), "Cancel")];
+    pub const KEYBINDINGS: &[(KeyEvent, &'static str)] = &[
+        (ctrl('s'), "Submit"),
+        (key(KeyCode::Esc), "Cancel"),
+        (key(KeyCode::PageDown), "Scroll deps/notes"),
+        (key(KeyCode::PageUp), "Scroll deps/notes"),
+    ];
 
     pub fn new(repo: Arc<dyn Repository>) -> Self {
         Self {
             repo,
             project_id: 0,
+            version_id: 0,
             task_id: None,
             name: String::new(),
             description: TextArea::default(),
@@ -66,11 +82,14 @@ impl TaskForm {
             popup_selected: 0,
             dep_original_selection: HashSet::new(),
             popup_filtered_tasks: Vec::new(),
+            popup_scroll: ListScroll::new(),
+            deps_scroll: TextScroll::new(),
+            notes_scroll: TextScroll::new(),
         }
     }
 
-    pub fn set_project_id(&mut self, project_id: i64) {
-        self.project_id = project_id;
+    pub fn set_version_id(&mut self, version_id: i64) {
+        self.version_id = version_id;
     }
 
     pub fn set_task_id(&mut self, task_id: Option<i64>) {
@@ -192,9 +211,10 @@ impl TaskForm {
 
 impl Component for TaskForm {
     fn init(&mut self) -> anyhow::Result<()> {
+        self.project_id = self.repo.get_version(self.version_id)?.project_id;
         self.available_tasks = self
             .repo
-            .list_tasks_by_project(self.project_id)?
+            .list_tasks_by_version(self.version_id)?
             .into_iter()
             .filter(|t| t.id != self.task_id)
             .collect();
@@ -222,6 +242,9 @@ impl Component for TaskForm {
         self.dep_filter.clear();
         self.popup_selected = 0;
         self.dep_original_selection.clear();
+        self.popup_scroll.reset();
+        self.deps_scroll.reset();
+        self.notes_scroll.reset();
         self.recompute_filtered_tasks();
         Ok(())
     }
@@ -229,7 +252,7 @@ impl Component for TaskForm {
     fn refresh(&mut self) -> anyhow::Result<()> {
         self.available_tasks = self
             .repo
-            .list_tasks_by_project(self.project_id)?
+            .list_tasks_by_version(self.version_id)?
             .into_iter()
             .filter(|t| t.id != self.task_id)
             .collect();
@@ -260,7 +283,7 @@ impl Component for TaskForm {
                 }
                 return Some(Action::SaveTask {
                     task_id: self.task_id,
-                    project_id: self.project_id,
+                    version_id: self.version_id,
                     name: self.name.clone(),
                     description: self.description.lines().join("\n"),
                     status: self.status,
@@ -277,6 +300,19 @@ impl Component for TaskForm {
                 KeyCode::Esc => Some(Action::Navigate(self.return_to.clone())),
                 KeyCode::Tab => {
                     self.active_field = (self.active_field + 1) % 6;
+                    None
+                }
+                KeyCode::PageUp | KeyCode::PageDown => {
+                    let scroll = match self.active_field {
+                        4 => &self.deps_scroll,
+                        5 => &self.notes_scroll,
+                        _ => return None,
+                    };
+                    if *code == KeyCode::PageUp {
+                        scroll.page_up();
+                    } else {
+                        scroll.page_down();
+                    }
                     None
                 }
                 KeyCode::Backspace => {
@@ -420,18 +456,13 @@ impl Component for TaskForm {
             self.error.is_some() && self.active_field == 0,
         );
 
-        let desc_style = if self.active_field == 1 {
-            Style::default().add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-        };
-        let desc_block = Block::default()
-            .title("Description")
-            .borders(Borders::ALL)
-            .border_style(desc_style);
-        let mut desc_textarea = self.description.clone();
-        desc_textarea.set_block(desc_block);
-        frame.render_widget(&desc_textarea, chunks[1]);
+        render_description_field(
+            frame,
+            chunks[1],
+            "Description",
+            &self.description,
+            self.active_field == 1,
+        );
 
         render_readonly_field(
             frame,
@@ -495,20 +526,28 @@ fn render_notes(form: &TaskForm, frame: &mut Frame, area: Rect) -> Vec<Rect> {
         .constraints([Constraint::Min(1), Constraint::Length(3)])
         .split(inner);
 
+    let list_area = notes_chunks[0];
     if form.notes.is_empty() {
+        form.notes_scroll.sync(0, list_area.height);
         let placeholder =
             Paragraph::new("No notes yet").style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(placeholder, notes_chunks[0]);
+        frame.render_widget(placeholder, list_area);
     } else {
-        let lines: Vec<ratatui::text::Line> = form
+        let rows: Vec<String> = form
             .notes
             .iter()
-            .map(|note| {
-                ratatui::text::Line::from(format!("{} - {}", note.created_at, note.content))
-            })
+            .map(|note| format!("{} - {}", note.created_at, note.content))
             .collect();
-        let list = Paragraph::new(ratatui::text::Text::from(lines)).wrap(Wrap { trim: true });
-        frame.render_widget(list, notes_chunks[0]);
+        let offset = form.notes_scroll.sync(
+            wrapped_line_count(&rows.join("\n"), list_area.width),
+            list_area.height,
+        );
+        let lines: Vec<ratatui::text::Line> =
+            rows.into_iter().map(ratatui::text::Line::from).collect();
+        let list = Paragraph::new(ratatui::text::Text::from(lines))
+            .wrap(Wrap { trim: true })
+            .scroll((offset, 0));
+        frame.render_widget(list, list_area);
     }
 
     render_field(
@@ -546,7 +585,8 @@ fn render_dependencies(form: &TaskForm, frame: &mut Frame, area: Rect) {
         if form.active_field == 4 {
             lines.push(ratatui::text::Line::from("[Enter: manage dependencies]"));
         }
-        let para = Paragraph::new(ratatui::text::Text::from(lines));
+        let offset = form.deps_scroll.sync(lines.len(), inner.height);
+        let para = Paragraph::new(ratatui::text::Text::from(lines)).scroll((offset, 0));
         frame.render_widget(para, inner);
         return;
     }
@@ -573,7 +613,8 @@ fn render_dependencies(form: &TaskForm, frame: &mut Frame, area: Rect) {
         lines.push(ratatui::text::Line::from("[Enter: manage dependencies]"));
     }
 
-    let para = Paragraph::new(ratatui::text::Text::from(lines));
+    let offset = form.deps_scroll.sync(lines.len(), inner.height);
+    let para = Paragraph::new(ratatui::text::Text::from(lines)).scroll((offset, 0));
     frame.render_widget(para, inner);
 }
 
@@ -602,11 +643,20 @@ fn render_dep_popup(form: &TaskForm, frame: &mut Frame, area: Rect) {
         return;
     }
 
-    let lines: Vec<ratatui::text::Line> = form
-        .popup_filtered_tasks
+    // Rows that fit in the list area; the selected row is kept visible.
+    let list_area = chunks[1];
+    let row_height = list_area.height as usize;
+    let range = form.popup_scroll.visible_range(
+        form.popup_filtered_tasks.len(),
+        form.popup_selected,
+        row_height,
+    );
+
+    let lines: Vec<ratatui::text::Line> = form.popup_filtered_tasks[range.clone()]
         .iter()
         .enumerate()
-        .map(|(i, task)| {
+        .map(|(offset, task)| {
+            let i = range.start + offset;
             let checked = task
                 .id
                 .map(|id| form.selected_deps.contains(&id))
@@ -626,7 +676,24 @@ fn render_dep_popup(form: &TaskForm, frame: &mut Frame, area: Rect) {
         .collect();
 
     let list_para = Paragraph::new(ratatui::text::Text::from(lines));
-    frame.render_widget(list_para, chunks[1]);
+    frame.render_widget(list_para, list_area);
+
+    // Scrollbar on the list's right edge when the picker overflows.
+    if row_height > 0 && list_area.width > 0 {
+        let track = Rect::new(
+            list_area.x + list_area.width - 1,
+            list_area.y,
+            1,
+            row_height as u16,
+        );
+        render_scrollbar(
+            frame,
+            track,
+            form.popup_filtered_tasks.len(),
+            row_height,
+            range.start,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -654,7 +721,7 @@ mod tests {
         let project = repo.create_project("Alpha", "").unwrap();
         let project_id = project.id.unwrap();
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.init().unwrap();
         (repo, form, project_id)
     }
@@ -697,7 +764,7 @@ mod tests {
             action,
             Some(Action::SaveTask {
                 task_id: None,
-                project_id,
+                version_id: _repo.default_version_id(project_id).unwrap(),
                 name: "Task".to_string(),
                 description: "D".to_string(),
                 status: Status::InProgress,
@@ -713,6 +780,7 @@ mod tests {
         let task = repo
             .create_task(
                 project_id,
+                repo.default_version_id(project_id).unwrap(),
                 "Auth",
                 "secret",
                 Status::InProgress,
@@ -720,7 +788,7 @@ mod tests {
             )
             .unwrap();
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.set_task_id(task.id);
         form.init().unwrap();
 
@@ -734,10 +802,17 @@ mod tests {
     fn enter_in_edit_emits_save_with_task_id() {
         let (repo, _form, project_id) = setup();
         let task = repo
-            .create_task(project_id, "Auth", "", Status::Todo, Priority::Medium)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Auth",
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
             .unwrap();
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.set_task_id(task.id);
         form.init().unwrap();
         form.handle_event(&char_event('V'));
@@ -746,7 +821,7 @@ mod tests {
             action,
             Some(Action::SaveTask {
                 task_id: task.id,
-                project_id,
+                version_id: repo.default_version_id(project_id).unwrap(),
                 name: "AuthV".to_string(),
                 description: "".to_string(),
                 status: Status::Todo,
@@ -760,10 +835,17 @@ mod tests {
     fn title_shows_edit_when_task_id_set() {
         let (repo, _form, project_id) = setup();
         let task = repo
-            .create_task(project_id, "Auth", "", Status::Todo, Priority::Medium)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Auth",
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
             .unwrap();
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.set_task_id(task.id);
         form.init().unwrap();
 
@@ -783,6 +865,7 @@ mod tests {
         let task = repo
             .create_task(
                 project_id,
+                repo.default_version_id(project_id).unwrap(),
                 "Auth",
                 "desc",
                 Status::InProgress,
@@ -790,7 +873,7 @@ mod tests {
             )
             .unwrap();
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.set_task_id(task.id);
         form.init().unwrap();
         insta::assert_snapshot!(render_to_string(&form, 60, 28));
@@ -811,11 +894,17 @@ mod tests {
     #[test]
     fn esc_returns_to_return_to_screen() {
         let (_repo, mut form, project_id) = setup();
-        form.set_return_to(&Screen::TaskList { project_id });
+        form.set_return_to(&Screen::VersionDashboard {
+            project_id,
+            version_id: _repo.default_version_id(project_id).unwrap(),
+        });
         let action = form.handle_event(&key_event(KeyCode::Esc));
         assert_eq!(
             action,
-            Some(Action::Navigate(Screen::TaskList { project_id }))
+            Some(Action::Navigate(Screen::VersionDashboard {
+                project_id,
+                version_id: _repo.default_version_id(project_id).unwrap(),
+            }))
         );
     }
 
@@ -872,7 +961,12 @@ mod tests {
             .collect();
         assert_eq!(
             keys,
-            vec![(KeyCode::Char('s'), "Submit"), (KeyCode::Esc, "Cancel")]
+            vec![
+                (KeyCode::Char('s'), "Submit"),
+                (KeyCode::Esc, "Cancel"),
+                (KeyCode::PageDown, "Scroll deps/notes"),
+                (KeyCode::PageUp, "Scroll deps/notes"),
+            ]
         );
     }
 
@@ -890,7 +984,14 @@ mod tests {
     fn refresh_after_add_task_note_preserves_form_state() {
         let (repo, mut form, project_id) = setup();
         let task = repo
-            .create_task(project_id, "Task", "desc", Status::Todo, Priority::Medium)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Task",
+                "desc",
+                Status::Todo,
+                Priority::Medium,
+            )
             .unwrap();
         let task_id = task.id.unwrap();
         form.set_task_id(Some(task_id));
@@ -907,7 +1008,14 @@ mod tests {
 
         // Add a dependency and open the popup.
         let dep = repo
-            .create_task(project_id, "Dep", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Dep",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let dep_id = dep.id.unwrap();
         repo.add_dependency(task_id, dep_id).unwrap();
@@ -944,8 +1052,15 @@ mod tests {
     #[test]
     fn popup_opens_on_enter_at_field_4() {
         let (repo, mut form, project_id) = setup();
-        repo.create_task(project_id, "Dep", "", Status::Todo, Priority::Low)
-            .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "Dep",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
         form.init().unwrap();
         form.active_field = 4;
         let action = form.handle_event(&key_event(KeyCode::Enter));
@@ -958,8 +1073,15 @@ mod tests {
     #[test]
     fn popup_dependency_list_uses_canonical_status_style() {
         let (repo, mut form, project_id) = setup();
-        repo.create_task(project_id, "Dep", "", Status::InProgress, Priority::Low)
-            .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "Dep",
+            "",
+            Status::InProgress,
+            Priority::Low,
+        )
+        .unwrap();
         form.init().unwrap();
         form.active_field = 4;
         form.handle_event(&key_event(KeyCode::Enter));
@@ -979,7 +1101,14 @@ mod tests {
     fn popup_escape_restores_original_selection() {
         let (repo, mut form, project_id) = setup();
         let dep = repo
-            .create_task(project_id, "Dep", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Dep",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let dep_id = dep.id.unwrap();
         form.init().unwrap();
@@ -997,7 +1126,14 @@ mod tests {
     fn popup_enter_confirms_selection() {
         let (repo, mut form, project_id) = setup();
         let dep = repo
-            .create_task(project_id, "Dep", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Dep",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let dep_id = dep.id.unwrap();
         form.init().unwrap();
@@ -1015,7 +1151,14 @@ mod tests {
     fn popup_space_toggles_selection() {
         let (repo, mut form, project_id) = setup();
         let dep = repo
-            .create_task(project_id, "Dep", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Dep",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let dep_id = dep.id.unwrap();
         form.init().unwrap();
@@ -1030,10 +1173,24 @@ mod tests {
     #[test]
     fn popup_jk_navigation() {
         let (repo, mut form, project_id) = setup();
-        repo.create_task(project_id, "First", "", Status::Todo, Priority::Low)
-            .unwrap();
-        repo.create_task(project_id, "Second", "", Status::Todo, Priority::Low)
-            .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "First",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "Second",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
         form.init().unwrap();
         form.active_field = 4;
         form.handle_event(&key_event(KeyCode::Enter));
@@ -1058,10 +1215,24 @@ mod tests {
     #[test]
     fn popup_filter_narrows_list() {
         let (repo, mut form, project_id) = setup();
-        repo.create_task(project_id, "Auth", "", Status::Todo, Priority::Low)
-            .unwrap();
-        repo.create_task(project_id, "API", "", Status::Todo, Priority::Low)
-            .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "Auth",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "API",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
         form.init().unwrap();
         form.active_field = 4;
         form.handle_event(&key_event(KeyCode::Enter));
@@ -1074,8 +1245,15 @@ mod tests {
     #[test]
     fn popup_filter_empty_state() {
         let (repo, mut form, project_id) = setup();
-        repo.create_task(project_id, "Auth", "", Status::Todo, Priority::Low)
-            .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "Auth",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
         form.init().unwrap();
         form.active_field = 4;
         form.handle_event(&key_event(KeyCode::Enter));
@@ -1088,10 +1266,24 @@ mod tests {
     #[test]
     fn popup_backspace_removes_char_and_refilters() {
         let (repo, mut form, project_id) = setup();
-        repo.create_task(project_id, "Auth", "", Status::Todo, Priority::Low)
-            .unwrap();
-        repo.create_task(project_id, "API", "", Status::Todo, Priority::Low)
-            .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "Auth",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "API",
+            "",
+            Status::Todo,
+            Priority::Low,
+        )
+        .unwrap();
         form.init().unwrap();
         form.active_field = 4;
         form.handle_event(&key_event(KeyCode::Enter));
@@ -1115,7 +1307,14 @@ mod tests {
     fn compact_dependencies_renders_selected_with_status() {
         let (repo, mut form, project_id) = setup();
         let dep = repo
-            .create_task(project_id, "Dep", "", Status::Done, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Dep",
+                "",
+                Status::Done,
+                Priority::Low,
+            )
             .unwrap();
         let dep_id = dep.id.unwrap();
         form.init().unwrap();
@@ -1131,7 +1330,14 @@ mod tests {
     fn compact_dependencies_use_canonical_status_style() {
         let (repo, mut form, project_id) = setup();
         let dep = repo
-            .create_task(project_id, "Dep", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Dep",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let dep_id = dep.id.unwrap();
         form.init().unwrap();
@@ -1181,14 +1387,21 @@ mod tests {
     fn notes_list_renders_existing_notes() {
         let (repo, _form, project_id) = setup();
         let task = repo
-            .create_task(project_id, "Auth", "", Status::Todo, Priority::Medium)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Auth",
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
             .unwrap();
         let task_id = task.id.unwrap();
         repo.add_task_note(task_id, "First note").unwrap();
         repo.add_task_note(task_id, "Second note").unwrap();
 
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.set_task_id(Some(task_id));
         form.init().unwrap();
 
@@ -1202,10 +1415,17 @@ mod tests {
     fn empty_notes_renders_placeholder() {
         let (repo, _form, project_id) = setup();
         let task = repo
-            .create_task(project_id, "Auth", "", Status::Todo, Priority::Medium)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Auth",
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
             .unwrap();
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.set_task_id(task.id);
         form.init().unwrap();
 
@@ -1217,11 +1437,18 @@ mod tests {
     fn enter_in_notes_field_emits_add_task_note() {
         let (repo, _form, project_id) = setup();
         let task = repo
-            .create_task(project_id, "Auth", "", Status::Todo, Priority::Medium)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Auth",
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
             .unwrap();
         let task_id = task.id.unwrap();
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.set_task_id(Some(task_id));
         form.init().unwrap();
         form.active_field = 5;
@@ -1241,11 +1468,18 @@ mod tests {
     fn empty_note_does_not_emit_action() {
         let (repo, _form, project_id) = setup();
         let task = repo
-            .create_task(project_id, "Auth", "", Status::Todo, Priority::Medium)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Auth",
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
             .unwrap();
         let task_id = task.id.unwrap();
         let mut form = TaskForm::new(repo.clone());
-        form.set_project_id(project_id);
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
         form.set_task_id(Some(task_id));
         form.init().unwrap();
         form.active_field = 5;
@@ -1267,10 +1501,24 @@ mod tests {
     fn cycle_creating_task_excluded_from_popup() {
         let (repo, mut form, project_id) = setup();
         let a = repo
-            .create_task(project_id, "A", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "A",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let b = repo
-            .create_task(project_id, "B", "", Status::Todo, Priority::Low)
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "B",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
             .unwrap();
         let a_id = a.id.unwrap();
         let b_id = b.id.unwrap();
@@ -1282,5 +1530,200 @@ mod tests {
         assert!(!form.popup_filtered_tasks.iter().any(|t| t.id == Some(b_id)));
         // Task A itself is also excluded from available_tasks during init, so the popup is empty.
         assert!(form.popup_filtered_tasks.is_empty());
+    }
+
+    #[test]
+    fn dependency_picker_keeps_selected_task_visible() {
+        let repo = Arc::new(StubRepository::default());
+        let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version_id = repo.default_version_id(project_id).unwrap();
+        for i in 0..30 {
+            repo.create_task(
+                project_id,
+                version_id,
+                &format!("Dep{i:02}"),
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
+            .unwrap();
+        }
+        let mut form = TaskForm::new(repo.clone());
+        form.set_version_id(version_id);
+        form.init().unwrap();
+        form.active_field = 4;
+        form.handle_event(&key_event(KeyCode::Enter));
+        assert!(form.show_dep_popup());
+
+        let before = render_to_string(&form, 100, 40);
+        assert!(before.contains("Dep00"));
+
+        for _ in 0..25 {
+            form.handle_event(&key_event(KeyCode::Down));
+        }
+        let after = render_to_string(&form, 100, 40);
+        assert_eq!(form.popup_selected, 25);
+        assert!(after.contains("Dep25"), "selection not visible:\n{after}");
+        assert!(
+            !after.contains("Dep00"),
+            "first row should have scrolled out:\n{after}"
+        );
+    }
+
+    #[test]
+    fn page_keys_scroll_notes_only_when_notes_section_is_focused() {
+        let repo = Arc::new(StubRepository::default());
+        let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version_id = repo.default_version_id(project_id).unwrap();
+        let task_id = repo
+            .create_task(
+                project_id,
+                version_id,
+                "Task",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
+            .unwrap()
+            .id
+            .unwrap();
+        for i in 0..40 {
+            repo.add_task_note(task_id, &format!("note-{i:02}"))
+                .unwrap();
+        }
+        let mut form = TaskForm::new(repo.clone());
+        form.set_version_id(version_id);
+        form.set_task_id(Some(task_id));
+        form.init().unwrap();
+
+        // Not focused: PageDown does nothing to the notes.
+        form.active_field = 0;
+        form.handle_event(&key_event(KeyCode::PageDown));
+        assert_eq!(form.notes_scroll.offset(), 0);
+
+        form.active_field = 5;
+        let top = render_to_string(&form, 80, 30);
+        assert!(top.contains("note-39"));
+        form.handle_event(&key_event(KeyCode::PageDown));
+        let scrolled = render_to_string(&form, 80, 30);
+        assert!(
+            !scrolled.contains("note-00"),
+            "notes did not scroll:\n{scrolled}"
+        );
+
+        // Paging back up returns to the first note.
+        form.handle_event(&key_event(KeyCode::PageUp));
+        form.handle_event(&key_event(KeyCode::PageUp));
+        let back = render_to_string(&form, 80, 30);
+        assert!(back.contains("note-39"));
+    }
+
+    #[test]
+    fn page_keys_scroll_dependencies_when_section_is_focused() {
+        let repo = Arc::new(StubRepository::default());
+        let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version_id = repo.default_version_id(project_id).unwrap();
+        let task_id = repo
+            .create_task(
+                project_id,
+                version_id,
+                "Task",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
+            .unwrap()
+            .id
+            .unwrap();
+        for i in 0..20 {
+            let dep = repo
+                .create_task(
+                    project_id,
+                    version_id,
+                    &format!("Dep{i:02}"),
+                    "",
+                    Status::Todo,
+                    Priority::Low,
+                )
+                .unwrap();
+            repo.add_dependency(task_id, dep.id.unwrap()).unwrap();
+        }
+        let mut form = TaskForm::new(repo.clone());
+        form.set_version_id(version_id);
+        form.set_task_id(Some(task_id));
+        form.init().unwrap();
+
+        form.active_field = 4;
+        form.handle_event(&key_event(KeyCode::PageDown));
+        assert!(form.deps_scroll.offset() > 0);
+        // Pressing past the end is clamped on render, not accumulated.
+        for _ in 0..10 {
+            form.handle_event(&key_event(KeyCode::PageDown));
+        }
+        render_to_string(&form, 80, 30);
+        let max = form.deps_scroll.offset();
+        form.handle_event(&key_event(KeyCode::PageUp));
+        assert!(form.deps_scroll.offset() < max);
+    }
+
+    #[test]
+    fn long_description_wraps_within_block() {
+        let (repo, _form, project_id) = setup();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "Auth",
+            "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu",
+            Status::Todo,
+            Priority::Medium,
+        )
+        .unwrap();
+        let task = repo.list_tasks_by_project(project_id).unwrap().remove(0);
+        let mut form = TaskForm::new(repo.clone());
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
+        form.set_task_id(task.id);
+        form.init().unwrap();
+        let backend = TestBackend::new(40, 28);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| form.render(frame, frame.area()))
+            .unwrap();
+        let text = buffer_to_string(terminal.backend().buffer());
+        let lines: Vec<&str> = text.split('\n').collect();
+        let title_row = lines
+            .iter()
+            .position(|l| l.contains("Description"))
+            .expect("Description block rendered");
+        // Second text row of the Description block (title row + 2).
+        let row = lines[title_row + 2];
+        let inner = row.trim_matches(|c: char| c == '│' || c == ' ');
+        assert!(
+            !inner.is_empty(),
+            "Description row 2 should hold wrapped text, got {row:?}"
+        );
+        assert!(
+            text.contains("zulu"),
+            "last word of long description must be visible:\n{text}"
+        );
+    }
+
+    #[test]
+    fn task_form_long_description_snapshot() {
+        let (repo, _form, project_id) = setup();
+        let task = repo
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Auth",
+                "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu",
+                Status::Todo,
+                Priority::Medium,
+            )
+            .unwrap();
+        let mut form = TaskForm::new(repo.clone());
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
+        form.set_task_id(task.id);
+        form.init().unwrap();
+        insta::assert_snapshot!(render_to_string(&form, 40, 28));
     }
 }

@@ -6,13 +6,12 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
     widgets::{Block, Borders, Clear},
 };
 use ratatui_textarea::TextArea;
 
 use crate::db::repository::Repository;
-use crate::screens::components::fields::render_field;
+use crate::screens::components::fields::{render_description_field, render_field};
 use crate::screens::components::keys::{ctrl, key};
 use crate::screens::{Action, Component, Screen};
 
@@ -188,18 +187,13 @@ impl Component for ProjectForm {
             false,
         );
 
-        let desc_style = if self.active_field == 1 {
-            Style::default().add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-        };
-        let desc_block = Block::default()
-            .title("Description")
-            .borders(Borders::ALL)
-            .border_style(desc_style);
-        let mut desc_textarea = self.description.clone();
-        desc_textarea.set_block(desc_block);
-        frame.render_widget(&desc_textarea, chunks[1]);
+        render_description_field(
+            frame,
+            chunks[1],
+            "Description",
+            &self.description,
+            self.active_field == 1,
+        );
 
         if self.active_field == 0 {
             let x = chunks[0].x + 1 + self.name.chars().count() as u16;
@@ -409,5 +403,46 @@ mod tests {
             keys,
             vec![(KeyCode::Char('s'), "Submit"), (KeyCode::Esc, "Cancel")]
         );
+    }
+
+    #[test]
+    fn long_description_wraps_within_block() {
+        let repo = Arc::new(StubRepository::default());
+        let project = repo.create_project("Alpha", "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu").unwrap();
+        let mut form = ProjectForm::new(repo.clone());
+        form.set_project_id(project.id);
+        form.init().unwrap();
+        let backend = TestBackend::new(40, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| form.render(frame, frame.area()))
+            .unwrap();
+        let text = buffer_to_string(terminal.backend().buffer());
+        let lines: Vec<&str> = text.split('\n').collect();
+        let title_row = lines
+            .iter()
+            .position(|l| l.contains("Description"))
+            .expect("Description block rendered");
+        // Second text row of the Description block (title row + 2).
+        let row = lines[title_row + 2];
+        let inner = row.trim_matches(|c: char| c == '│' || c == ' ');
+        assert!(
+            !inner.is_empty(),
+            "Description row 2 should hold wrapped text, got {row:?}"
+        );
+        assert!(
+            text.contains("zulu"),
+            "last word of long description must be visible:\n{text}"
+        );
+    }
+
+    #[test]
+    fn project_form_long_description_snapshot() {
+        let repo = Arc::new(StubRepository::default());
+        let project = repo.create_project("Alpha", "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu").unwrap();
+        let mut form = ProjectForm::new(repo.clone());
+        form.set_project_id(project.id);
+        form.init().unwrap();
+        insta::assert_snapshot!(render_to_string(&form, 40, 20));
     }
 }
