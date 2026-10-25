@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/dtorrensf/pmp/compare/pmp-v0.4.1...pmp-v0.5.0) (2026-10-25)
+
+
+### Features
+
+* Implement version management features and scrolling enhancements ([#34](https://github.com/dtorrensf/pmp/issues/34)) ([4180510](https://github.com/dtorrensf/pmp/commit/4180510e87366889a0f54851d680b80eb1846533))
+
 ## [0.4.1](https://github.com/dtorrensf/pmp/compare/pmp-v0.4.0...pmp-v0.4.1) (2026-10-17)
 
 
