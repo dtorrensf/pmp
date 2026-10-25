@@ -68,6 +68,14 @@ pub struct CreateProjectParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+pub struct UpdateProjectParams {
+    pub project_id: i64,
+    pub name: String,
+    /// New description. When omitted, the current description is kept.
+    pub description: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct CreateVersionParams {
     pub project_id: i64,
     pub name: String,
@@ -344,6 +352,44 @@ impl PmpServer {
                     .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
                 Ok(CallToolResult::success(vec![content]))
             }
+            Err(AppError::Validation(msg)) => {
+                Ok(CallToolResult::error(vec![ContentBlock::text(msg)]))
+            }
+            Err(e) => Err(app_error_to_mcp(e)),
+        }
+    }
+
+    #[tool(
+        name = "update_project",
+        description = "Rename a project and/or change its description. Requires the project id and a non-empty name. Omit description to keep the current one. Use to edit project metadata instead of editing the database."
+    )]
+    async fn update_project(
+        &self,
+        Parameters(params): Parameters<UpdateProjectParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let repo = self.repo.clone();
+        let result = task::spawn_blocking(move || {
+            if params.name.trim().is_empty() {
+                return Err(AppError::Validation(
+                    "project name cannot be empty".to_string(),
+                ));
+            }
+            let current = repo.get_project(params.project_id)?;
+            let description = params.description.unwrap_or(current.description);
+            repo.update_project(params.project_id, &params.name, &description)
+        })
+        .await
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
+
+        match result {
+            Ok(project) => {
+                let content = ContentBlock::json(&project)
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                Ok(CallToolResult::success(vec![content]))
+            }
+            Err(AppError::NotFound) => Ok(CallToolResult::error(vec![ContentBlock::text(
+                "project not found".to_string(),
+            )])),
             Err(AppError::Validation(msg)) => {
                 Ok(CallToolResult::error(vec![ContentBlock::text(msg)]))
             }
@@ -905,7 +951,8 @@ mod tests {
     use super::{
         AddTaskNoteParams, CreateProjectParams, CreateTaskParams, CreateVersionParams,
         ListTasksParams, ListVersionsParams, NoteIdParams, PmpServer, SetTaskDependenciesParams,
-        TaskDependencyParams, TaskIdParams, UpdateTaskPriorityParams, UpdateTaskStatusParams,
+        TaskDependencyParams, TaskIdParams, UpdateProjectParams, UpdateTaskPriorityParams,
+        UpdateTaskStatusParams,
     };
 
     fn server() -> (PmpServer, Arc<StubRepository>) {
@@ -1418,6 +1465,65 @@ mod tests {
         assert!(tool_text(result).contains("dependency cycle"));
         assert!(repo.get_dependencies(c).unwrap().is_empty());
         assert_eq!(repo.get_dependencies(b).unwrap(), vec![c]);
+    }
+
+    #[tokio::test]
+    async fn update_project_renames_and_keeps_description_when_omitted() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Old", "keep me").unwrap().id.unwrap();
+        let renamed: Project = serde_json::from_str(&tool_text(
+            server
+                .update_project(Parameters(UpdateProjectParams {
+                    project_id: pid,
+                    name: "New".to_string(),
+                    description: None,
+                }))
+                .await
+                .unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(renamed.name, "New");
+        assert_eq!(renamed.description, "keep me");
+
+        let described: Project = serde_json::from_str(&tool_text(
+            server
+                .update_project(Parameters(UpdateProjectParams {
+                    project_id: pid,
+                    name: "New".to_string(),
+                    description: Some("changed".to_string()),
+                }))
+                .await
+                .unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(described.description, "changed");
+    }
+
+    #[tokio::test]
+    async fn update_project_rejects_empty_name_and_unknown_project() {
+        let (server, repo) = server();
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let empty = server
+            .update_project(Parameters(UpdateProjectParams {
+                project_id: pid,
+                name: "  ".to_string(),
+                description: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(empty.is_error, Some(true));
+        assert!(tool_text(empty).contains("project name cannot be empty"));
+
+        let unknown = server
+            .update_project(Parameters(UpdateProjectParams {
+                project_id: 999,
+                name: "X".to_string(),
+                description: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(unknown.is_error, Some(true));
+        assert!(tool_text(unknown).contains("project not found"));
     }
 
     #[tokio::test]
@@ -1949,6 +2055,7 @@ mod tests {
         assert!(tools.iter().any(|t| t["name"] == "list_tasks"));
         assert!(tools.iter().any(|t| t["name"] == "list_projects"));
         assert!(tools.iter().any(|t| t["name"] == "create_project"));
+        assert!(tools.iter().any(|t| t["name"] == "update_project"));
         assert!(tools.iter().any(|t| t["name"] == "update_task_status"));
         assert!(tools.iter().any(|t| t["name"] == "create_task"));
         assert!(tools.iter().any(|t| t["name"] == "get_task_dependencies"));
