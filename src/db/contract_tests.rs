@@ -311,6 +311,107 @@ fn delete_version_removes_its_tasks_and_dependencies() {
     });
 }
 
+fn task_in_version(repo: &dyn Repository, pid: i64, version: i64, name: &str) -> i64 {
+    repo.create_task(pid, version, name, "", Status::Todo, Priority::Low)
+        .unwrap()
+        .id
+        .unwrap()
+}
+
+#[test]
+fn set_dependencies_replaces_full_set_and_clears_on_empty() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.default_version_id(pid).unwrap();
+        let a = task_in_version(repo, pid, v, "A");
+        let b = task_in_version(repo, pid, v, "B");
+        let c = task_in_version(repo, pid, v, "C");
+        repo.add_dependency(a, b).unwrap();
+
+        repo.set_dependencies(a, &[c, c]).expect(name);
+        assert_eq!(repo.get_dependencies(a).unwrap(), vec![c], "{name}");
+
+        repo.set_dependencies(a, &[]).expect(name);
+        assert!(repo.get_dependencies(a).unwrap().is_empty(), "{name}");
+    });
+}
+
+#[test]
+fn set_dependencies_rejects_invalid_sets_without_changing_anything() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v1 = repo.default_version_id(pid).unwrap();
+        let v2 = repo.create_version(pid, "v2", "").unwrap().id.unwrap();
+        let a = task_in_version(repo, pid, v1, "A");
+        let b = task_in_version(repo, pid, v1, "B");
+        let other = task_in_version(repo, pid, v2, "Other");
+        repo.add_dependency(a, b).unwrap();
+
+        // self-dependency
+        assert!(
+            matches!(
+                repo.set_dependencies(a, &[b, a]),
+                Err(AppError::DependencyCycle)
+            ),
+            "{name}: self"
+        );
+        // cross-version
+        assert!(
+            matches!(
+                repo.set_dependencies(a, &[other]),
+                Err(AppError::Validation(_))
+            ),
+            "{name}: cross-version"
+        );
+        // cycle: b depends on a while a depends on b
+        assert!(
+            matches!(
+                repo.set_dependencies(b, &[a]),
+                Err(AppError::DependencyCycle)
+            ),
+            "{name}: cycle"
+        );
+        // unknown dependency id
+        assert!(
+            matches!(
+                repo.set_dependencies(a, &[999_999]),
+                Err(AppError::NotFound)
+            ),
+            "{name}: unknown"
+        );
+        // unknown task
+        assert!(
+            matches!(
+                repo.set_dependencies(999_999, &[a]),
+                Err(AppError::NotFound)
+            ),
+            "{name}: unknown task"
+        );
+        assert_eq!(repo.get_dependencies(a).unwrap(), vec![b], "{name}");
+    });
+}
+
+#[test]
+fn set_dependencies_detects_cycles_inside_the_new_set() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.default_version_id(pid).unwrap();
+        let a = task_in_version(repo, pid, v, "A");
+        let b = task_in_version(repo, pid, v, "B");
+        let c = task_in_version(repo, pid, v, "C");
+        // c -> b already exists; setting b -> c would close a cycle with the new set.
+        repo.add_dependency(c, b).unwrap();
+        assert!(
+            matches!(
+                repo.set_dependencies(b, &[a, c]),
+                Err(AppError::DependencyCycle)
+            ),
+            "{name}"
+        );
+        assert!(repo.get_dependencies(b).unwrap().is_empty(), "{name}");
+    });
+}
+
 #[test]
 fn update_task_priority_changes_only_priority() {
     for_each_repo(|name, repo| {

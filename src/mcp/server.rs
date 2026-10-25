@@ -89,6 +89,13 @@ pub struct UpdateTaskPriorityParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+pub struct SetTaskDependenciesParams {
+    pub task_id: i64,
+    /// Full new set of task ids that `task_id` depends on. Empty clears them.
+    pub depends_on_ids: Vec<i64>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct TaskDependencyParams {
     pub task_id: i64,
     pub depends_on_id: i64,
@@ -643,6 +650,45 @@ impl PmpServer {
     }
 
     #[tool(
+        name = "set_task_dependencies",
+        description = "Set the complete list of tasks that a task depends on, replacing the current list in one atomic operation. Prefer this over add/remove when changing several dependencies. Pass an empty list to clear them. Rejects self-dependencies, cycles and tasks from another version; on error nothing is changed. Returns the resulting depends_on ids."
+    )]
+    async fn set_task_dependencies(
+        &self,
+        Parameters(params): Parameters<SetTaskDependenciesParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let repo = self.repo.clone();
+        let task_id = params.task_id;
+        let result = task::spawn_blocking(move || {
+            repo.set_dependencies(task_id, &params.depends_on_ids)?;
+            repo.get_dependencies(task_id)
+        })
+        .await
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
+
+        match result {
+            Ok(ids) => {
+                let content = ContentBlock::json(serde_json::json!({
+                    "task_id": task_id,
+                    "depends_on_ids": ids,
+                }))
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                Ok(CallToolResult::success(vec![content]))
+            }
+            Err(AppError::NotFound) => Ok(CallToolResult::error(vec![ContentBlock::text(
+                "task not found".to_string(),
+            )])),
+            Err(AppError::Validation(msg)) => {
+                Ok(CallToolResult::error(vec![ContentBlock::text(msg)]))
+            }
+            Err(AppError::DependencyCycle) => Ok(CallToolResult::error(vec![ContentBlock::text(
+                "dependency cycle detected",
+            )])),
+            Err(e) => Err(app_error_to_mcp(e)),
+        }
+    }
+
+    #[tool(
         name = "remove_task_dependency",
         description = "Remove a dependency between two tasks. The task_id depends on depends_on_id."
     )]
@@ -858,8 +904,8 @@ mod tests {
 
     use super::{
         AddTaskNoteParams, CreateProjectParams, CreateTaskParams, CreateVersionParams,
-        ListTasksParams, ListVersionsParams, NoteIdParams, PmpServer, TaskDependencyParams,
-        TaskIdParams, UpdateTaskPriorityParams, UpdateTaskStatusParams,
+        ListTasksParams, ListVersionsParams, NoteIdParams, PmpServer, SetTaskDependenciesParams,
+        TaskDependencyParams, TaskIdParams, UpdateTaskPriorityParams, UpdateTaskStatusParams,
     };
 
     fn server() -> (PmpServer, Arc<StubRepository>) {
@@ -1003,6 +1049,10 @@ mod tests {
         }
 
         fn remove_dependency(&self, _: i64, _: i64) -> Result<(), AppError> {
+            unimplemented!()
+        }
+
+        fn set_dependencies(&self, _: i64, _: &[i64]) -> Result<(), AppError> {
             unimplemented!()
         }
 
@@ -1314,6 +1364,60 @@ mod tests {
             .unwrap();
         assert_eq!(rejected.is_error, Some(true));
         assert!(tool_text(rejected).contains("project name cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn set_task_dependencies_replaces_the_full_set() {
+        let (server, repo, pid) = seeded_server();
+        let version = repo.default_version_id(pid).unwrap();
+        let mk = |name: &str| {
+            repo.create_task(pid, version, name, "", Status::Todo, Priority::Low)
+                .unwrap()
+                .id
+                .unwrap()
+        };
+        let (a, b, c) = (mk("A"), mk("B"), mk("C"));
+        repo.add_dependency(a, b).unwrap();
+
+        let result = server
+            .set_task_dependencies(Parameters(SetTaskDependenciesParams {
+                task_id: a,
+                depends_on_ids: vec![c],
+            }))
+            .await
+            .unwrap();
+        assert_ne!(result.is_error, Some(true));
+        let body: serde_json::Value = serde_json::from_str(&tool_text(result)).unwrap();
+        assert_eq!(body["depends_on_ids"], serde_json::json!([c]));
+        assert_eq!(repo.get_dependencies(a).unwrap(), vec![c]);
+    }
+
+    #[tokio::test]
+    async fn set_task_dependencies_rejects_cycle_and_keeps_previous_set() {
+        let (server, repo, pid) = seeded_server();
+        let version = repo.default_version_id(pid).unwrap();
+        let mk = |name: &str| {
+            repo.create_task(pid, version, name, "", Status::Todo, Priority::Low)
+                .unwrap()
+                .id
+                .unwrap()
+        };
+        let (a, b, c) = (mk("A"), mk("B"), mk("C"));
+        repo.add_dependency(b, c).unwrap();
+        repo.add_dependency(a, c).unwrap();
+
+        // C depends on A would close A -> C -> A ... via B: B -> C -> A -> B
+        let result = server
+            .set_task_dependencies(Parameters(SetTaskDependenciesParams {
+                task_id: c,
+                depends_on_ids: vec![a],
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(tool_text(result).contains("dependency cycle"));
+        assert!(repo.get_dependencies(c).unwrap().is_empty());
+        assert_eq!(repo.get_dependencies(b).unwrap(), vec![c]);
     }
 
     #[tokio::test]
@@ -1851,6 +1955,7 @@ mod tests {
         assert!(tools.iter().any(|t| t["name"] == "get_task_dependents"));
         assert!(tools.iter().any(|t| t["name"] == "add_task_dependency"));
         assert!(tools.iter().any(|t| t["name"] == "remove_task_dependency"));
+        assert!(tools.iter().any(|t| t["name"] == "set_task_dependencies"));
         assert!(tools.iter().any(|t| t["name"] == "list_task_notes"));
         assert!(tools.iter().any(|t| t["name"] == "add_task_note"));
         assert!(tools.iter().any(|t| t["name"] == "delete_task_note"));
