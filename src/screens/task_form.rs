@@ -14,7 +14,9 @@ use ratatui_textarea::TextArea;
 
 use crate::db::repository::Repository;
 use crate::domain::task::{Priority, Status, Task, TaskNote};
-use crate::screens::components::fields::{render_field, render_readonly_field};
+use crate::screens::components::fields::{
+    render_description_field, render_field, render_readonly_field,
+};
 use crate::screens::components::keys::{ctrl, key};
 use crate::screens::components::popup::{centered_rect_percent, render_popup_scaffold};
 use crate::screens::components::scroll::{
@@ -454,18 +456,13 @@ impl Component for TaskForm {
             self.error.is_some() && self.active_field == 0,
         );
 
-        let desc_style = if self.active_field == 1 {
-            Style::default().add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-        };
-        let desc_block = Block::default()
-            .title("Description")
-            .borders(Borders::ALL)
-            .border_style(desc_style);
-        let mut desc_textarea = self.description.clone();
-        desc_textarea.set_block(desc_block);
-        frame.render_widget(&desc_textarea, chunks[1]);
+        render_description_field(
+            frame,
+            chunks[1],
+            "Description",
+            &self.description,
+            self.active_field == 1,
+        );
 
         render_readonly_field(
             frame,
@@ -1667,5 +1664,66 @@ mod tests {
         let max = form.deps_scroll.offset();
         form.handle_event(&key_event(KeyCode::PageUp));
         assert!(form.deps_scroll.offset() < max);
+    }
+
+    #[test]
+    fn long_description_wraps_within_block() {
+        let (repo, _form, project_id) = setup();
+        repo.create_task(
+            project_id,
+            repo.default_version_id(project_id).unwrap(),
+            "Auth",
+            "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu",
+            Status::Todo,
+            Priority::Medium,
+        )
+        .unwrap();
+        let task = repo.list_tasks_by_project(project_id).unwrap().remove(0);
+        let mut form = TaskForm::new(repo.clone());
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
+        form.set_task_id(task.id);
+        form.init().unwrap();
+        let backend = TestBackend::new(40, 28);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| form.render(frame, frame.area()))
+            .unwrap();
+        let text = buffer_to_string(terminal.backend().buffer());
+        let lines: Vec<&str> = text.split('\n').collect();
+        let title_row = lines
+            .iter()
+            .position(|l| l.contains("Description"))
+            .expect("Description block rendered");
+        // Second text row of the Description block (title row + 2).
+        let row = lines[title_row + 2];
+        let inner = row.trim_matches(|c: char| c == '│' || c == ' ');
+        assert!(
+            !inner.is_empty(),
+            "Description row 2 should hold wrapped text, got {row:?}"
+        );
+        assert!(
+            text.contains("zulu"),
+            "last word of long description must be visible:\n{text}"
+        );
+    }
+
+    #[test]
+    fn task_form_long_description_snapshot() {
+        let (repo, _form, project_id) = setup();
+        let task = repo
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Auth",
+                "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu",
+                Status::Todo,
+                Priority::Medium,
+            )
+            .unwrap();
+        let mut form = TaskForm::new(repo.clone());
+        form.set_version_id(repo.default_version_id(project_id).unwrap());
+        form.set_task_id(task.id);
+        form.init().unwrap();
+        insta::assert_snapshot!(render_to_string(&form, 40, 28));
     }
 }
