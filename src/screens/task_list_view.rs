@@ -284,7 +284,18 @@ impl TaskListView {
             .scroll
             .visible_range(self.tasks.len(), self.selected, row_height);
 
-        let header = Row::new(vec!["Name", "Status", "Priority"]).style(
+        // Wide enough for the largest id in the list and for the "ID" header.
+        let id_width = self
+            .tasks
+            .iter()
+            .filter_map(|task| task.id)
+            .map(|id| id.to_string().len())
+            .max()
+            .unwrap_or(1)
+            .max("ID".len()) as u16
+            + 2;
+
+        let header = Row::new(vec!["ID", "Name", "Status", "Priority"]).style(
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
@@ -300,6 +311,7 @@ impl TaskListView {
                     task.status.row_style()
                 };
                 Row::new(vec![
+                    Cell::from(task.id.map_or_else(|| "-".to_string(), |id| id.to_string())),
                     Cell::from(task.name.clone()),
                     Cell::from(task.status.label()).style(task.status.style()),
                     Cell::from(task.priority.label()).style(task.priority.style()),
@@ -309,9 +321,10 @@ impl TaskListView {
             .collect();
 
         let widths = [
-            Constraint::Percentage(50),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
+            Constraint::Length(id_width),
+            Constraint::Percentage(47),
+            Constraint::Percentage(26),
+            Constraint::Percentage(26),
         ];
         let title = filter_title(self.filter_status, self.filter_priority);
         let table = Table::new(rows, widths)
@@ -476,6 +489,19 @@ mod tests {
         view.set_tasks(numbered_tasks(3));
         let rendered = render_view(&view, 40, 13);
         assert!(rendered.contains("Task00") && rendered.contains("Task02"));
+    }
+
+    #[test]
+    fn rows_show_task_id_column() {
+        let mut with_id = task("Alpha", Status::Todo);
+        with_id.id = Some(42);
+        let mut view = TaskListView::new();
+        view.set_tasks(vec![with_id, task("Beta", Status::Done)]);
+
+        let rendered = render_view(&view, 60, 10);
+        assert!(rendered.contains("ID"), "missing ID header:\n{rendered}");
+        assert!(rendered.contains("42"), "missing task id:\n{rendered}");
+        assert!(rendered.contains("Beta"));
     }
 
     #[test]
