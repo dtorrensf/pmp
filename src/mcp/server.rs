@@ -62,6 +62,12 @@ pub struct ListVersionsParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+pub struct CreateProjectParams {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct CreateVersionParams {
     pub project_id: i64,
     pub name: String,
@@ -299,6 +305,40 @@ impl PmpServer {
                 let content = ContentBlock::json(&projects)
                     .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
                 Ok(CallToolResult::success(vec![content]))
+            }
+            Err(e) => Err(app_error_to_mcp(e)),
+        }
+    }
+
+    #[tool(
+        name = "create_project",
+        description = "Create a new project. Use when the user asks to start a new project. Requires a non-empty name; description is optional. The project starts with a default version (see list_versions)."
+    )]
+    async fn create_project(
+        &self,
+        Parameters(params): Parameters<CreateProjectParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let repo = self.repo.clone();
+        let result = task::spawn_blocking(move || {
+            if params.name.trim().is_empty() {
+                return Err(AppError::Validation(
+                    "project name cannot be empty".to_string(),
+                ));
+            }
+            let description = params.description.unwrap_or_default();
+            repo.create_project(&params.name, &description)
+        })
+        .await
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
+
+        match result {
+            Ok(project) => {
+                let content = ContentBlock::json(&project)
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                Ok(CallToolResult::success(vec![content]))
+            }
+            Err(AppError::Validation(msg)) => {
+                Ok(CallToolResult::error(vec![ContentBlock::text(msg)]))
             }
             Err(e) => Err(app_error_to_mcp(e)),
         }
@@ -817,9 +857,9 @@ mod tests {
     use crate::domain::version::{Version, VersionStatus};
 
     use super::{
-        AddTaskNoteParams, CreateTaskParams, CreateVersionParams, ListTasksParams,
-        ListVersionsParams, NoteIdParams, PmpServer, TaskDependencyParams, TaskIdParams,
-        UpdateTaskPriorityParams, UpdateTaskStatusParams,
+        AddTaskNoteParams, CreateProjectParams, CreateTaskParams, CreateVersionParams,
+        ListTasksParams, ListVersionsParams, NoteIdParams, PmpServer, TaskDependencyParams,
+        TaskIdParams, UpdateTaskPriorityParams, UpdateTaskStatusParams,
     };
 
     fn server() -> (PmpServer, Arc<StubRepository>) {
@@ -1229,6 +1269,51 @@ mod tests {
         assert_eq!(result.is_error, Some(true));
         let message = tool_text(result);
         assert!(message.contains("task not found"));
+    }
+
+    #[tokio::test]
+    async fn create_project_creates_project_with_default_version() {
+        let (server, repo) = server();
+        let project: Project = serde_json::from_str(&tool_text(
+            server
+                .create_project(Parameters(CreateProjectParams {
+                    name: "Gamma".to_string(),
+                    description: Some("desc".to_string()),
+                }))
+                .await
+                .unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(project.name, "Gamma");
+        assert_eq!(project.description, "desc");
+        let pid = project.id.unwrap();
+        assert_eq!(repo.list_versions_by_project(pid).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn create_project_defaults_description_and_rejects_empty_name() {
+        let (server, _) = server();
+        let project: Project = serde_json::from_str(&tool_text(
+            server
+                .create_project(Parameters(CreateProjectParams {
+                    name: "Delta".to_string(),
+                    description: None,
+                }))
+                .await
+                .unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(project.description, "");
+
+        let rejected = server
+            .create_project(Parameters(CreateProjectParams {
+                name: "   ".to_string(),
+                description: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(rejected.is_error, Some(true));
+        assert!(tool_text(rejected).contains("project name cannot be empty"));
     }
 
     #[tokio::test]
@@ -1759,6 +1844,7 @@ mod tests {
             .expect("tools/list should return a tools array");
         assert!(tools.iter().any(|t| t["name"] == "list_tasks"));
         assert!(tools.iter().any(|t| t["name"] == "list_projects"));
+        assert!(tools.iter().any(|t| t["name"] == "create_project"));
         assert!(tools.iter().any(|t| t["name"] == "update_task_status"));
         assert!(tools.iter().any(|t| t["name"] == "create_task"));
         assert!(tools.iter().any(|t| t["name"] == "get_task_dependencies"));
