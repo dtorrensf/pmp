@@ -232,7 +232,7 @@ impl PmpServer {
 
     #[tool(
         name = "list_tasks",
-        description = "List tasks for a project. Use when the user asks about their tasks, to-dos, pending work, or project progress. Supports filtering by version_id (see list_versions), status (todo, in_progress, done) and priority (Low, Medium, High)."
+        description = "List tasks for a project, optionally filtered by version_id (see list_versions), status (todo, in_progress, done) and priority (Low, Medium, High). Use when the user asks about their tasks, to-dos, pending work or progress, or to pick the next task to work on."
     )]
     async fn list_tasks(
         &self,
@@ -386,7 +386,7 @@ impl PmpServer {
 
     #[tool(
         name = "create_task",
-        description = "Create a new task in a version of a project. Use when the user wants to add a task, to-do, or work item. Requires the project id, the version id (see list_versions), task name, and a structured description with context, requirements, and benefits. Optionally accepts a priority (Low, Medium, High); defaults to Medium."
+        description = "Create a new task in a version of a project. Use only when the user asks for a new task or work item. Requires the project id, the version id (see list_versions), a task name, and context, requirements and benefits. The task starts as todo. Optionally accepts a priority (Low, Medium, High); defaults to Medium."
     )]
     async fn create_task(
         &self,
@@ -432,7 +432,7 @@ impl PmpServer {
 
     #[tool(
         name = "update_task_status",
-        description = "Switch the status of a task. Use when the user starts working on a task (switch to In Progress) or finishes it (switch to Done). Rejects Done status if the task has incomplete dependencies."
+        description = "Change the status of a task to todo, in_progress or done. Call with in_progress when you start working on a task and with done when it is finished. Marking a task done fails with a validation error while it has incomplete dependencies; finish those first. Unknown task ids return task not found."
     )]
     async fn update_task_status(
         &self,
@@ -477,7 +477,7 @@ impl PmpServer {
 
     #[tool(
         name = "get_task_dependencies",
-        description = "List the task ids that a task depends on. Use to inspect blockers before planning or implementing a task."
+        description = "List the task ids that a task depends on (its blockers). Check before starting a task: incomplete dependencies block marking it done."
     )]
     async fn get_task_dependencies(
         &self,
@@ -510,7 +510,7 @@ impl PmpServer {
 
     #[tool(
         name = "get_task_dependents",
-        description = "List the task ids that depend on a task. Use to understand the impact of changing or deleting a task."
+        description = "List the task ids that depend on a task (tasks it blocks). Use to understand the impact of changing or deleting a task."
     )]
     async fn get_task_dependents(
         &self,
@@ -543,7 +543,7 @@ impl PmpServer {
 
     #[tool(
         name = "add_task_dependency",
-        description = "Make one task depend on another. The task_id depends on depends_on_id. Rejects self-dependencies and circular dependencies."
+        description = "Make one task depend on another: task_id depends on depends_on_id. Both tasks must be in the same version. Rejects self-dependencies and circular dependencies."
     )]
     async fn add_task_dependency(
         &self,
@@ -619,7 +619,7 @@ impl PmpServer {
 
     #[tool(
         name = "list_task_notes",
-        description = "List notes for a task. Use to read progress updates, context, and reminders attached to a task."
+        description = "List the notes of a task, newest first. Use to read progress updates, decisions, context and reminders before continuing work on it."
     )]
     async fn list_task_notes(
         &self,
@@ -649,7 +649,7 @@ impl PmpServer {
 
     #[tool(
         name = "add_task_note",
-        description = "Add a note to a task. Use to append context, progress updates, or reminders."
+        description = "Add a note to a task to record progress, decisions or context. Add notes as you work so the task history reflects what was actually done."
     )]
     async fn add_task_note(
         &self,
@@ -743,7 +743,16 @@ impl ServerHandler for PmpServer {
         capabilities.resources.as_mut().unwrap().list_changed = Some(false);
         capabilities.tools.as_mut().unwrap().list_changed = Some(false);
         ServerInfo::new(capabilities)
-            .with_instructions("Personal project manager. Use for queries about user's projects, tasks, and productivity tracking.")
+            .with_instructions(
+                "Personal project manager for the user's projects, tasks and productivity.\n\n\
+Expected workflow for keeping task state in sync with real work:\n\
+1. Find the task with list_tasks (filter by version_id, status or priority).\n\
+2. Check blockers with get_task_dependencies; a task with incomplete dependencies cannot be marked done.\n\
+3. When you start a task, call update_task_status with in_progress.\n\
+4. Record progress, decisions and context as you go with add_task_note.\n\
+5. When the work is finished, call update_task_status with done.\n\n\
+Only change status for tasks you are actually working on. Use create_task only when the user asks for a new task.",
+            )
     }
 }
 
@@ -2288,5 +2297,20 @@ mod priority_param_tests {
         }))
         .unwrap();
         assert_eq!(params.priority.map(Priority::from), Some(Priority::High));
+    }
+}
+
+#[cfg(test)]
+mod instructions_tests {
+    use super::*;
+
+    #[test]
+    fn server_instructions_describe_status_workflow() {
+        let repo = Arc::new(crate::db::stub::StubRepository::default());
+        let info = PmpServer::new(repo).get_info();
+        let text = info.instructions.expect("instructions should be set");
+        for needle in ["update_task_status", "in_progress", "done", "add_task_note"] {
+            assert!(text.contains(needle), "instructions must mention {needle}");
+        }
     }
 }
