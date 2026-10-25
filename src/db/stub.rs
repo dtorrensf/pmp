@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use std::sync::Mutex;
 
-use crate::db::repository::Repository;
+use crate::db::repository::{Repository, check_dependency_set, unique_ids};
 use crate::domain::error::AppError;
 use crate::domain::project::Project;
 use crate::domain::task::{Priority, Status, Task, TaskDependency, TaskNote};
@@ -310,6 +310,16 @@ impl Repository for StubRepository {
         Ok(task.clone())
     }
 
+    fn update_task_priority(&self, id: i64, priority: Priority) -> Result<Task, AppError> {
+        let mut tasks = self.tasks.lock().unwrap();
+        let task = tasks
+            .iter_mut()
+            .find(|t| t.id == Some(id))
+            .ok_or(AppError::NotFound)?;
+        task.priority = priority;
+        Ok(task.clone())
+    }
+
     fn add_dependency(&self, task_id: i64, depends_on_id: i64) -> Result<(), AppError> {
         let task = self.get_task(task_id)?;
         let depends_on = self.get_task(depends_on_id)?;
@@ -331,6 +341,32 @@ impl Repository for StubRepository {
                 depends_on_id,
             });
         }
+        Ok(())
+    }
+
+    fn set_dependencies(&self, task_id: i64, depends_on_ids: &[i64]) -> Result<(), AppError> {
+        let task = self.get_task(task_id)?;
+        let unique = unique_ids(depends_on_ids);
+        for &dep in &unique {
+            let depends_on = self.get_task(dep)?;
+            if depends_on.version_id != task.version_id {
+                return Err(AppError::Validation(
+                    "dependencies must be within the same version".to_string(),
+                ));
+            }
+        }
+        let mut graph: std::collections::HashMap<i64, Vec<i64>> = std::collections::HashMap::new();
+        for d in self.dependencies.lock().unwrap().iter() {
+            graph.entry(d.task_id).or_default().push(d.depends_on_id);
+        }
+        check_dependency_set(&graph, task_id, &unique)?;
+
+        let mut deps = self.dependencies.lock().unwrap();
+        deps.retain(|d| d.task_id != task_id);
+        deps.extend(unique.iter().map(|&depends_on_id| TaskDependency {
+            task_id,
+            depends_on_id,
+        }));
         Ok(())
     }
 

@@ -6,7 +6,7 @@ use std::sync::Mutex;
 
 use rusqlite::{Connection, Row, params};
 
-use crate::db::repository::Repository;
+use crate::db::repository::{Repository, check_dependency_set, unique_ids};
 use crate::domain::error::AppError;
 use crate::domain::project::Project;
 use crate::domain::task::{Priority, Status, Task, TaskNote};
@@ -287,6 +287,19 @@ impl Repository for SqliteRepository {
         self.get_task(id)
     }
 
+    fn update_task_priority(&self, id: i64, priority: Priority) -> Result<Task, AppError> {
+        let conn = self.conn.lock().unwrap();
+        let updated = conn.execute(
+            "UPDATE tasks SET priority = ?1 WHERE id = ?2",
+            params![i64::from(priority), id],
+        )?;
+        drop(conn);
+        if updated == 0 {
+            return Err(AppError::NotFound);
+        }
+        self.get_task(id)
+    }
+
     fn add_dependency(&self, task_id: i64, depends_on_id: i64) -> Result<(), AppError> {
         if task_id == depends_on_id {
             return Err(AppError::DependencyCycle);
@@ -316,6 +329,36 @@ impl Repository for SqliteRepository {
             "DELETE FROM task_dependencies WHERE task_id = ?1 AND depends_on_id = ?2",
             params![task_id, depends_on_id],
         )?;
+        Ok(())
+    }
+
+    fn set_dependencies(&self, task_id: i64, depends_on_ids: &[i64]) -> Result<(), AppError> {
+        let task = self.get_task(task_id)?;
+        let unique = unique_ids(depends_on_ids);
+        for &dep in &unique {
+            let depends_on = self.get_task(dep)?;
+            if depends_on.version_id != task.version_id {
+                return Err(AppError::Validation(
+                    "dependencies must be within the same version".to_string(),
+                ));
+            }
+        }
+        let graph = self.load_dependency_graph()?;
+        check_dependency_set(&graph, task_id, &unique)?;
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM task_dependencies WHERE task_id = ?1",
+            params![task_id],
+        )?;
+        for dep in &unique {
+            tx.execute(
+                "INSERT INTO task_dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
+                params![task_id, dep],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 

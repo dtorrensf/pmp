@@ -20,10 +20,31 @@ use crate::db::repository::Repository;
 use crate::domain::error::AppError;
 use crate::domain::task::{Priority, Status, Task};
 use crate::domain::version::VersionStatus;
-use crate::mcp::task_description::compose_description;
+use crate::mcp::task_description::{compose_description, split_description};
 
 pub struct PmpServer {
     repo: Arc<dyn Repository>,
+}
+
+/// Priority as accepted by MCP tools. Serialized as a plain string enum
+/// (`"Low"`, `"Medium"`, `"High"`) so the generated input schema is a
+/// non-nullable string enum that clients can rely on. Defaults to Medium.
+#[derive(Debug, Clone, Copy, Default, Deserialize, schemars::JsonSchema)]
+pub enum PriorityParam {
+    Low,
+    #[default]
+    Medium,
+    High,
+}
+
+impl From<PriorityParam> for Priority {
+    fn from(value: PriorityParam) -> Self {
+        match value {
+            PriorityParam::Low => Priority::Low,
+            PriorityParam::Medium => Priority::Medium,
+            PriorityParam::High => Priority::High,
+        }
+    }
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -32,12 +53,26 @@ pub struct ListTasksParams {
     /// Restrict the list to one version of the project.
     pub version_id: Option<i64>,
     pub status: Option<Status>,
-    pub priority: Option<Priority>,
+    pub priority: Option<PriorityParam>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct ListVersionsParams {
     pub project_id: i64,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct CreateProjectParams {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct UpdateProjectParams {
+    pub project_id: i64,
+    pub name: String,
+    /// New description. When omitted, the current description is kept.
+    pub description: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -53,6 +88,19 @@ pub struct CreateVersionParams {
 pub struct UpdateTaskStatusParams {
     pub task_id: i64,
     pub status: Status,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct UpdateTaskPriorityParams {
+    pub task_id: i64,
+    pub priority: PriorityParam,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct SetTaskDependenciesParams {
+    pub task_id: i64,
+    /// Full new set of task ids that `task_id` depends on. Empty clears them.
+    pub depends_on_ids: Vec<i64>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -75,7 +123,22 @@ pub struct CreateTaskParams {
     pub context: String,
     pub requirements: String,
     pub benefits: String,
-    pub priority: Option<String>,
+    /// Task priority: `Low`, `Medium` or `High`. Defaults to `Medium`.
+    #[serde(default)]
+    pub priority: PriorityParam,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct UpdateTaskParams {
+    pub task_id: i64,
+    /// New name. Must not be blank when provided.
+    pub name: Option<String>,
+    /// New context section. Omit to keep the current one.
+    pub context: Option<String>,
+    /// New requirements section. Omit to keep the current one.
+    pub requirements: Option<String>,
+    /// New benefits section. Omit to keep the current one.
+    pub benefits: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -203,7 +266,7 @@ impl PmpServer {
 
     #[tool(
         name = "list_tasks",
-        description = "List tasks for a project. Use when the user asks about their tasks, to-dos, pending work, or project progress. Supports filtering by version_id (see list_versions), status (todo, in_progress, done) and priority (Low, Medium, High)."
+        description = "List tasks for a project, optionally filtered by version_id (see list_versions), status (todo, in_progress, done) and priority (Low, Medium, High). Use when the user asks about their tasks, to-dos, pending work or progress, or to pick the next task to work on."
     )]
     async fn list_tasks(
         &self,
@@ -236,10 +299,104 @@ impl PmpServer {
                     .into_iter()
                     .filter(|t| {
                         params.status.is_none_or(|s| t.status == s)
-                            && params.priority.is_none_or(|p| t.priority == p)
+                            && params
+                                .priority
+                                .is_none_or(|p| t.priority == Priority::from(p))
                     })
                     .collect();
                 let content = ContentBlock::json(&filtered)
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                Ok(CallToolResult::success(vec![content]))
+            }
+            Err(AppError::NotFound) => Ok(CallToolResult::error(vec![ContentBlock::text(
+                "project not found".to_string(),
+            )])),
+            Err(AppError::Validation(msg)) => {
+                Ok(CallToolResult::error(vec![ContentBlock::text(msg)]))
+            }
+            Err(e) => Err(app_error_to_mcp(e)),
+        }
+    }
+
+    #[tool(
+        name = "list_projects",
+        description = "List all projects of the user. Use to discover project ids before listing versions or tasks, or when the user asks what projects they have."
+    )]
+    async fn list_projects(&self) -> Result<CallToolResult, ErrorData> {
+        let repo = self.repo.clone();
+        let result = task::spawn_blocking(move || repo.list_projects())
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
+
+        match result {
+            Ok(projects) => {
+                let content = ContentBlock::json(&projects)
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                Ok(CallToolResult::success(vec![content]))
+            }
+            Err(e) => Err(app_error_to_mcp(e)),
+        }
+    }
+
+    #[tool(
+        name = "create_project",
+        description = "Create a new project. Use when the user asks to start a new project. Requires a non-empty name; description is optional. The project starts with a default version (see list_versions)."
+    )]
+    async fn create_project(
+        &self,
+        Parameters(params): Parameters<CreateProjectParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let repo = self.repo.clone();
+        let result = task::spawn_blocking(move || {
+            if params.name.trim().is_empty() {
+                return Err(AppError::Validation(
+                    "project name cannot be empty".to_string(),
+                ));
+            }
+            let description = params.description.unwrap_or_default();
+            repo.create_project(&params.name, &description)
+        })
+        .await
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
+
+        match result {
+            Ok(project) => {
+                let content = ContentBlock::json(&project)
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                Ok(CallToolResult::success(vec![content]))
+            }
+            Err(AppError::Validation(msg)) => {
+                Ok(CallToolResult::error(vec![ContentBlock::text(msg)]))
+            }
+            Err(e) => Err(app_error_to_mcp(e)),
+        }
+    }
+
+    #[tool(
+        name = "update_project",
+        description = "Rename a project and/or change its description. Requires the project id and a non-empty name. Omit description to keep the current one. Use to edit project metadata instead of editing the database."
+    )]
+    async fn update_project(
+        &self,
+        Parameters(params): Parameters<UpdateProjectParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let repo = self.repo.clone();
+        let result = task::spawn_blocking(move || {
+            if params.name.trim().is_empty() {
+                return Err(AppError::Validation(
+                    "project name cannot be empty".to_string(),
+                ));
+            }
+            let current = repo.get_project(params.project_id)?;
+            let description = params.description.unwrap_or(current.description);
+            repo.update_project(params.project_id, &params.name, &description)
+        })
+        .await
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
+
+        match result {
+            Ok(project) => {
+                let content = ContentBlock::json(&project)
                     .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
                 Ok(CallToolResult::success(vec![content]))
             }
@@ -326,8 +483,104 @@ impl PmpServer {
     }
 
     #[tool(
+        name = "update_task_priority",
+        description = "Change the priority of an existing task to Low, Medium or High. Use to reprioritize work; prefer this over editing the database directly."
+    )]
+    async fn update_task_priority(
+        &self,
+        Parameters(params): Parameters<UpdateTaskPriorityParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let repo = self.repo.clone();
+        let result = task::spawn_blocking(move || {
+            repo.update_task_priority(params.task_id, params.priority.into())
+        })
+        .await
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
+
+        match result {
+            Ok(task) => {
+                let content = ContentBlock::json(&task)
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                Ok(CallToolResult::success(vec![content]))
+            }
+            Err(AppError::NotFound) => Ok(CallToolResult::error(vec![ContentBlock::text(
+                "task not found".to_string(),
+            )])),
+            Err(e) => Err(app_error_to_mcp(e)),
+        }
+    }
+
+    #[tool(
+        name = "update_task",
+        description = "Edit an existing task: name and/or the context, requirements and benefits sections. Omitted fields keep their current value, so send only what changes. Status, priority and dependencies are not changed here (use update_task_status, update_task_priority and set_task_dependencies). Returns the updated task."
+    )]
+    async fn update_task(
+        &self,
+        Parameters(params): Parameters<UpdateTaskParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let repo = self.repo.clone();
+        let result = task::spawn_blocking(move || {
+            if let Some(name) = &params.name
+                && name.trim().is_empty()
+            {
+                return Err(AppError::Validation(
+                    "task name cannot be empty".to_string(),
+                ));
+            }
+            let current = repo.get_task(params.task_id)?;
+            let name = params.name.clone().unwrap_or_else(|| current.name.clone());
+            let description = if params.context.is_none()
+                && params.requirements.is_none()
+                && params.benefits.is_none()
+            {
+                current.description.clone()
+            } else {
+                let mut sections = split_description(&current.description);
+                if let Some(context) = params.context {
+                    sections.context = context;
+                }
+                if let Some(requirements) = params.requirements {
+                    sections.requirements = requirements;
+                }
+                if let Some(benefits) = params.benefits {
+                    sections.benefits = benefits;
+                }
+                compose_description(
+                    &sections.context,
+                    &sections.requirements,
+                    &sections.benefits,
+                )
+            };
+            repo.update_task(
+                params.task_id,
+                &name,
+                &description,
+                current.status,
+                current.priority,
+            )
+        })
+        .await
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
+
+        match result {
+            Ok(task) => {
+                let content = ContentBlock::json(&task)
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                Ok(CallToolResult::success(vec![content]))
+            }
+            Err(AppError::NotFound) => Ok(CallToolResult::error(vec![ContentBlock::text(
+                "task not found".to_string(),
+            )])),
+            Err(AppError::Validation(msg)) => {
+                Ok(CallToolResult::error(vec![ContentBlock::text(msg)]))
+            }
+            Err(e) => Err(app_error_to_mcp(e)),
+        }
+    }
+
+    #[tool(
         name = "create_task",
-        description = "Create a new task in a version of a project. Use when the user wants to add a task, to-do, or work item. Requires the project id, the version id (see list_versions), task name, and a structured description with context, requirements, and benefits. Optionally accepts a priority (Low, Medium, High); defaults to Medium."
+        description = "Create a new task in a version of a project. Use only when the user asks for a new task or work item. Requires the project id, the version id (see list_versions), a task name, and context, requirements and benefits. The task starts as todo. Optionally accepts a priority (Low, Medium, High); defaults to Medium."
     )]
     async fn create_task(
         &self,
@@ -343,14 +596,13 @@ impl PmpServer {
             repo.get_project(params.project_id)?;
             let description =
                 compose_description(&params.context, &params.requirements, &params.benefits);
-            let priority = get_priority(params.priority.as_deref().unwrap_or("Medium"));
             repo.create_task(
                 params.project_id,
                 params.version_id,
                 &params.name,
                 &description,
                 Status::Todo,
-                priority,
+                params.priority.into(),
             )
         })
         .await
@@ -374,7 +626,7 @@ impl PmpServer {
 
     #[tool(
         name = "update_task_status",
-        description = "Switch the status of a task. Use when the user starts working on a task (switch to In Progress) or finishes it (switch to Done). Rejects Done status if the task has incomplete dependencies."
+        description = "Change the status of a task to todo, in_progress or done. Call with in_progress when you start working on a task and with done when it is finished. Marking a task done fails with a validation error while it has incomplete dependencies; finish those first. Unknown task ids return task not found."
     )]
     async fn update_task_status(
         &self,
@@ -419,7 +671,7 @@ impl PmpServer {
 
     #[tool(
         name = "get_task_dependencies",
-        description = "List the task ids that a task depends on. Use to inspect blockers before planning or implementing a task."
+        description = "List the task ids that a task depends on (its blockers). Check before starting a task: incomplete dependencies block marking it done."
     )]
     async fn get_task_dependencies(
         &self,
@@ -452,7 +704,7 @@ impl PmpServer {
 
     #[tool(
         name = "get_task_dependents",
-        description = "List the task ids that depend on a task. Use to understand the impact of changing or deleting a task."
+        description = "List the task ids that depend on a task (tasks it blocks). Use to understand the impact of changing or deleting a task."
     )]
     async fn get_task_dependents(
         &self,
@@ -485,7 +737,7 @@ impl PmpServer {
 
     #[tool(
         name = "add_task_dependency",
-        description = "Make one task depend on another. The task_id depends on depends_on_id. Rejects self-dependencies and circular dependencies."
+        description = "Make one task depend on another: task_id depends on depends_on_id. Both tasks must be in the same version. Rejects self-dependencies and circular dependencies."
     )]
     async fn add_task_dependency(
         &self,
@@ -507,6 +759,45 @@ impl PmpServer {
                 let content = ContentBlock::json(serde_json::json!({
                     "task_id": task_id,
                     "depends_on_id": depends_on_id,
+                }))
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                Ok(CallToolResult::success(vec![content]))
+            }
+            Err(AppError::NotFound) => Ok(CallToolResult::error(vec![ContentBlock::text(
+                "task not found".to_string(),
+            )])),
+            Err(AppError::Validation(msg)) => {
+                Ok(CallToolResult::error(vec![ContentBlock::text(msg)]))
+            }
+            Err(AppError::DependencyCycle) => Ok(CallToolResult::error(vec![ContentBlock::text(
+                "dependency cycle detected",
+            )])),
+            Err(e) => Err(app_error_to_mcp(e)),
+        }
+    }
+
+    #[tool(
+        name = "set_task_dependencies",
+        description = "Set the complete list of tasks that a task depends on, replacing the current list in one atomic operation. Prefer this over add/remove when changing several dependencies. Pass an empty list to clear them. Rejects self-dependencies, cycles and tasks from another version; on error nothing is changed. Returns the resulting depends_on ids."
+    )]
+    async fn set_task_dependencies(
+        &self,
+        Parameters(params): Parameters<SetTaskDependenciesParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let repo = self.repo.clone();
+        let task_id = params.task_id;
+        let result = task::spawn_blocking(move || {
+            repo.set_dependencies(task_id, &params.depends_on_ids)?;
+            repo.get_dependencies(task_id)
+        })
+        .await
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
+
+        match result {
+            Ok(ids) => {
+                let content = ContentBlock::json(serde_json::json!({
+                    "task_id": task_id,
+                    "depends_on_ids": ids,
                 }))
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
                 Ok(CallToolResult::success(vec![content]))
@@ -561,7 +852,7 @@ impl PmpServer {
 
     #[tool(
         name = "list_task_notes",
-        description = "List notes for a task. Use to read progress updates, context, and reminders attached to a task."
+        description = "List the notes of a task, newest first. Use to read progress updates, decisions, context and reminders before continuing work on it."
     )]
     async fn list_task_notes(
         &self,
@@ -591,7 +882,7 @@ impl PmpServer {
 
     #[tool(
         name = "add_task_note",
-        description = "Add a note to a task. Use to append context, progress updates, or reminders."
+        description = "Add a note to a task to record progress, decisions or context. Add notes as you work so the task history reflects what was actually done."
     )]
     async fn add_task_note(
         &self,
@@ -651,15 +942,6 @@ impl PmpServer {
     }
 }
 
-fn get_priority(priority: &str) -> Priority {
-    match priority {
-        "High" => Priority::High,
-        "Medium" => Priority::Medium,
-        "Low" => Priority::Low,
-        _ => Priority::Medium,
-    }
-}
-
 #[tool_handler]
 impl ServerHandler for PmpServer {
     async fn list_resources(
@@ -694,7 +976,16 @@ impl ServerHandler for PmpServer {
         capabilities.resources.as_mut().unwrap().list_changed = Some(false);
         capabilities.tools.as_mut().unwrap().list_changed = Some(false);
         ServerInfo::new(capabilities)
-            .with_instructions("Personal project manager. Use for queries about user's projects, tasks, and productivity tracking.")
+            .with_instructions(
+                "Personal project manager for the user's projects, tasks and productivity.\n\n\
+Expected workflow for keeping task state in sync with real work:\n\
+1. Find the task with list_tasks (filter by version_id, status or priority).\n\
+2. Check blockers with get_task_dependencies; a task with incomplete dependencies cannot be marked done.\n\
+3. When you start a task, call update_task_status with in_progress.\n\
+4. Record progress, decisions and context as you go with add_task_note.\n\
+5. When the work is finished, call update_task_status with done.\n\n\
+Only change status for tasks you are actually working on. Use create_task only when the user asks for a new task.",
+            )
     }
 }
 
@@ -730,6 +1021,7 @@ mod tests {
     use rmcp::handler::server::wrapper::Parameters;
     use rmcp::model::{CallToolResult, ErrorCode, ReadResourceResult, ResourceContents};
 
+    use super::PriorityParam;
     use crate::db::repository::Repository;
     use crate::db::stub::StubRepository;
     use crate::domain::error::AppError;
@@ -738,10 +1030,12 @@ mod tests {
     use crate::domain::version::{Version, VersionStatus};
 
     use super::{
-        AddTaskNoteParams, CreateTaskParams, CreateVersionParams, ListTasksParams,
-        ListVersionsParams, NoteIdParams, PmpServer, TaskDependencyParams, TaskIdParams,
-        UpdateTaskStatusParams,
+        AddTaskNoteParams, CreateProjectParams, CreateTaskParams, CreateVersionParams,
+        ListTasksParams, ListVersionsParams, NoteIdParams, PmpServer, SetTaskDependenciesParams,
+        TaskDependencyParams, TaskIdParams, UpdateProjectParams, UpdateTaskParams,
+        UpdateTaskPriorityParams, UpdateTaskStatusParams,
     };
+    use crate::mcp::task_description::compose_description;
 
     fn server() -> (PmpServer, Arc<StubRepository>) {
         let repo = Arc::new(StubRepository::default());
@@ -875,11 +1169,19 @@ mod tests {
             unimplemented!()
         }
 
+        fn update_task_priority(&self, _: i64, _: Priority) -> Result<Task, AppError> {
+            unimplemented!()
+        }
+
         fn add_dependency(&self, _: i64, _: i64) -> Result<(), AppError> {
             unimplemented!()
         }
 
         fn remove_dependency(&self, _: i64, _: i64) -> Result<(), AppError> {
+            unimplemented!()
+        }
+
+        fn set_dependencies(&self, _: i64, _: &[i64]) -> Result<(), AppError> {
             unimplemented!()
         }
 
@@ -1046,7 +1348,7 @@ mod tests {
                 project_id: pid,
                 version_id: None,
                 status: None,
-                priority: Some(Priority::High),
+                priority: Some(PriorityParam::High),
             }))
             .await
             .unwrap();
@@ -1064,7 +1366,7 @@ mod tests {
                 project_id: pid,
                 version_id: None,
                 status: Some(Status::Todo),
-                priority: Some(Priority::Low),
+                priority: Some(PriorityParam::Low),
             }))
             .await
             .unwrap();
@@ -1146,6 +1448,329 @@ mod tests {
         assert_eq!(result.is_error, Some(true));
         let message = tool_text(result);
         assert!(message.contains("task not found"));
+    }
+
+    #[tokio::test]
+    async fn create_project_creates_project_with_default_version() {
+        let (server, repo) = server();
+        let project: Project = serde_json::from_str(&tool_text(
+            server
+                .create_project(Parameters(CreateProjectParams {
+                    name: "Gamma".to_string(),
+                    description: Some("desc".to_string()),
+                }))
+                .await
+                .unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(project.name, "Gamma");
+        assert_eq!(project.description, "desc");
+        let pid = project.id.unwrap();
+        assert_eq!(repo.list_versions_by_project(pid).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn create_project_defaults_description_and_rejects_empty_name() {
+        let (server, _) = server();
+        let project: Project = serde_json::from_str(&tool_text(
+            server
+                .create_project(Parameters(CreateProjectParams {
+                    name: "Delta".to_string(),
+                    description: None,
+                }))
+                .await
+                .unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(project.description, "");
+
+        let rejected = server
+            .create_project(Parameters(CreateProjectParams {
+                name: "   ".to_string(),
+                description: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(rejected.is_error, Some(true));
+        assert!(tool_text(rejected).contains("project name cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn set_task_dependencies_replaces_the_full_set() {
+        let (server, repo, pid) = seeded_server();
+        let version = repo.default_version_id(pid).unwrap();
+        let mk = |name: &str| {
+            repo.create_task(pid, version, name, "", Status::Todo, Priority::Low)
+                .unwrap()
+                .id
+                .unwrap()
+        };
+        let (a, b, c) = (mk("A"), mk("B"), mk("C"));
+        repo.add_dependency(a, b).unwrap();
+
+        let result = server
+            .set_task_dependencies(Parameters(SetTaskDependenciesParams {
+                task_id: a,
+                depends_on_ids: vec![c],
+            }))
+            .await
+            .unwrap();
+        assert_ne!(result.is_error, Some(true));
+        let body: serde_json::Value = serde_json::from_str(&tool_text(result)).unwrap();
+        assert_eq!(body["depends_on_ids"], serde_json::json!([c]));
+        assert_eq!(repo.get_dependencies(a).unwrap(), vec![c]);
+    }
+
+    #[tokio::test]
+    async fn set_task_dependencies_rejects_cycle_and_keeps_previous_set() {
+        let (server, repo, pid) = seeded_server();
+        let version = repo.default_version_id(pid).unwrap();
+        let mk = |name: &str| {
+            repo.create_task(pid, version, name, "", Status::Todo, Priority::Low)
+                .unwrap()
+                .id
+                .unwrap()
+        };
+        let (a, b, c) = (mk("A"), mk("B"), mk("C"));
+        repo.add_dependency(b, c).unwrap();
+        repo.add_dependency(a, c).unwrap();
+
+        // C depends on A would close A -> C -> A ... via B: B -> C -> A -> B
+        let result = server
+            .set_task_dependencies(Parameters(SetTaskDependenciesParams {
+                task_id: c,
+                depends_on_ids: vec![a],
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(tool_text(result).contains("dependency cycle"));
+        assert!(repo.get_dependencies(c).unwrap().is_empty());
+        assert_eq!(repo.get_dependencies(b).unwrap(), vec![c]);
+    }
+
+    #[tokio::test]
+    async fn update_project_renames_and_keeps_description_when_omitted() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Old", "keep me").unwrap().id.unwrap();
+        let renamed: Project = serde_json::from_str(&tool_text(
+            server
+                .update_project(Parameters(UpdateProjectParams {
+                    project_id: pid,
+                    name: "New".to_string(),
+                    description: None,
+                }))
+                .await
+                .unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(renamed.name, "New");
+        assert_eq!(renamed.description, "keep me");
+
+        let described: Project = serde_json::from_str(&tool_text(
+            server
+                .update_project(Parameters(UpdateProjectParams {
+                    project_id: pid,
+                    name: "New".to_string(),
+                    description: Some("changed".to_string()),
+                }))
+                .await
+                .unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(described.description, "changed");
+    }
+
+    #[tokio::test]
+    async fn update_project_rejects_empty_name_and_unknown_project() {
+        let (server, repo) = server();
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let empty = server
+            .update_project(Parameters(UpdateProjectParams {
+                project_id: pid,
+                name: "  ".to_string(),
+                description: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(empty.is_error, Some(true));
+        assert!(tool_text(empty).contains("project name cannot be empty"));
+
+        let unknown = server
+            .update_project(Parameters(UpdateProjectParams {
+                project_id: 999,
+                name: "X".to_string(),
+                description: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(unknown.is_error, Some(true));
+        assert!(tool_text(unknown).contains("project not found"));
+    }
+
+    #[tokio::test]
+    async fn update_task_changes_only_given_sections_and_keeps_status() {
+        let (server, repo, pid) = seeded_server();
+        let version = repo.default_version_id(pid).unwrap();
+        let created = repo
+            .create_task(
+                pid,
+                version,
+                "Original",
+                &compose_description("ctx", "req", "ben"),
+                Status::InProgress,
+                Priority::High,
+            )
+            .unwrap();
+        let task_id = created.id.unwrap();
+
+        let updated: Task = serde_json::from_str(&tool_text(
+            server
+                .update_task(Parameters(UpdateTaskParams {
+                    task_id,
+                    name: None,
+                    context: None,
+                    requirements: Some("- new requirement".to_string()),
+                    benefits: None,
+                }))
+                .await
+                .unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(updated.name, "Original");
+        assert_eq!(updated.status, Status::InProgress);
+        assert_eq!(updated.priority, Priority::High);
+        assert_eq!(
+            updated.description,
+            compose_description("ctx", "- new requirement", "ben")
+        );
+    }
+
+    #[tokio::test]
+    async fn update_task_rename_keeps_description_untouched() {
+        let (server, repo, pid) = seeded_server();
+        let version = repo.default_version_id(pid).unwrap();
+        let description = "hand written, no headings";
+        let task_id = repo
+            .create_task(
+                pid,
+                version,
+                "Old",
+                description,
+                Status::Todo,
+                Priority::Low,
+            )
+            .unwrap()
+            .id
+            .unwrap();
+
+        let updated: Task = serde_json::from_str(&tool_text(
+            server
+                .update_task(Parameters(UpdateTaskParams {
+                    task_id,
+                    name: Some("New".to_string()),
+                    context: None,
+                    requirements: None,
+                    benefits: None,
+                }))
+                .await
+                .unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(updated.name, "New");
+        assert_eq!(updated.description, description);
+    }
+
+    #[tokio::test]
+    async fn update_task_rejects_blank_name_and_unknown_task() {
+        let (server, repo, pid) = seeded_server();
+        let version = repo.default_version_id(pid).unwrap();
+        let task_id = repo
+            .create_task(pid, version, "T", "", Status::Todo, Priority::Low)
+            .unwrap()
+            .id
+            .unwrap();
+
+        let blank = server
+            .update_task(Parameters(UpdateTaskParams {
+                task_id,
+                name: Some("   ".to_string()),
+                context: None,
+                requirements: None,
+                benefits: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(blank.is_error, Some(true));
+        assert!(tool_text(blank).contains("task name cannot be empty"));
+
+        let unknown = server
+            .update_task(Parameters(UpdateTaskParams {
+                task_id: 999_999,
+                name: Some("X".to_string()),
+                context: None,
+                requirements: None,
+                benefits: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(unknown.is_error, Some(true));
+        assert!(tool_text(unknown).contains("task not found"));
+    }
+
+    #[tokio::test]
+    async fn list_projects_returns_all_projects() {
+        let (server, repo) = server();
+        repo.create_project("Alpha", "").unwrap();
+        repo.create_project("Beta", "").unwrap();
+        let projects: Vec<Project> =
+            serde_json::from_str(&tool_text(server.list_projects().await.unwrap())).unwrap();
+        let names: Vec<&str> = projects.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"Alpha") && names.contains(&"Beta"));
+    }
+
+    #[tokio::test]
+    async fn update_task_priority_changes_priority() {
+        let (server, _, pid) = seeded_server();
+        let task_id = server
+            .repo
+            .list_tasks_by_project(pid)
+            .unwrap()
+            .iter()
+            .find(|t| t.priority == Priority::Medium)
+            .unwrap()
+            .id
+            .unwrap();
+        let result = server
+            .update_task_priority(Parameters(UpdateTaskPriorityParams {
+                task_id,
+                priority: PriorityParam::High,
+            }))
+            .await
+            .unwrap();
+        assert_ne!(result.is_error, Some(true));
+        let task: Task = serde_json::from_str(&tool_text(result)).unwrap();
+        assert_eq!(task.id, Some(task_id));
+        assert_eq!(task.priority, Priority::High);
+        assert_eq!(
+            server.repo.get_task(task_id).unwrap().priority,
+            Priority::High
+        );
+    }
+
+    #[tokio::test]
+    async fn update_task_priority_unknown_task_returns_error() {
+        let (server, _) = server();
+        let result = server
+            .update_task_priority(Parameters(UpdateTaskPriorityParams {
+                task_id: 999,
+                priority: PriorityParam::Low,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(tool_text(result).contains("task not found"));
     }
 
     #[tokio::test]
@@ -1258,7 +1883,7 @@ mod tests {
                 context: "We need this.".to_string(),
                 requirements: "- Do it well".to_string(),
                 benefits: "Ship faster.".to_string(),
-                priority: None,
+                priority: PriorityParam::Medium,
             }))
             .await
             .unwrap();
@@ -1289,7 +1914,7 @@ mod tests {
                 context: "".to_string(),
                 requirements: "".to_string(),
                 benefits: "".to_string(),
-                priority: Some("High".to_string()),
+                priority: PriorityParam::High,
             }))
             .await
             .unwrap();
@@ -1309,7 +1934,7 @@ mod tests {
                 context: "".to_string(),
                 requirements: "".to_string(),
                 benefits: "".to_string(),
-                priority: None,
+                priority: PriorityParam::Medium,
             }))
             .await
             .unwrap();
@@ -1332,7 +1957,7 @@ mod tests {
                 context: "".to_string(),
                 requirements: "".to_string(),
                 benefits: "".to_string(),
-                priority: None,
+                priority: PriorityParam::Medium,
             }))
             .await
             .unwrap();
@@ -1353,7 +1978,7 @@ mod tests {
                 context: "".to_string(),
                 requirements: "".to_string(),
                 benefits: "".to_string(),
-                priority: None,
+                priority: PriorityParam::Medium,
             }))
             .await
             .unwrap_err();
@@ -1620,12 +2245,17 @@ mod tests {
             .as_array()
             .expect("tools/list should return a tools array");
         assert!(tools.iter().any(|t| t["name"] == "list_tasks"));
+        assert!(tools.iter().any(|t| t["name"] == "list_projects"));
+        assert!(tools.iter().any(|t| t["name"] == "create_project"));
+        assert!(tools.iter().any(|t| t["name"] == "update_project"));
+        assert!(tools.iter().any(|t| t["name"] == "update_task"));
         assert!(tools.iter().any(|t| t["name"] == "update_task_status"));
         assert!(tools.iter().any(|t| t["name"] == "create_task"));
         assert!(tools.iter().any(|t| t["name"] == "get_task_dependencies"));
         assert!(tools.iter().any(|t| t["name"] == "get_task_dependents"));
         assert!(tools.iter().any(|t| t["name"] == "add_task_dependency"));
         assert!(tools.iter().any(|t| t["name"] == "remove_task_dependency"));
+        assert!(tools.iter().any(|t| t["name"] == "set_task_dependencies"));
         assert!(tools.iter().any(|t| t["name"] == "list_task_notes"));
         assert!(tools.iter().any(|t| t["name"] == "add_task_note"));
         assert!(tools.iter().any(|t| t["name"] == "delete_task_note"));
@@ -1864,7 +2494,7 @@ mod tests {
                 context: "".to_string(),
                 requirements: "".to_string(),
                 benefits: "".to_string(),
-                priority: None,
+                priority: PriorityParam::Medium,
             }))
             .await
             .unwrap();
@@ -2095,7 +2725,7 @@ mod tests {
                     context: "ctx".to_string(),
                     requirements: "req".to_string(),
                     benefits: "ben".to_string(),
-                    priority: Some("High".to_string()),
+                    priority: PriorityParam::High,
                 }))
                 .await
                 .unwrap(),
@@ -2117,5 +2747,94 @@ mod tests {
         .unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id, task.id);
+    }
+}
+
+#[cfg(test)]
+mod priority_param_tests {
+    use super::*;
+
+    fn schema_for<T: schemars::JsonSchema>() -> serde_json::Value {
+        serde_json::to_value(schemars::schema_for!(T)).unwrap()
+    }
+
+    #[test]
+    fn create_task_priority_schema_is_plain_string_enum() {
+        let schema = schema_for::<CreateTaskParams>();
+        let prop = &schema["properties"]["priority"];
+        let refd = prop.get("$ref").and_then(|r| r.as_str());
+        let def = match refd {
+            Some(r) => &schema["$defs"][r.trim_start_matches("#/$defs/")],
+            None => prop,
+        };
+        assert_eq!(def["type"], "string", "priority must be a string: {def}");
+        assert_eq!(
+            def["enum"],
+            serde_json::json!(["Low", "Medium", "High"]),
+            "priority must enumerate the three levels: {def}"
+        );
+        assert!(
+            !prop.to_string().contains("null"),
+            "priority must not be nullable: {prop}"
+        );
+        let required = schema["required"].as_array().unwrap();
+        assert!(!required.iter().any(|r| r == "priority"));
+    }
+
+    #[test]
+    fn create_task_params_accept_named_priority() {
+        let params: CreateTaskParams = serde_json::from_value(serde_json::json!({
+            "project_id": 1, "version_id": 1, "name": "n",
+            "context": "c", "requirements": "r", "benefits": "b",
+            "priority": "High"
+        }))
+        .unwrap();
+        assert_eq!(Priority::from(params.priority), Priority::High);
+    }
+
+    #[test]
+    fn create_task_params_default_to_medium_when_omitted() {
+        let params: CreateTaskParams = serde_json::from_value(serde_json::json!({
+            "project_id": 1, "version_id": 1, "name": "n",
+            "context": "c", "requirements": "r", "benefits": "b"
+        }))
+        .unwrap();
+        assert_eq!(Priority::from(params.priority), Priority::Medium);
+    }
+
+    #[test]
+    fn create_task_params_reject_unknown_priority() {
+        let err = serde_json::from_value::<CreateTaskParams>(serde_json::json!({
+            "project_id": 1, "version_id": 1, "name": "n",
+            "context": "c", "requirements": "r", "benefits": "b",
+            "priority": "Urgent"
+        }))
+        .err()
+        .expect("unknown priority must be rejected");
+        assert!(err.to_string().contains("Urgent"), "{err}");
+    }
+
+    #[test]
+    fn list_tasks_params_accept_named_priority() {
+        let params: ListTasksParams = serde_json::from_value(serde_json::json!({
+            "project_id": 1, "priority": "High"
+        }))
+        .unwrap();
+        assert_eq!(params.priority.map(Priority::from), Some(Priority::High));
+    }
+}
+
+#[cfg(test)]
+mod instructions_tests {
+    use super::*;
+
+    #[test]
+    fn server_instructions_describe_status_workflow() {
+        let repo = Arc::new(crate::db::stub::StubRepository::default());
+        let info = PmpServer::new(repo).get_info();
+        let text = info.instructions.expect("instructions should be set");
+        for needle in ["update_task_status", "in_progress", "done", "add_task_note"] {
+            assert!(text.contains(needle), "instructions must mention {needle}");
+        }
     }
 }
