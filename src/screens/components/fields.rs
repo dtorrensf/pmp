@@ -11,6 +11,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
+use ratatui_textarea::{TextArea, WrapMode};
 
 /// Renders an editable text field: red border on `error`, bold border when
 /// `active` (error takes precedence), plain otherwise.
@@ -41,6 +42,32 @@ pub fn render_field(
     );
 }
 
+/// Renders a multi-line description `TextArea` inside a `Borders::ALL` block
+/// titled `title`, bold border when `active`. The textarea is cloned so the
+/// caller's state is untouched, and word-wrapped to the area width (like
+/// `Paragraph` with `Wrap`) so long lines stay fully visible.
+pub fn render_description_field(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    value: &TextArea<'_>,
+    active: bool,
+) {
+    let style = if active {
+        Style::default().add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(style);
+    let mut textarea = value.clone();
+    textarea.set_block(block);
+    textarea.set_wrap_mode(WrapMode::WordOrGlyph);
+    frame.render_widget(&textarea, area);
+}
+
 /// Renders a value the user cycles with arrow keys; the title advertises the
 /// `(←/→)` hint and the border is bold while the field is active.
 pub fn render_readonly_field(
@@ -68,11 +95,12 @@ mod tests {
     use ratatui::buffer::Buffer;
     use ratatui::style::{Color, Modifier};
     use ratatui::{Frame, Terminal, layout::Rect};
+    use ratatui_textarea::TextArea;
 
     use crate::screens::Component;
     use crate::screens::test_utils::render_to_string;
 
-    use super::{render_field, render_readonly_field};
+    use super::{render_description_field, render_field, render_readonly_field};
 
     /// Adapts the free field-renderer functions to the `Component` interface
     /// so they can be rendered through the shared `test_utils` helpers.
@@ -87,6 +115,7 @@ mod tests {
     enum FieldKind {
         Editable { error: bool },
         Readonly,
+        Description,
     }
 
     impl FieldStub {
@@ -107,6 +136,15 @@ mod tests {
                 kind: FieldKind::Readonly,
             }
         }
+
+        fn description(title: &'static str, value: &'static str, active: bool) -> Self {
+            Self {
+                title,
+                value,
+                active,
+                kind: FieldKind::Description,
+            }
+        }
     }
 
     impl Component for FieldStub {
@@ -117,6 +155,10 @@ mod tests {
                 }
                 FieldKind::Readonly => {
                     render_readonly_field(frame, area, self.title, self.value, self.active);
+                }
+                FieldKind::Description => {
+                    let textarea = TextArea::from(self.value.lines());
+                    render_description_field(frame, area, self.title, &textarea, self.active);
                 }
             }
         }
@@ -204,5 +246,53 @@ mod tests {
 
         assert!(buffer[(0, 0)].modifier.contains(Modifier::BOLD));
         assert!(!buffer[(1, 1)].modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn render_description_field_wraps_long_line_to_width() {
+        let text = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda";
+        let stub = FieldStub::description("Description", text, false);
+
+        let output = render_to_string(&stub, 20, 8);
+        let lines: Vec<&str> = output.split('\n').collect();
+
+        // Inner rows (index 1..) must hold consecutive wrapped fragments of the
+        // same line, not a single clipped row followed by empty rows.
+        assert!(lines[1].contains("alpha"), "row 1: {:?}", lines[1]);
+        assert!(
+            lines[2].contains('│') && !lines[2].trim_matches(['│', ' ']).is_empty(),
+            "row 2 should hold wrapped text: {:?}",
+            lines[2]
+        );
+        assert!(
+            !lines[3].trim_matches(['│', ' ']).is_empty(),
+            "row 3 should hold wrapped text: {:?}",
+            lines[3]
+        );
+        assert!(
+            output.contains("lambda"),
+            "last word must be visible:\n{output}"
+        );
+    }
+
+    #[test]
+    fn render_description_field_active_bolds_border() {
+        let stub = FieldStub::description("Description", "Alpha", true);
+
+        let buffer = render_to_buffer(&stub, 20, 5);
+
+        assert!(buffer[(0, 0)].modifier.contains(Modifier::BOLD));
+        assert!(buffer[(1, 0)].modifier.contains(Modifier::BOLD));
+        assert_eq!(buffer[(0, 0)].fg, Color::Reset);
+    }
+
+    #[test]
+    fn render_description_field_inactive_applies_no_bold_border() {
+        let stub = FieldStub::description("Description", "Alpha", false);
+
+        let buffer = render_to_buffer(&stub, 20, 5);
+
+        assert!(!buffer[(0, 0)].modifier.contains(Modifier::BOLD));
+        assert!(!buffer[(1, 0)].modifier.contains(Modifier::BOLD));
     }
 }
