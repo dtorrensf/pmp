@@ -312,6 +312,34 @@ fn delete_version_removes_its_tasks_and_dependencies() {
 }
 
 #[test]
+fn update_task_priority_changes_only_priority() {
+    for_each_repo(|name, repo| {
+        let id = create_task(repo);
+        let before = repo.get_task(id).unwrap();
+        let updated = repo.update_task_priority(id, Priority::High).expect(name);
+        assert_eq!(updated.priority, Priority::High, "{name}");
+        assert_eq!(updated.name, before.name, "{name}");
+        assert_eq!(updated.status, before.status, "{name}");
+        assert_eq!(updated.description, before.description, "{name}");
+        assert_eq!(
+            repo.get_task(id).unwrap().priority,
+            Priority::High,
+            "{name}"
+        );
+    });
+}
+
+#[test]
+fn update_task_priority_unknown_id_returns_not_found() {
+    for_each_repo(|name, repo| {
+        let err = repo
+            .update_task_priority(999_999, Priority::Low)
+            .unwrap_err();
+        assert!(matches!(err, AppError::NotFound), "{name}: {err:?}");
+    });
+}
+
+#[test]
 fn list_tasks_by_version_only_returns_that_version() {
     for_each_repo(|name, repo| {
         let pid = repo.create_project("P", "").unwrap().id.unwrap();

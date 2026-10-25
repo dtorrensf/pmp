@@ -63,6 +63,7 @@ pub trait Repository: Send + Sync {
         priority: Priority,
     ) -> Result<Task, AppError>;
     fn update_task_status(&self, id: i64, new_status: Status) -> Result<Task, AppError>;
+    fn update_task_priority(&self, id: i64, priority: Priority) -> Result<Task, AppError>;
     fn add_dependency(&self, task_id: i64, depends_on_id: i64) -> Result<(), AppError>;
     fn remove_dependency(&self, task_id: i64, depends_on_id: i64) -> Result<(), AppError>;
     fn get_dependencies(&self, task_id: i64) -> Result<Vec<i64>, AppError>;

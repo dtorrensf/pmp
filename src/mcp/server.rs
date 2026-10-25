@@ -26,13 +26,34 @@ pub struct PmpServer {
     repo: Arc<dyn Repository>,
 }
 
+/// Priority as accepted by MCP tools. Serialized as a plain string enum
+/// (`"Low"`, `"Medium"`, `"High"`) so the generated input schema is a
+/// non-nullable string enum that clients can rely on. Defaults to Medium.
+#[derive(Debug, Clone, Copy, Default, Deserialize, schemars::JsonSchema)]
+pub enum PriorityParam {
+    Low,
+    #[default]
+    Medium,
+    High,
+}
+
+impl From<PriorityParam> for Priority {
+    fn from(value: PriorityParam) -> Self {
+        match value {
+            PriorityParam::Low => Priority::Low,
+            PriorityParam::Medium => Priority::Medium,
+            PriorityParam::High => Priority::High,
+        }
+    }
+}
+
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct ListTasksParams {
     pub project_id: i64,
     /// Restrict the list to one version of the project.
     pub version_id: Option<i64>,
     pub status: Option<Status>,
-    pub priority: Option<Priority>,
+    pub priority: Option<PriorityParam>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -56,6 +77,12 @@ pub struct UpdateTaskStatusParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+pub struct UpdateTaskPriorityParams {
+    pub task_id: i64,
+    pub priority: PriorityParam,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct TaskDependencyParams {
     pub task_id: i64,
     pub depends_on_id: i64,
@@ -75,7 +102,9 @@ pub struct CreateTaskParams {
     pub context: String,
     pub requirements: String,
     pub benefits: String,
-    pub priority: Option<String>,
+    /// Task priority: `Low`, `Medium` or `High`. Defaults to `Medium`.
+    #[serde(default)]
+    pub priority: PriorityParam,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -236,7 +265,9 @@ impl PmpServer {
                     .into_iter()
                     .filter(|t| {
                         params.status.is_none_or(|s| t.status == s)
-                            && params.priority.is_none_or(|p| t.priority == p)
+                            && params
+                                .priority
+                                .is_none_or(|p| t.priority == Priority::from(p))
                     })
                     .collect();
                 let content = ContentBlock::json(&filtered)
@@ -326,6 +357,34 @@ impl PmpServer {
     }
 
     #[tool(
+        name = "update_task_priority",
+        description = "Change the priority of an existing task to Low, Medium or High. Use to reprioritize work; prefer this over editing the database directly."
+    )]
+    async fn update_task_priority(
+        &self,
+        Parameters(params): Parameters<UpdateTaskPriorityParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let repo = self.repo.clone();
+        let result = task::spawn_blocking(move || {
+            repo.update_task_priority(params.task_id, params.priority.into())
+        })
+        .await
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
+
+        match result {
+            Ok(task) => {
+                let content = ContentBlock::json(&task)
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                Ok(CallToolResult::success(vec![content]))
+            }
+            Err(AppError::NotFound) => Ok(CallToolResult::error(vec![ContentBlock::text(
+                "task not found".to_string(),
+            )])),
+            Err(e) => Err(app_error_to_mcp(e)),
+        }
+    }
+
+    #[tool(
         name = "create_task",
         description = "Create a new task in a version of a project. Use when the user wants to add a task, to-do, or work item. Requires the project id, the version id (see list_versions), task name, and a structured description with context, requirements, and benefits. Optionally accepts a priority (Low, Medium, High); defaults to Medium."
     )]
@@ -343,14 +402,13 @@ impl PmpServer {
             repo.get_project(params.project_id)?;
             let description =
                 compose_description(&params.context, &params.requirements, &params.benefits);
-            let priority = get_priority(params.priority.as_deref().unwrap_or("Medium"));
             repo.create_task(
                 params.project_id,
                 params.version_id,
                 &params.name,
                 &description,
                 Status::Todo,
-                priority,
+                params.priority.into(),
             )
         })
         .await
@@ -651,15 +709,6 @@ impl PmpServer {
     }
 }
 
-fn get_priority(priority: &str) -> Priority {
-    match priority {
-        "High" => Priority::High,
-        "Medium" => Priority::Medium,
-        "Low" => Priority::Low,
-        _ => Priority::Medium,
-    }
-}
-
 #[tool_handler]
 impl ServerHandler for PmpServer {
     async fn list_resources(
@@ -730,6 +779,7 @@ mod tests {
     use rmcp::handler::server::wrapper::Parameters;
     use rmcp::model::{CallToolResult, ErrorCode, ReadResourceResult, ResourceContents};
 
+    use super::PriorityParam;
     use crate::db::repository::Repository;
     use crate::db::stub::StubRepository;
     use crate::domain::error::AppError;
@@ -740,7 +790,7 @@ mod tests {
     use super::{
         AddTaskNoteParams, CreateTaskParams, CreateVersionParams, ListTasksParams,
         ListVersionsParams, NoteIdParams, PmpServer, TaskDependencyParams, TaskIdParams,
-        UpdateTaskStatusParams,
+        UpdateTaskPriorityParams, UpdateTaskStatusParams,
     };
 
     fn server() -> (PmpServer, Arc<StubRepository>) {
@@ -872,6 +922,10 @@ mod tests {
         }
 
         fn update_task_status(&self, _: i64, _: Status) -> Result<Task, AppError> {
+            unimplemented!()
+        }
+
+        fn update_task_priority(&self, _: i64, _: Priority) -> Result<Task, AppError> {
             unimplemented!()
         }
 
@@ -1046,7 +1100,7 @@ mod tests {
                 project_id: pid,
                 version_id: None,
                 status: None,
-                priority: Some(Priority::High),
+                priority: Some(PriorityParam::High),
             }))
             .await
             .unwrap();
@@ -1064,7 +1118,7 @@ mod tests {
                 project_id: pid,
                 version_id: None,
                 status: Some(Status::Todo),
-                priority: Some(Priority::Low),
+                priority: Some(PriorityParam::Low),
             }))
             .await
             .unwrap();
@@ -1146,6 +1200,49 @@ mod tests {
         assert_eq!(result.is_error, Some(true));
         let message = tool_text(result);
         assert!(message.contains("task not found"));
+    }
+
+    #[tokio::test]
+    async fn update_task_priority_changes_priority() {
+        let (server, _, pid) = seeded_server();
+        let task_id = server
+            .repo
+            .list_tasks_by_project(pid)
+            .unwrap()
+            .iter()
+            .find(|t| t.priority == Priority::Medium)
+            .unwrap()
+            .id
+            .unwrap();
+        let result = server
+            .update_task_priority(Parameters(UpdateTaskPriorityParams {
+                task_id,
+                priority: PriorityParam::High,
+            }))
+            .await
+            .unwrap();
+        assert_ne!(result.is_error, Some(true));
+        let task: Task = serde_json::from_str(&tool_text(result)).unwrap();
+        assert_eq!(task.id, Some(task_id));
+        assert_eq!(task.priority, Priority::High);
+        assert_eq!(
+            server.repo.get_task(task_id).unwrap().priority,
+            Priority::High
+        );
+    }
+
+    #[tokio::test]
+    async fn update_task_priority_unknown_task_returns_error() {
+        let (server, _) = server();
+        let result = server
+            .update_task_priority(Parameters(UpdateTaskPriorityParams {
+                task_id: 999,
+                priority: PriorityParam::Low,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(tool_text(result).contains("task not found"));
     }
 
     #[tokio::test]
@@ -1258,7 +1355,7 @@ mod tests {
                 context: "We need this.".to_string(),
                 requirements: "- Do it well".to_string(),
                 benefits: "Ship faster.".to_string(),
-                priority: None,
+                priority: PriorityParam::Medium,
             }))
             .await
             .unwrap();
@@ -1289,7 +1386,7 @@ mod tests {
                 context: "".to_string(),
                 requirements: "".to_string(),
                 benefits: "".to_string(),
-                priority: Some("High".to_string()),
+                priority: PriorityParam::High,
             }))
             .await
             .unwrap();
@@ -1309,7 +1406,7 @@ mod tests {
                 context: "".to_string(),
                 requirements: "".to_string(),
                 benefits: "".to_string(),
-                priority: None,
+                priority: PriorityParam::Medium,
             }))
             .await
             .unwrap();
@@ -1332,7 +1429,7 @@ mod tests {
                 context: "".to_string(),
                 requirements: "".to_string(),
                 benefits: "".to_string(),
-                priority: None,
+                priority: PriorityParam::Medium,
             }))
             .await
             .unwrap();
@@ -1353,7 +1450,7 @@ mod tests {
                 context: "".to_string(),
                 requirements: "".to_string(),
                 benefits: "".to_string(),
-                priority: None,
+                priority: PriorityParam::Medium,
             }))
             .await
             .unwrap_err();
@@ -1864,7 +1961,7 @@ mod tests {
                 context: "".to_string(),
                 requirements: "".to_string(),
                 benefits: "".to_string(),
-                priority: None,
+                priority: PriorityParam::Medium,
             }))
             .await
             .unwrap();
@@ -2095,7 +2192,7 @@ mod tests {
                     context: "ctx".to_string(),
                     requirements: "req".to_string(),
                     benefits: "ben".to_string(),
-                    priority: Some("High".to_string()),
+                    priority: PriorityParam::High,
                 }))
                 .await
                 .unwrap(),
@@ -2117,5 +2214,79 @@ mod tests {
         .unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id, task.id);
+    }
+}
+
+#[cfg(test)]
+mod priority_param_tests {
+    use super::*;
+
+    fn schema_for<T: schemars::JsonSchema>() -> serde_json::Value {
+        serde_json::to_value(schemars::schema_for!(T)).unwrap()
+    }
+
+    #[test]
+    fn create_task_priority_schema_is_plain_string_enum() {
+        let schema = schema_for::<CreateTaskParams>();
+        let prop = &schema["properties"]["priority"];
+        let refd = prop.get("$ref").and_then(|r| r.as_str());
+        let def = match refd {
+            Some(r) => &schema["$defs"][r.trim_start_matches("#/$defs/")],
+            None => prop,
+        };
+        assert_eq!(def["type"], "string", "priority must be a string: {def}");
+        assert_eq!(
+            def["enum"],
+            serde_json::json!(["Low", "Medium", "High"]),
+            "priority must enumerate the three levels: {def}"
+        );
+        assert!(
+            !prop.to_string().contains("null"),
+            "priority must not be nullable: {prop}"
+        );
+        let required = schema["required"].as_array().unwrap();
+        assert!(!required.iter().any(|r| r == "priority"));
+    }
+
+    #[test]
+    fn create_task_params_accept_named_priority() {
+        let params: CreateTaskParams = serde_json::from_value(serde_json::json!({
+            "project_id": 1, "version_id": 1, "name": "n",
+            "context": "c", "requirements": "r", "benefits": "b",
+            "priority": "High"
+        }))
+        .unwrap();
+        assert_eq!(Priority::from(params.priority), Priority::High);
+    }
+
+    #[test]
+    fn create_task_params_default_to_medium_when_omitted() {
+        let params: CreateTaskParams = serde_json::from_value(serde_json::json!({
+            "project_id": 1, "version_id": 1, "name": "n",
+            "context": "c", "requirements": "r", "benefits": "b"
+        }))
+        .unwrap();
+        assert_eq!(Priority::from(params.priority), Priority::Medium);
+    }
+
+    #[test]
+    fn create_task_params_reject_unknown_priority() {
+        let err = serde_json::from_value::<CreateTaskParams>(serde_json::json!({
+            "project_id": 1, "version_id": 1, "name": "n",
+            "context": "c", "requirements": "r", "benefits": "b",
+            "priority": "Urgent"
+        }))
+        .err()
+        .expect("unknown priority must be rejected");
+        assert!(err.to_string().contains("Urgent"), "{err}");
+    }
+
+    #[test]
+    fn list_tasks_params_accept_named_priority() {
+        let params: ListTasksParams = serde_json::from_value(serde_json::json!({
+            "project_id": 1, "priority": "High"
+        }))
+        .unwrap();
+        assert_eq!(params.priority.map(Priority::from), Some(Priority::High));
     }
 }

@@ -310,6 +310,16 @@ impl Repository for StubRepository {
         Ok(task.clone())
     }
 
+    fn update_task_priority(&self, id: i64, priority: Priority) -> Result<Task, AppError> {
+        let mut tasks = self.tasks.lock().unwrap();
+        let task = tasks
+            .iter_mut()
+            .find(|t| t.id == Some(id))
+            .ok_or(AppError::NotFound)?;
+        task.priority = priority;
+        Ok(task.clone())
+    }
+
     fn add_dependency(&self, task_id: i64, depends_on_id: i64) -> Result<(), AppError> {
         let task = self.get_task(task_id)?;
         let depends_on = self.get_task(depends_on_id)?;

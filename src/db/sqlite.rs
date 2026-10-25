@@ -287,6 +287,19 @@ impl Repository for SqliteRepository {
         self.get_task(id)
     }
 
+    fn update_task_priority(&self, id: i64, priority: Priority) -> Result<Task, AppError> {
+        let conn = self.conn.lock().unwrap();
+        let updated = conn.execute(
+            "UPDATE tasks SET priority = ?1 WHERE id = ?2",
+            params![i64::from(priority), id],
+        )?;
+        drop(conn);
+        if updated == 0 {
+            return Err(AppError::NotFound);
+        }
+        self.get_task(id)
+    }
+
     fn add_dependency(&self, task_id: i64, depends_on_id: i64) -> Result<(), AppError> {
         if task_id == depends_on_id {
             return Err(AppError::DependencyCycle);
