@@ -285,6 +285,26 @@ impl PmpServer {
     }
 
     #[tool(
+        name = "list_projects",
+        description = "List all projects of the user. Use to discover project ids before listing versions or tasks, or when the user asks what projects they have."
+    )]
+    async fn list_projects(&self) -> Result<CallToolResult, ErrorData> {
+        let repo = self.repo.clone();
+        let result = task::spawn_blocking(move || repo.list_projects())
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
+
+        match result {
+            Ok(projects) => {
+                let content = ContentBlock::json(&projects)
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                Ok(CallToolResult::success(vec![content]))
+            }
+            Err(e) => Err(app_error_to_mcp(e)),
+        }
+    }
+
+    #[tool(
         name = "list_versions",
         description = "List the versions (release lines) of a project, open ones first. Use to find the version_id that tasks must be created in, or to check which versions are released."
     )]
@@ -1212,6 +1232,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_projects_returns_all_projects() {
+        let (server, repo) = server();
+        repo.create_project("Alpha", "").unwrap();
+        repo.create_project("Beta", "").unwrap();
+        let projects: Vec<Project> =
+            serde_json::from_str(&tool_text(server.list_projects().await.unwrap())).unwrap();
+        let names: Vec<&str> = projects.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"Alpha") && names.contains(&"Beta"));
+    }
+
+    #[tokio::test]
     async fn update_task_priority_changes_priority() {
         let (server, _, pid) = seeded_server();
         let task_id = server
@@ -1726,6 +1758,7 @@ mod tests {
             .as_array()
             .expect("tools/list should return a tools array");
         assert!(tools.iter().any(|t| t["name"] == "list_tasks"));
+        assert!(tools.iter().any(|t| t["name"] == "list_projects"));
         assert!(tools.iter().any(|t| t["name"] == "update_task_status"));
         assert!(tools.iter().any(|t| t["name"] == "create_task"));
         assert!(tools.iter().any(|t| t["name"] == "get_task_dependencies"));
