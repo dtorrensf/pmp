@@ -11,7 +11,7 @@ use ratatui::{
 use crate::db::repository::Repository;
 use crate::domain::task::{Priority, Status, Task};
 use crate::screens::components::confirm_dialog::ConfirmDialog;
-use crate::screens::components::fields::render_readonly_field;
+use crate::screens::components::fields::{render_field, render_readonly_field};
 use crate::screens::components::list_navigation::move_selection;
 use crate::screens::components::popup::{centered_rect, render_popup_scaffold};
 use crate::screens::components::scroll::{ListScroll, render_scrollbar};
@@ -26,12 +26,14 @@ pub enum TaskListMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterField {
+    Title,
     Status,
     Priority,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct FilterState {
+    pub filter_title: String,
     pub filter_status: Option<Status>,
     pub filter_priority: Option<Priority>,
     pub selected_field: FilterField,
@@ -57,6 +59,7 @@ pub struct TaskListView {
     scroll: ListScroll,
     filter_status: Option<Status>,
     filter_priority: Option<Priority>,
+    filter_title: Option<String>,
     mode: TaskListMode,
 }
 
@@ -69,6 +72,7 @@ impl TaskListView {
             scroll: ListScroll::new(),
             filter_status: None,
             filter_priority: None,
+            filter_title: None,
             mode: TaskListMode::Browsing,
         }
     }
@@ -101,6 +105,10 @@ impl TaskListView {
         self.filter_priority
     }
 
+    pub fn filter_title(&self) -> Option<&str> {
+        self.filter_title.as_deref()
+    }
+
     pub fn mode(&self) -> &TaskListMode {
         &self.mode
     }
@@ -131,6 +139,10 @@ impl TaskListView {
                     && self
                         .filter_priority
                         .is_none_or(|priority| task.priority == priority)
+                    && self
+                        .filter_title
+                        .as_ref()
+                        .is_none_or(|title| task.name.to_lowercase().contains(title))
             })
             .cloned()
             .collect();
@@ -189,6 +201,7 @@ impl TaskListView {
                 }
                 KeyCode::Char('f') => {
                     self.mode = TaskListMode::Filtering(FilterState {
+                        filter_title: self.filter_title.clone().unwrap_or_default(),
                         filter_status: self.filter_status,
                         filter_priority: self.filter_priority,
                         selected_field: FilterField::Status,
@@ -208,6 +221,8 @@ impl TaskListView {
                     None
                 }
                 KeyCode::Enter => {
+                    self.filter_title = (!state.filter_title.trim().is_empty())
+                        .then(|| state.filter_title.trim().to_lowercase());
                     self.filter_status = state.filter_status;
                     self.filter_priority = state.filter_priority;
                     self.apply_filter();
@@ -216,13 +231,23 @@ impl TaskListView {
                 }
                 KeyCode::Tab => {
                     state.selected_field = match state.selected_field {
+                        FilterField::Title => FilterField::Status,
                         FilterField::Status => FilterField::Priority,
-                        FilterField::Priority => FilterField::Status,
+                        FilterField::Priority => FilterField::Title,
                     };
+                    None
+                }
+                KeyCode::Char(character) if state.selected_field == FilterField::Title => {
+                    state.filter_title.push(character);
+                    None
+                }
+                KeyCode::Backspace if state.selected_field == FilterField::Title => {
+                    state.filter_title.pop();
                     None
                 }
                 KeyCode::Left => {
                     match state.selected_field {
+                        FilterField::Title => {}
                         FilterField::Status => {
                             state.filter_status = state
                                 .filter_status
@@ -240,6 +265,7 @@ impl TaskListView {
                 }
                 KeyCode::Right => {
                     match state.selected_field {
+                        FilterField::Title => {}
                         FilterField::Status => {
                             state.filter_status = state
                                 .filter_status
@@ -326,7 +352,11 @@ impl TaskListView {
             Constraint::Percentage(26),
             Constraint::Percentage(26),
         ];
-        let title = filter_title(self.filter_status, self.filter_priority);
+        let title = task_list_title(
+            self.filter_title.as_deref(),
+            self.filter_status,
+            self.filter_priority,
+        );
         let table = Table::new(rows, widths)
             .header(header)
             .block(Block::default().title(title).borders(Borders::ALL));
@@ -346,23 +376,49 @@ impl Default for TaskListView {
     }
 }
 
-fn filter_title(status: Option<Status>, priority: Option<Priority>) -> String {
-    match (status, priority) {
-        (None, None) => "Tasks".to_string(),
-        (Some(s), None) => format!("Tasks (Status: {})", s.label()),
-        (None, Some(p)) => format!("Tasks (Priority: {})", p.label()),
-        (Some(s), Some(p)) => format!("Tasks ({} - {})", s.label(), p.label()),
+fn task_list_title(
+    title: Option<&str>,
+    status: Option<Status>,
+    priority: Option<Priority>,
+) -> String {
+    if title.is_none() {
+        return match (status, priority) {
+            (None, None) => "Tasks".to_string(),
+            (Some(status), None) => format!("Tasks (Status: {})", status.label()),
+            (None, Some(priority)) => format!("Tasks (Priority: {})", priority.label()),
+            (Some(status), Some(priority)) => {
+                format!("Tasks ({} - {})", status.label(), priority.label())
+            }
+        };
+    }
+
+    let mut filters = Vec::new();
+    if let Some(title) = title {
+        filters.push(format!("Title: {title}"));
+    }
+    if let Some(status) = status {
+        filters.push(format!("Status: {}", status.label()));
+    }
+    if let Some(priority) = priority {
+        filters.push(format!("Priority: {}", priority.label()));
+    }
+
+    if filters.is_empty() {
+        "Tasks".to_string()
+    } else {
+        format!("Tasks ({})", filters.join(" - "))
     }
 }
 
 fn render_filter_popup(state: &FilterState, frame: &mut Frame, area: Rect) {
-    let popup_area = centered_rect(52, 11, area);
+    let popup_area = centered_rect(52, 15, area);
     let inner = render_popup_scaffold(frame, popup_area, "Filter Tasks");
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
+            Constraint::Length(3),
             Constraint::Length(3),
             Constraint::Length(3),
             Constraint::Length(1),
@@ -376,16 +432,24 @@ fn render_filter_popup(state: &FilterState, frame: &mut Frame, area: Rect) {
         .filter_priority
         .map_or_else(|| "Any".to_string(), |p| p.label().to_string());
 
-    render_readonly_field(
+    render_field(
         frame,
         chunks[0],
+        "Title",
+        &state.filter_title,
+        state.selected_field == FilterField::Title,
+        false,
+    );
+    render_readonly_field(
+        frame,
+        chunks[1],
         "Status",
         &status_label,
         state.selected_field == FilterField::Status,
     );
     render_readonly_field(
         frame,
-        chunks[1],
+        chunks[2],
         "Priority",
         &priority_label,
         state.selected_field == FilterField::Priority,
@@ -395,7 +459,7 @@ fn render_filter_popup(state: &FilterState, frame: &mut Frame, area: Rect) {
     let help_para = Paragraph::new(help)
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
-    frame.render_widget(help_para, chunks[2]);
+    frame.render_widget(help_para, chunks[3]);
 }
 
 #[cfg(test)]
@@ -520,9 +584,69 @@ mod tests {
     }
 
     #[test]
+    fn filters_tasks_by_title_case_insensitively_and_partially() {
+        let repo = StubRepository::default();
+        let mut view = TaskListView::new();
+        view.set_tasks(vec![
+            task("Fix Login Flow", Status::Todo),
+            task("Update README", Status::Todo),
+            task("Login metrics", Status::Done),
+        ]);
+
+        view.handle_key(KeyCode::Char('f'), &repo);
+        view.handle_key(KeyCode::Tab, &repo);
+        view.handle_key(KeyCode::Tab, &repo);
+        for character in "login".chars() {
+            view.handle_key(KeyCode::Char(character), &repo);
+        }
+        view.handle_key(KeyCode::Enter, &repo);
+
+        assert_eq!(view.tasks().len(), 2);
+        assert!(
+            view.tasks()
+                .iter()
+                .all(|task| task.name.to_lowercase().contains("login"))
+        );
+    }
+
+    #[test]
+    fn title_filter_combines_with_status_and_empty_title_clears_it() {
+        let repo = StubRepository::default();
+        let mut view = TaskListView::new();
+        view.set_tasks(vec![
+            task("Login todo", Status::Todo),
+            task("Login done", Status::Done),
+            task("Other todo", Status::Todo),
+        ]);
+
+        view.handle_key(KeyCode::Char('f'), &repo);
+        view.handle_key(KeyCode::Right, &repo);
+        view.handle_key(KeyCode::Tab, &repo);
+        view.handle_key(KeyCode::Tab, &repo);
+        for character in "login".chars() {
+            view.handle_key(KeyCode::Char(character), &repo);
+        }
+        view.handle_key(KeyCode::Enter, &repo);
+
+        assert_eq!(view.tasks().len(), 1);
+        assert_eq!(view.tasks()[0].name, "Login todo");
+
+        view.handle_key(KeyCode::Char('f'), &repo);
+        view.handle_key(KeyCode::Tab, &repo);
+        view.handle_key(KeyCode::Tab, &repo);
+        for _ in 0..5 {
+            view.handle_key(KeyCode::Backspace, &repo);
+        }
+        view.handle_key(KeyCode::Enter, &repo);
+
+        assert_eq!(view.filter_title(), None);
+        assert_eq!(view.tasks().len(), 2);
+    }
+
+    #[test]
     fn filter_title_renders_active_status() {
         assert_eq!(
-            filter_title(Some(Status::Todo), None),
+            task_list_title(None, Some(Status::Todo), None),
             "Tasks (Status: Todo)"
         );
     }
@@ -530,7 +654,7 @@ mod tests {
     #[test]
     fn filter_title_renders_active_priority() {
         assert_eq!(
-            filter_title(None, Some(Priority::High)),
+            task_list_title(None, None, Some(Priority::High)),
             "Tasks (Priority: High)"
         );
     }
@@ -538,14 +662,14 @@ mod tests {
     #[test]
     fn filter_title_renders_both_active() {
         assert_eq!(
-            filter_title(Some(Status::Done), Some(Priority::Low)),
+            task_list_title(None, Some(Status::Done), Some(Priority::Low)),
             "Tasks (Done - Low)"
         );
     }
 
     #[test]
     fn filter_title_renders_default_when_none() {
-        assert_eq!(filter_title(None, None), "Tasks");
+        assert_eq!(task_list_title(None, None, None), "Tasks");
     }
 
     #[test]
