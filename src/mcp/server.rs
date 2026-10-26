@@ -13,12 +13,12 @@ use rmcp::model::{
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{tool, tool_handler, tool_router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::task;
 
 use crate::db::repository::Repository;
 use crate::domain::error::AppError;
-use crate::domain::task::{Priority, Status, Task};
+use crate::domain::task::{Priority, Status};
 use crate::domain::version::VersionStatus;
 use crate::mcp::task_description::{compose_description, split_description};
 
@@ -189,17 +189,7 @@ impl PmpServer {
         let repo = self.repo.clone();
 
         match uri {
-            "pmp://projects" => {
-                let projects = task::spawn_blocking(move || repo.list_projects())
-                    .await
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
-                    .map_err(app_error_to_mcp)?;
-                let text = serde_json::to_string_pretty(&projects)
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                Ok(ReadResourceResult::new(vec![
-                    ResourceContents::text(text, uri).with_mime_type("application/json"),
-                ]))
-            }
+            "pmp://projects" => read_json_resource(repo, uri, |repo| repo.list_projects()).await,
             uri if uri.starts_with("pmp://versions/") => {
                 let tail = &uri["pmp://versions/".len()..];
                 let id = tail
@@ -207,15 +197,7 @@ impl PmpServer {
                     .ok_or_else(|| ErrorData::invalid_params("unsupported resource uri", None))?
                     .parse::<i64>()
                     .map_err(|_| ErrorData::invalid_params("invalid version id", None))?;
-                let tasks = task::spawn_blocking(move || repo.list_tasks_by_version(id))
-                    .await
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
-                    .map_err(app_error_to_mcp)?;
-                let text = serde_json::to_string_pretty(&tasks)
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                Ok(ReadResourceResult::new(vec![
-                    ResourceContents::text(text, uri).with_mime_type("application/json"),
-                ]))
+                read_json_resource(repo, uri, move |repo| repo.list_tasks_by_version(id)).await
             }
             uri if uri.starts_with("pmp://projects/") => {
                 let tail = &uri["pmp://projects/".len()..];
@@ -223,41 +205,18 @@ impl PmpServer {
                     let id = prefix
                         .parse::<i64>()
                         .map_err(|_| ErrorData::invalid_params("invalid project id", None))?;
-                    let versions = task::spawn_blocking(move || repo.list_versions_by_project(id))
+                    read_json_resource(repo, uri, move |repo| repo.list_versions_by_project(id))
                         .await
-                        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
-                        .map_err(app_error_to_mcp)?;
-                    let text = serde_json::to_string_pretty(&versions)
-                        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                    Ok(ReadResourceResult::new(vec![
-                        ResourceContents::text(text, uri).with_mime_type("application/json"),
-                    ]))
                 } else if let Some(prefix) = tail.strip_suffix("/tasks") {
                     let id = prefix
                         .parse::<i64>()
                         .map_err(|_| ErrorData::invalid_params("invalid project id", None))?;
-                    let tasks = task::spawn_blocking(move || repo.list_tasks_by_project(id))
-                        .await
-                        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
-                        .map_err(app_error_to_mcp)?;
-                    let text = serde_json::to_string_pretty(&tasks)
-                        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                    Ok(ReadResourceResult::new(vec![
-                        ResourceContents::text(text, uri).with_mime_type("application/json"),
-                    ]))
+                    read_json_resource(repo, uri, move |repo| repo.list_tasks_by_project(id)).await
                 } else {
                     let id = tail
                         .parse::<i64>()
                         .map_err(|_| ErrorData::invalid_params("invalid project id", None))?;
-                    let project = task::spawn_blocking(move || repo.get_project(id))
-                        .await
-                        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
-                        .map_err(app_error_to_mcp)?;
-                    let text = serde_json::to_string_pretty(&project)
-                        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                    Ok(ReadResourceResult::new(vec![
-                        ResourceContents::text(text, uri).with_mime_type("application/json"),
-                    ]))
+                    read_json_resource(repo, uri, move |repo| repo.get_project(id)).await
                 }
             }
             _ => Err(ErrorData::invalid_params("unsupported resource uri", None)),
@@ -272,50 +231,38 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<ListTasksParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let repo = self.repo.clone();
-        let result = task::spawn_blocking(move || {
-            repo.get_project(params.project_id)?;
-            match params.version_id {
+        let project_id = params.project_id;
+        let version_id = params.version_id;
+        let status = params.status;
+        let priority = params.priority.map(Priority::from);
+        let result = execute_repository(self.repo.clone(), move |repo| {
+            repo.get_project(project_id)?;
+            match version_id {
                 Some(version_id) => {
                     let version = repo.get_version(version_id).map_err(|_| {
                         AppError::Validation("version does not belong to the project".to_string())
                     })?;
-                    if version.project_id != params.project_id {
+                    if version.project_id != project_id {
                         return Err(AppError::Validation(
                             "version does not belong to the project".to_string(),
                         ));
                     }
                     repo.list_tasks_by_version(version_id)
                 }
-                None => repo.list_tasks_by_project(params.project_id),
+                None => repo.list_tasks_by_project(project_id),
             }
         })
-        .await
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
-
-        match result {
-            Ok(tasks) => {
-                let filtered: Vec<Task> = tasks
-                    .into_iter()
-                    .filter(|t| {
-                        params.status.is_none_or(|s| t.status == s)
-                            && params
-                                .priority
-                                .is_none_or(|p| t.priority == Priority::from(p))
-                    })
-                    .collect();
-                let content = ContentBlock::json(&filtered)
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::success(vec![content]))
-            }
-            Err(AppError::NotFound) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                "project not found".to_string(),
-            )])),
-            Err(AppError::Validation(msg)) => {
-                Ok(CallToolResult::error(vec![ContentBlock::text(msg)]))
-            }
-            Err(e) => Err(app_error_to_mcp(e)),
-        }
+        .await?;
+        let result = result.map(|tasks| {
+            tasks
+                .into_iter()
+                .filter(|task| {
+                    status.is_none_or(|value| task.status == value)
+                        && priority.is_none_or(|value| task.priority == value)
+                })
+                .collect::<Vec<_>>()
+        });
+        tool_result(result, "project not found")
     }
 
     #[tool(
@@ -323,19 +270,8 @@ impl PmpServer {
         description = "List all projects of the user. Use to discover project ids before listing versions or tasks, or when the user asks what projects they have."
     )]
     async fn list_projects(&self) -> Result<CallToolResult, ErrorData> {
-        let repo = self.repo.clone();
-        let result = task::spawn_blocking(move || repo.list_projects())
-            .await
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
-
-        match result {
-            Ok(projects) => {
-                let content = ContentBlock::json(&projects)
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::success(vec![content]))
-            }
-            Err(e) => Err(app_error_to_mcp(e)),
-        }
+        let result = execute_repository(self.repo.clone(), |repo| repo.list_projects()).await?;
+        tool_result(result, "project not found")
     }
 
     #[tool(
@@ -346,8 +282,7 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<CreateProjectParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let repo = self.repo.clone();
-        let result = task::spawn_blocking(move || {
+        let result = execute_repository(self.repo.clone(), move |repo| {
             if params.name.trim().is_empty() {
                 return Err(AppError::Validation(
                     "project name cannot be empty".to_string(),
@@ -356,20 +291,8 @@ impl PmpServer {
             let description = params.description.unwrap_or_default();
             repo.create_project(&params.name, &description)
         })
-        .await
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
-
-        match result {
-            Ok(project) => {
-                let content = ContentBlock::json(&project)
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::success(vec![content]))
-            }
-            Err(AppError::Validation(msg)) => {
-                Ok(CallToolResult::error(vec![ContentBlock::text(msg)]))
-            }
-            Err(e) => Err(app_error_to_mcp(e)),
-        }
+        .await?;
+        tool_result(result, "project not found")
     }
 
     #[tool(
@@ -380,8 +303,7 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<UpdateProjectParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let repo = self.repo.clone();
-        let result = task::spawn_blocking(move || {
+        let result = execute_repository(self.repo.clone(), move |repo| {
             if params.name.trim().is_empty() {
                 return Err(AppError::Validation(
                     "project name cannot be empty".to_string(),
@@ -391,23 +313,8 @@ impl PmpServer {
             let description = params.description.unwrap_or(current.description);
             repo.update_project(params.project_id, &params.name, &description)
         })
-        .await
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
-
-        match result {
-            Ok(project) => {
-                let content = ContentBlock::json(&project)
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::success(vec![content]))
-            }
-            Err(AppError::NotFound) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                "project not found".to_string(),
-            )])),
-            Err(AppError::Validation(msg)) => {
-                Ok(CallToolResult::error(vec![ContentBlock::text(msg)]))
-            }
-            Err(e) => Err(app_error_to_mcp(e)),
-        }
+        .await?;
+        tool_result(result, "project not found")
     }
 
     #[tool(
@@ -418,25 +325,12 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<ListVersionsParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let repo = self.repo.clone();
-        let result = task::spawn_blocking(move || {
+        let result = execute_repository(self.repo.clone(), move |repo| {
             repo.get_project(params.project_id)?;
             repo.list_versions_by_project(params.project_id)
         })
-        .await
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
-
-        match result {
-            Ok(versions) => {
-                let content = ContentBlock::json(&versions)
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::success(vec![content]))
-            }
-            Err(AppError::NotFound) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                "project not found".to_string(),
-            )])),
-            Err(e) => Err(app_error_to_mcp(e)),
-        }
+        .await?;
+        tool_result(result, "project not found")
     }
 
     #[tool(
@@ -447,8 +341,7 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<CreateVersionParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let repo = self.repo.clone();
-        let result = task::spawn_blocking(move || {
+        let result = execute_repository(self.repo.clone(), move |repo| {
             let status = match params.status.as_deref() {
                 Some(value) => VersionStatus::try_from_str(value)?,
                 None => VersionStatus::Open,
@@ -463,23 +356,8 @@ impl PmpServer {
                 _ => Ok(version),
             }
         })
-        .await
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
-
-        match result {
-            Ok(version) => {
-                let content = ContentBlock::json(&version)
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::success(vec![content]))
-            }
-            Err(AppError::NotFound) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                "project not found".to_string(),
-            )])),
-            Err(AppError::Validation(msg)) => {
-                Ok(CallToolResult::error(vec![ContentBlock::text(msg)]))
-            }
-            Err(e) => Err(app_error_to_mcp(e)),
-        }
+        .await?;
+        tool_result(result, "project not found")
     }
 
     #[tool(
@@ -490,24 +368,13 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<UpdateTaskPriorityParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let repo = self.repo.clone();
-        let result = task::spawn_blocking(move || {
-            repo.update_task_priority(params.task_id, params.priority.into())
+        let task_id = params.task_id;
+        let priority = params.priority;
+        let result = execute_repository(self.repo.clone(), move |repo| {
+            repo.update_task_priority(task_id, priority.into())
         })
-        .await
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
-
-        match result {
-            Ok(task) => {
-                let content = ContentBlock::json(&task)
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::success(vec![content]))
-            }
-            Err(AppError::NotFound) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                "task not found".to_string(),
-            )])),
-            Err(e) => Err(app_error_to_mcp(e)),
-        }
+        .await?;
+        tool_result(result, "task not found")
     }
 
     #[tool(
@@ -518,8 +385,7 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<UpdateTaskParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let repo = self.repo.clone();
-        let result = task::spawn_blocking(move || {
+        let result = execute_repository(self.repo.clone(), move |repo| {
             if let Some(name) = &params.name
                 && name.trim().is_empty()
             {
@@ -559,23 +425,8 @@ impl PmpServer {
                 current.priority,
             )
         })
-        .await
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
-
-        match result {
-            Ok(task) => {
-                let content = ContentBlock::json(&task)
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::success(vec![content]))
-            }
-            Err(AppError::NotFound) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                "task not found".to_string(),
-            )])),
-            Err(AppError::Validation(msg)) => {
-                Ok(CallToolResult::error(vec![ContentBlock::text(msg)]))
-            }
-            Err(e) => Err(app_error_to_mcp(e)),
-        }
+        .await?;
+        tool_result(result, "task not found")
     }
 
     #[tool(
@@ -586,8 +437,7 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<CreateTaskParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let repo = self.repo.clone();
-        let result = task::spawn_blocking(move || {
+        let result = execute_repository(self.repo.clone(), move |repo| {
             if params.name.trim().is_empty() {
                 return Err(AppError::Validation(
                     "task name cannot be empty".to_string(),
@@ -605,23 +455,8 @@ impl PmpServer {
                 params.priority.into(),
             )
         })
-        .await
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
-
-        match result {
-            Ok(task) => {
-                let content = ContentBlock::json(&task)
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::success(vec![content]))
-            }
-            Err(AppError::NotFound) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                "project not found".to_string(),
-            )])),
-            Err(AppError::Validation(msg)) => {
-                Ok(CallToolResult::error(vec![ContentBlock::text(msg)]))
-            }
-            Err(e) => Err(app_error_to_mcp(e)),
-        }
+        .await?;
+        tool_result(result, "project not found")
     }
 
     #[tool(
@@ -632,10 +467,9 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<UpdateTaskStatusParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let repo = self.repo.clone();
         let task_id = params.task_id;
         let new_status = params.status;
-        let result = task::spawn_blocking(move || {
+        let result = execute_repository(self.repo.clone(), move |repo| {
             let task = repo.get_task(task_id)?;
             if new_status == Status::Done
                 && task.status != Status::Done
@@ -647,26 +481,8 @@ impl PmpServer {
             }
             repo.update_task_status(task_id, new_status)
         })
-        .await
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
-
-        match result {
-            Ok(task) => {
-                let content = ContentBlock::json(&task)
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::success(vec![content]))
-            }
-            Err(AppError::NotFound) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                "task not found".to_string(),
-            )])),
-            Err(AppError::Validation(msg)) => {
-                Ok(CallToolResult::error(vec![ContentBlock::text(msg)]))
-            }
-            Err(AppError::DependencyCycle) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                "dependency cycle detected".to_string(),
-            )])),
-            Err(e) => Err(app_error_to_mcp(e)),
-        }
+        .await?;
+        tool_result(result, "task not found")
     }
 
     #[tool(
@@ -677,29 +493,21 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<TaskIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let repo = self.repo.clone();
         let task_id = params.task_id;
-        let result = task::spawn_blocking(move || {
+        let result = execute_repository(self.repo.clone(), move |repo| {
             repo.get_task(task_id)?;
             repo.get_dependencies(task_id)
         })
-        .await
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
-
-        match result {
-            Ok(depends_on_ids) => {
-                let content = ContentBlock::json(serde_json::json!({
+        .await?;
+        tool_result(
+            result.map(|depends_on_ids| {
+                serde_json::json!({
                     "task_id": task_id,
                     "depends_on_ids": depends_on_ids,
-                }))
-                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::success(vec![content]))
-            }
-            Err(AppError::NotFound) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                "task not found".to_string(),
-            )])),
-            Err(e) => Err(app_error_to_mcp(e)),
-        }
+                })
+            }),
+            "task not found",
+        )
     }
 
     #[tool(
@@ -710,29 +518,21 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<TaskIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let repo = self.repo.clone();
         let task_id = params.task_id;
-        let result = task::spawn_blocking(move || {
+        let result = execute_repository(self.repo.clone(), move |repo| {
             repo.get_task(task_id)?;
             repo.get_dependents(task_id)
         })
-        .await
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
-
-        match result {
-            Ok(task_ids) => {
-                let content = ContentBlock::json(serde_json::json!({
+        .await?;
+        tool_result(
+            result.map(|task_ids| {
+                serde_json::json!({
                     "task_id": task_id,
                     "task_ids": task_ids,
-                }))
-                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::success(vec![content]))
-            }
-            Err(AppError::NotFound) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                "task not found".to_string(),
-            )])),
-            Err(e) => Err(app_error_to_mcp(e)),
-        }
+                })
+            }),
+            "task not found",
+        )
     }
 
     #[tool(
@@ -743,37 +543,23 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<TaskDependencyParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let repo = self.repo.clone();
         let task_id = params.task_id;
         let depends_on_id = params.depends_on_id;
-        let result = task::spawn_blocking(move || {
+        let result = execute_repository(self.repo.clone(), move |repo| {
             repo.get_task(task_id)?;
             repo.get_task(depends_on_id)?;
             repo.add_dependency(task_id, depends_on_id)
         })
-        .await
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
-
-        match result {
-            Ok(()) => {
-                let content = ContentBlock::json(serde_json::json!({
+        .await?;
+        tool_result(
+            result.map(|()| {
+                serde_json::json!({
                     "task_id": task_id,
                     "depends_on_id": depends_on_id,
-                }))
-                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::success(vec![content]))
-            }
-            Err(AppError::NotFound) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                "task not found".to_string(),
-            )])),
-            Err(AppError::Validation(msg)) => {
-                Ok(CallToolResult::error(vec![ContentBlock::text(msg)]))
-            }
-            Err(AppError::DependencyCycle) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                "dependency cycle detected",
-            )])),
-            Err(e) => Err(app_error_to_mcp(e)),
-        }
+                })
+            }),
+            "task not found",
+        )
     }
 
     #[tool(
@@ -784,35 +570,21 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<SetTaskDependenciesParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let repo = self.repo.clone();
         let task_id = params.task_id;
-        let result = task::spawn_blocking(move || {
+        let result = execute_repository(self.repo.clone(), move |repo| {
             repo.set_dependencies(task_id, &params.depends_on_ids)?;
             repo.get_dependencies(task_id)
         })
-        .await
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
-
-        match result {
-            Ok(ids) => {
-                let content = ContentBlock::json(serde_json::json!({
+        .await?;
+        tool_result(
+            result.map(|ids| {
+                serde_json::json!({
                     "task_id": task_id,
                     "depends_on_ids": ids,
-                }))
-                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::success(vec![content]))
-            }
-            Err(AppError::NotFound) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                "task not found".to_string(),
-            )])),
-            Err(AppError::Validation(msg)) => {
-                Ok(CallToolResult::error(vec![ContentBlock::text(msg)]))
-            }
-            Err(AppError::DependencyCycle) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                "dependency cycle detected",
-            )])),
-            Err(e) => Err(app_error_to_mcp(e)),
-        }
+                })
+            }),
+            "task not found",
+        )
     }
 
     #[tool(
@@ -823,31 +595,23 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<TaskDependencyParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let repo = self.repo.clone();
         let task_id = params.task_id;
         let depends_on_id = params.depends_on_id;
-        let result = task::spawn_blocking(move || {
+        let result = execute_repository(self.repo.clone(), move |repo| {
             repo.get_task(task_id)?;
             repo.get_task(depends_on_id)?;
             repo.remove_dependency(task_id, depends_on_id)
         })
-        .await
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
-
-        match result {
-            Ok(()) => {
-                let content = ContentBlock::json(serde_json::json!({
+        .await?;
+        tool_result(
+            result.map(|()| {
+                serde_json::json!({
                     "task_id": task_id,
                     "depends_on_id": depends_on_id,
-                }))
-                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::success(vec![content]))
-            }
-            Err(AppError::NotFound) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                "task not found".to_string(),
-            )])),
-            Err(e) => Err(app_error_to_mcp(e)),
-        }
+                })
+            }),
+            "task not found",
+        )
     }
 
     #[tool(
@@ -858,26 +622,13 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<TaskIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let repo = self.repo.clone();
         let task_id = params.task_id;
-        let result = task::spawn_blocking(move || {
+        let result = execute_repository(self.repo.clone(), move |repo| {
             repo.get_task(task_id)?;
             repo.list_task_notes(task_id)
         })
-        .await
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
-
-        match result {
-            Ok(notes) => {
-                let content = ContentBlock::json(&notes)
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::success(vec![content]))
-            }
-            Err(AppError::NotFound) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                "task not found".to_string(),
-            )])),
-            Err(e) => Err(app_error_to_mcp(e)),
-        }
+        .await?;
+        tool_result(result, "task not found")
     }
 
     #[tool(
@@ -888,30 +639,14 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<AddTaskNoteParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let repo = self.repo.clone();
         let task_id = params.task_id;
         let content = params.content;
-        let result = task::spawn_blocking(move || {
+        let result = execute_repository(self.repo.clone(), move |repo| {
             repo.get_task(task_id)?;
             repo.add_task_note(task_id, &content)
         })
-        .await
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
-
-        match result {
-            Ok(note) => {
-                let content = ContentBlock::json(&note)
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::success(vec![content]))
-            }
-            Err(AppError::NotFound) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                "task not found".to_string(),
-            )])),
-            Err(AppError::Validation(msg)) => {
-                Ok(CallToolResult::error(vec![ContentBlock::text(msg)]))
-            }
-            Err(e) => Err(app_error_to_mcp(e)),
-        }
+        .await?;
+        tool_result(result, "task not found")
     }
 
     #[tool(
@@ -922,23 +657,74 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<NoteIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let repo = self.repo.clone();
         let note_id = params.note_id;
-        let result = task::spawn_blocking(move || repo.delete_task_note(note_id))
-            .await
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))?;
+        let result = execute_repository(self.repo.clone(), move |repo| {
+            repo.delete_task_note(note_id)
+        })
+        .await?;
+        tool_result(
+            result.map(|()| serde_json::json!({ "note_id": note_id })),
+            "note not found",
+        )
+    }
+}
 
-        match result {
-            Ok(()) => {
-                let content = ContentBlock::json(serde_json::json!({ "note_id": note_id }))
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::success(vec![content]))
-            }
-            Err(AppError::NotFound) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                "note not found".to_string(),
-            )])),
-            Err(e) => Err(app_error_to_mcp(e)),
+async fn execute_repository<T, F>(
+    repo: Arc<dyn Repository>,
+    operation: F,
+) -> Result<Result<T, AppError>, ErrorData>
+where
+    T: Send + 'static,
+    F: FnOnce(Arc<dyn Repository>) -> Result<T, AppError> + Send + 'static,
+{
+    task::spawn_blocking(move || operation(repo))
+        .await
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))
+}
+
+async fn read_json_resource<T, F>(
+    repo: Arc<dyn Repository>,
+    uri: &str,
+    operation: F,
+) -> Result<ReadResourceResult, ErrorData>
+where
+    T: Serialize + Send + 'static,
+    F: FnOnce(Arc<dyn Repository>) -> Result<T, AppError> + Send + 'static,
+{
+    let value = execute_repository(repo, operation)
+        .await?
+        .map_err(app_error_to_mcp)?;
+    let text = serde_json::to_string_pretty(&value)
+        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    Ok(ReadResourceResult::new(vec![
+        ResourceContents::text(text, uri).with_mime_type("application/json"),
+    ]))
+}
+
+fn json_content<T: Serialize>(value: &T) -> Result<ContentBlock, ErrorData> {
+    ContentBlock::json(value).map_err(|e| ErrorData::internal_error(e.to_string(), None))
+}
+
+fn tool_success<T: Serialize>(value: &T) -> Result<CallToolResult, ErrorData> {
+    Ok(CallToolResult::success(vec![json_content(value)?]))
+}
+
+fn tool_result<T: Serialize>(
+    result: Result<T, AppError>,
+    not_found_message: &str,
+) -> Result<CallToolResult, ErrorData> {
+    match result {
+        Ok(value) => tool_success(&value),
+        Err(AppError::NotFound) => Ok(CallToolResult::error(vec![ContentBlock::text(
+            not_found_message.to_string(),
+        )])),
+        Err(AppError::Validation(message)) => {
+            Ok(CallToolResult::error(vec![ContentBlock::text(message)]))
         }
+        Err(AppError::DependencyCycle) => Ok(CallToolResult::error(vec![ContentBlock::text(
+            "dependency cycle detected",
+        )])),
+        Err(error) => Err(app_error_to_mcp(error)),
     }
 }
 
