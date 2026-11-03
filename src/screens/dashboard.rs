@@ -106,6 +106,7 @@ impl ProjectDashboard {
         (key(KeyCode::Down), "Down"),
         (key(KeyCode::Enter), "Open"),
         (key(KeyCode::Char('c')), "New Version"),
+        (key(KeyCode::Char('v')), "Edit Version"),
         (key(KeyCode::Char('d')), "Delete"),
         (key(KeyCode::Char('r')), "Cycle Status"),
         (key(KeyCode::Char('e')), "Edit Project"),
@@ -262,6 +263,14 @@ impl Component for ProjectDashboard {
                 project_id,
                 version_id: None,
             })),
+            KeyCode::Char('v') => {
+                let row = self.selected_row()?;
+                let version_id = row.version.id?;
+                Some(Action::Navigate(Screen::VersionForm {
+                    project_id,
+                    version_id: Some(version_id),
+                }))
+            }
             KeyCode::Char('e') => Some(Action::Navigate(Screen::ProjectForm {
                 project_id: Some(project_id),
             })),
@@ -674,6 +683,36 @@ mod tests {
     }
 
     #[test]
+    fn v_opens_edit_version_form_for_selected_version() {
+        let (_repo, mut dashboard, project_id) = setup_with_tasks();
+        let version_id = dashboard.versions()[0].version.id.unwrap();
+        let action = dashboard.handle_event(&key_event(KeyCode::Char('v')));
+        assert_eq!(
+            action,
+            Some(Action::Navigate(Screen::VersionForm {
+                project_id,
+                version_id: Some(version_id),
+            }))
+        );
+    }
+
+    #[test]
+    fn v_does_nothing_without_versions() {
+        let repo = Arc::new(StubRepository::default());
+        let project_id = repo.create_project("Empty", "").unwrap().id.unwrap();
+        let mut dashboard = ProjectDashboard::new(repo.clone());
+        dashboard.set_project_id(project_id);
+        dashboard.init().unwrap();
+        repo.delete_version(dashboard.versions()[0].version.id.unwrap())
+            .unwrap();
+        dashboard.refresh().unwrap();
+        assert!(dashboard.versions().is_empty());
+
+        let action = dashboard.handle_event(&key_event(KeyCode::Char('v')));
+        assert_eq!(action, None);
+    }
+
+    #[test]
     fn e_opens_project_edit_form() {
         let (_repo, mut dashboard, project_id) = setup_with_tasks();
         let action = dashboard.handle_event(&key_event(KeyCode::Char('e')));
@@ -810,6 +849,7 @@ mod tests {
             .map(|(event, label)| (event.code, *label))
             .collect();
         assert!(keys.contains(&(KeyCode::Char('c'), "New Version")));
+        assert!(keys.contains(&(KeyCode::Char('v'), "Edit Version")));
         assert!(keys.contains(&(KeyCode::Char('r'), "Cycle Status")));
         assert!(keys.contains(&(KeyCode::Char('e'), "Edit Project")));
         assert!(keys.contains(&(KeyCode::Char('d'), "Delete")));
