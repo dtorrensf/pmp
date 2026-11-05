@@ -10,6 +10,7 @@ use ratatui::{
 
 use crate::db::repository::Repository;
 use crate::domain::task::{Priority, Status, Task};
+use crate::domain::version::Version;
 use crate::screens::components::confirm_dialog::ConfirmDialog;
 use crate::screens::components::fields::{render_field, render_readonly_field};
 use crate::screens::components::list_navigation::move_selection;
@@ -22,6 +23,16 @@ pub enum TaskListMode {
     Browsing,
     ConfirmDelete(ConfirmDialog),
     Filtering(FilterState),
+    MovingTask(MoveTaskState),
+}
+
+/// State of the "move task to version" popup: the task being moved, the other
+/// versions of its project and the highlighted target.
+#[derive(Debug, Clone)]
+pub struct MoveTaskState {
+    pub task_id: i64,
+    pub targets: Vec<Version>,
+    pub selected: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +63,10 @@ pub struct FilterState {
 /// - `Tab`: cycle the selected task's status
 /// - `d`: delete the selected task (with confirmation)
 /// - `f`: filter the list
+///
+/// The move popup is opened by the embedding screen through
+/// [`TaskListView::open_move`] because only the screen knows the other
+/// versions of the project.
 pub struct TaskListView {
     all_tasks: Vec<Task>,
     tasks: Vec<Task>,
@@ -119,6 +134,18 @@ impl TaskListView {
 
     pub fn is_browsing(&self) -> bool {
         matches!(self.mode, TaskListMode::Browsing)
+    }
+
+    /// Opens the move popup for the selected task, offering `targets` as
+    /// destination versions. Does nothing when no task is selected.
+    pub fn open_move(&mut self, targets: Vec<Version>) {
+        if let Some(task_id) = self.tasks.get(self.selected).and_then(|task| task.id) {
+            self.mode = TaskListMode::MovingTask(MoveTaskState {
+                task_id,
+                targets,
+                selected: 0,
+            });
+        }
     }
 
     /// Replace the source list, re-apply the active filters and clamp the
@@ -215,6 +242,28 @@ impl TaskListView {
                 self.mode = TaskListMode::Browsing;
                 action
             }
+            TaskListMode::MovingTask(state) => match code {
+                KeyCode::Esc => {
+                    self.mode = TaskListMode::Browsing;
+                    None
+                }
+                KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j') => {
+                    move_selection(&mut state.selected, state.targets.len(), code);
+                    None
+                }
+                KeyCode::Enter => {
+                    let action = state.targets.get(state.selected).and_then(|target| {
+                        target.id.map(|version_id| Action::MoveTask {
+                            task_id: state.task_id,
+                            version_id,
+                        })
+                    });
+                    // Without targets (only one version) the popup just closes.
+                    self.mode = TaskListMode::Browsing;
+                    action
+                }
+                _ => None,
+            },
             TaskListMode::Filtering(state) => match code {
                 KeyCode::Esc => {
                     self.mode = TaskListMode::Browsing;
@@ -292,6 +341,7 @@ impl TaskListView {
             TaskListMode::Browsing => self.render_table(frame, area),
             TaskListMode::ConfirmDelete(dialog) => dialog.render(frame, area),
             TaskListMode::Filtering(state) => render_filter_popup(state, frame, area),
+            TaskListMode::MovingTask(state) => render_move_popup(state, frame, area),
         }
     }
 
@@ -408,6 +458,51 @@ fn task_list_title(
     } else {
         format!("Tasks ({})", filters.join(" - "))
     }
+}
+
+fn render_move_popup(state: &MoveTaskState, frame: &mut Frame, area: Rect) {
+    let height = (state.targets.len() as u16).max(1) + 4;
+    let popup_area = centered_rect(52, height, area);
+    let inner = render_popup_scaffold(frame, popup_area, "Move task to version");
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    if state.targets.is_empty() {
+        let message = Paragraph::new("This is the only version of the project.")
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true });
+        frame.render_widget(message, chunks[0]);
+    } else {
+        let lines: Vec<ratatui::text::Line> = state
+            .targets
+            .iter()
+            .enumerate()
+            .map(|(i, version)| {
+                let text = format!("{} · {}", version.name, version.status.label());
+                let style = if i == state.selected {
+                    Style::default().add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default()
+                };
+                ratatui::text::Line::styled(text, style)
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(lines), chunks[0]);
+    }
+
+    let help = if state.targets.is_empty() {
+        "Esc close"
+    } else {
+        "↑ ↓ choose  Enter move  Esc cancel"
+    };
+    let help_para = Paragraph::new(help)
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    frame.render_widget(help_para, chunks[1]);
 }
 
 fn render_filter_popup(state: &FilterState, frame: &mut Frame, area: Rect) {

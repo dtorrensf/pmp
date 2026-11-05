@@ -102,6 +102,13 @@ pub struct UpdateTaskStatusParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+pub struct MoveTaskParams {
+    pub task_id: i64,
+    /// Version of the same project the task moves to.
+    pub version_id: i64,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct UpdateTaskPriorityParams {
     pub task_id: i64,
     pub priority: PriorityParam,
@@ -395,6 +402,21 @@ impl PmpServer {
         })
         .await?;
         tool_result(result, "version not found")
+    }
+
+    #[tool(
+        name = "move_task",
+        description = "Move a task to another version of its own project. Only the version changes: notes, status, priority and dates stay. Moving to the current version is a no-op. Fails if the target version belongs to another project, or if the task has dependencies or dependents: they must stay within one version, so clear them first with set_task_dependencies. Returns the updated task."
+    )]
+    async fn move_task(
+        &self,
+        Parameters(params): Parameters<MoveTaskParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = execute_repository(self.repo.clone(), move |repo| {
+            repo.move_task(params.task_id, params.version_id)
+        })
+        .await?;
+        tool_result(result, "task or version not found")
     }
 
     #[tool(
@@ -854,9 +876,9 @@ mod tests {
 
     use super::{
         AddTaskNoteParams, CreateProjectParams, CreateTaskParams, CreateVersionParams,
-        ListTasksParams, ListVersionsParams, NoteIdParams, PmpServer, SetTaskDependenciesParams,
-        TaskDependencyParams, TaskIdParams, UpdateProjectParams, UpdateTaskParams,
-        UpdateTaskPriorityParams, UpdateTaskStatusParams, UpdateVersionParams,
+        ListTasksParams, ListVersionsParams, MoveTaskParams, NoteIdParams, PmpServer,
+        SetTaskDependenciesParams, TaskDependencyParams, TaskIdParams, UpdateProjectParams,
+        UpdateTaskParams, UpdateTaskPriorityParams, UpdateTaskStatusParams, UpdateVersionParams,
     };
     use crate::mcp::task_description::compose_description;
 
@@ -1558,6 +1580,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn move_task_reassigns_version_and_returns_task() {
+        let (server, _, pid) = seeded_server();
+        let v1 = server.repo.default_version_id(pid).unwrap();
+        let v2 = server
+            .repo
+            .create_version(pid, "v0.2.0", "")
+            .unwrap()
+            .id
+            .unwrap();
+        let task_id = server.repo.list_tasks_by_version(v1).unwrap()[0]
+            .id
+            .unwrap();
+        let result = server
+            .move_task(Parameters(MoveTaskParams {
+                task_id,
+                version_id: v2,
+            }))
+            .await
+            .unwrap();
+        assert_ne!(result.is_error, Some(true));
+        let task: Task = serde_json::from_str(&tool_text(result)).unwrap();
+        assert_eq!(task.id, Some(task_id));
+        assert_eq!(task.version_id, v2);
+        assert_eq!(server.repo.get_task(task_id).unwrap().version_id, v2);
+    }
+
+    #[tokio::test]
+    async fn move_task_with_dependencies_returns_error_and_keeps_version() {
+        let (server, _, pid) = seeded_server();
+        let v1 = server.repo.default_version_id(pid).unwrap();
+        let v2 = server
+            .repo
+            .create_version(pid, "v0.2.0", "")
+            .unwrap()
+            .id
+            .unwrap();
+        let a = server
+            .repo
+            .create_task(pid, v1, "A", "", Status::Todo, Priority::Low)
+            .unwrap()
+            .id
+            .unwrap();
+        let b = server
+            .repo
+            .create_task(pid, v1, "B", "", Status::Todo, Priority::Low)
+            .unwrap()
+            .id
+            .unwrap();
+        server.repo.add_dependency(b, a).unwrap();
+        let result = server
+            .move_task(Parameters(MoveTaskParams {
+                task_id: b,
+                version_id: v2,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(tool_text(result).contains("dependencies or dependents"));
+        assert_eq!(server.repo.get_task(b).unwrap().version_id, v1);
+    }
+
+    #[tokio::test]
+    async fn move_task_unknown_ids_return_error() {
+        let (server, _, pid) = seeded_server();
+        let v1 = server.repo.default_version_id(pid).unwrap();
+        let task_id = server.repo.list_tasks_by_version(v1).unwrap()[0]
+            .id
+            .unwrap();
+        let result = server
+            .move_task(Parameters(MoveTaskParams {
+                task_id: 999_999,
+                version_id: v1,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let result = server
+            .move_task(Parameters(MoveTaskParams {
+                task_id,
+                version_id: 999_999,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+    }
+
+    #[tokio::test]
     async fn update_task_priority_changes_priority() {
         let (server, _, pid) = seeded_server();
         let task_id = server
@@ -2087,6 +2196,7 @@ mod tests {
         assert!(tools.iter().any(|t| t["name"] == "list_task_notes"));
         assert!(tools.iter().any(|t| t["name"] == "add_task_note"));
         assert!(tools.iter().any(|t| t["name"] == "delete_task_note"));
+        assert!(tools.iter().any(|t| t["name"] == "move_task"));
 
         let create_request = serde_json::json!({
             "jsonrpc": "2.0",

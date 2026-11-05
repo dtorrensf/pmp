@@ -110,6 +110,10 @@ pub enum Action {
         task_id: i64,
         new_status: crate::domain::task::Status,
     },
+    MoveTask {
+        task_id: i64,
+        version_id: i64,
+    },
     SaveVersion {
         version_id: Option<i64>,
         project_id: i64,

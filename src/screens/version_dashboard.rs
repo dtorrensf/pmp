@@ -40,6 +40,7 @@ impl VersionDashboard {
         (key(KeyCode::Char('d')), "Delete"),
         (key(KeyCode::Char('r')), "Refresh"),
         (key(KeyCode::Char('f')), "Filter"),
+        (key(KeyCode::Char('m')), "Move"),
         (key(KeyCode::Char('c')), "New"),
         (key(KeyCode::Esc), "Back"),
         (key(KeyCode::Char('q')), "Quit"),
@@ -89,6 +90,20 @@ impl VersionDashboard {
         self.view.filter_priority()
     }
 
+    /// Opens the move popup for the selected task with every other version of
+    /// the project as destination. A failed version lookup leaves the popup
+    /// with no targets, which shows the "only version" message.
+    fn open_move_popup(&mut self) {
+        let targets = self
+            .repo
+            .list_versions_by_project(self.project_id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|v| v.id != Some(self.version_id))
+            .collect();
+        self.view.open_move(targets);
+    }
+
     fn load_tasks(&mut self) -> anyhow::Result<()> {
         let version = self.repo.get_version(self.version_id)?;
         self.project_id = version.project_id;
@@ -133,6 +148,10 @@ impl Component for VersionDashboard {
             if self.view.is_browsing() {
                 match code {
                     KeyCode::Char('r') => return Some(Action::Refresh),
+                    KeyCode::Char('m') => {
+                        self.open_move_popup();
+                        return None;
+                    }
                     KeyCode::Char('c') => {
                         return Some(Action::Navigate(Screen::TaskForm {
                             version_id: self.version_id,
@@ -254,6 +273,7 @@ mod tests {
                 (KeyCode::Char('d'), "Delete"),
                 (KeyCode::Char('r'), "Refresh"),
                 (KeyCode::Char('f'), "Filter"),
+                (KeyCode::Char('m'), "Move"),
                 (KeyCode::Char('c'), "New"),
                 (KeyCode::Esc, "Back"),
                 (KeyCode::Char('q'), "Quit"),
@@ -756,5 +776,86 @@ mod tests {
         screen.handle_event(&key_event(KeyCode::Right));
         screen.handle_event(&key_event(KeyCode::Enter));
         assert!(screen.selected_task() < screen.tasks().len());
+    }
+
+    fn setup_with_second_version() -> (Arc<StubRepository>, VersionDashboard, i64, i64) {
+        let (repo, screen, project_id) = setup_with_tasks();
+        let other = repo
+            .create_version(project_id, "v0.2.0", "")
+            .unwrap()
+            .id
+            .unwrap();
+        (repo, screen, project_id, other)
+    }
+
+    #[test]
+    fn m_opens_move_popup_listing_other_versions() {
+        let (_repo, mut screen, _pid, _other) = setup_with_second_version();
+        assert!(
+            screen
+                .handle_event(&key_event(KeyCode::Char('m')))
+                .is_none()
+        );
+        match screen.view.mode() {
+            TaskListMode::MovingTask(state) => {
+                assert_eq!(state.targets.len(), 1);
+                assert_eq!(state.targets[0].name, "v0.2.0");
+            }
+            other => panic!("expected MovingTask, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enter_in_move_popup_emits_move_action_for_selected_task() {
+        let (_repo, mut screen, _pid, other) = setup_with_second_version();
+        let task_id = screen.tasks()[0].id.unwrap();
+        screen.handle_event(&key_event(KeyCode::Char('m')));
+        let action = screen.handle_event(&key_event(KeyCode::Enter));
+        assert_eq!(
+            action,
+            Some(Action::MoveTask {
+                task_id,
+                version_id: other
+            })
+        );
+        assert!(screen.view.is_browsing());
+    }
+
+    #[test]
+    fn esc_in_move_popup_cancels_without_moving() {
+        let (_repo, mut screen, _pid, _other) = setup_with_second_version();
+        screen.handle_event(&key_event(KeyCode::Char('m')));
+        assert!(screen.handle_event(&key_event(KeyCode::Esc)).is_none());
+        assert!(screen.view.is_browsing());
+    }
+
+    #[test]
+    fn esc_in_move_popup_does_not_navigate_back() {
+        let (_repo, mut screen, _pid, _other) = setup_with_second_version();
+        screen.handle_event(&key_event(KeyCode::Char('m')));
+        let action = screen.handle_event(&key_event(KeyCode::Esc));
+        assert!(!matches!(action, Some(Action::Navigate(_))));
+    }
+
+    #[test]
+    fn move_popup_with_single_version_shows_message_and_moves_nothing() {
+        let (_repo, mut screen, _pid) = setup_with_tasks();
+        screen.handle_event(&key_event(KeyCode::Char('m')));
+        let text = render_to_string(&screen, 60, 20);
+        assert!(text.contains("This is the only version of the project."));
+        assert!(screen.handle_event(&key_event(KeyCode::Enter)).is_none());
+        assert!(screen.view.is_browsing());
+    }
+
+    #[test]
+    fn move_popup_without_selected_task_does_nothing() {
+        let repo = Arc::new(StubRepository::default());
+        let project_id = repo.create_project("Empty", "").unwrap().id.unwrap();
+        repo.create_version(project_id, "v0.2.0", "").unwrap();
+        let mut screen = VersionDashboard::new(repo.clone());
+        screen.set_ids(project_id, repo.default_version_id(project_id).unwrap());
+        screen.init().unwrap();
+        screen.handle_event(&key_event(KeyCode::Char('m')));
+        assert!(screen.view.is_browsing());
     }
 }

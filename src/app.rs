@@ -374,6 +374,32 @@ impl App {
                     None
                 }
             },
+            Action::MoveTask {
+                task_id,
+                version_id,
+            } => {
+                let refresh = match &self.screen {
+                    Screen::VersionDashboard {
+                        project_id,
+                        version_id,
+                    } => Screen::VersionDashboard {
+                        project_id: *project_id,
+                        version_id: *version_id,
+                    },
+                    _ => return None,
+                };
+                match self.repo.move_task(task_id, version_id) {
+                    Ok(_) => {
+                        self.error = None;
+                        // Re-running init reloads the list without the moved task.
+                        Some(Action::Navigate(refresh))
+                    }
+                    Err(e) => {
+                        self.error = Some(e.to_string());
+                        None
+                    }
+                }
+            }
             Action::DeleteTask { task_id } => {
                 let refresh = match &self.screen {
                     Screen::ProjectDashboard { project_id } => Screen::ProjectDashboard {
@@ -1641,5 +1667,88 @@ mod tests {
             task_id: None,
         }));
         assert!(app.screen.accepts_text_input());
+    }
+
+    #[test]
+    fn move_task_moves_it_and_refreshes_version_dashboard() {
+        let (repo, mut app) = setup_app();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let v1 = repo.default_version_id(pid).unwrap();
+        let v2 = repo.create_version(pid, "v0.2.0", "").unwrap().id.unwrap();
+        let task = repo
+            .create_task(pid, v1, "A", "", Status::Todo, Priority::Low)
+            .unwrap();
+        app.dispatch(Action::Navigate(Screen::VersionDashboard {
+            project_id: pid,
+            version_id: v1,
+        }));
+        let next = app.dispatch(Action::MoveTask {
+            task_id: task.id.unwrap(),
+            version_id: v2,
+        });
+        assert_eq!(
+            next,
+            Some(Action::Navigate(Screen::VersionDashboard {
+                project_id: pid,
+                version_id: v1,
+            }))
+        );
+        assert_eq!(repo.get_task(task.id.unwrap()).unwrap().version_id, v2);
+        assert!(app.error.is_none());
+    }
+
+    #[test]
+    fn move_task_with_dependencies_sets_error_and_keeps_version() {
+        let (repo, mut app) = setup_app();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let v1 = repo.default_version_id(pid).unwrap();
+        let v2 = repo.create_version(pid, "v0.2.0", "").unwrap().id.unwrap();
+        let a = repo
+            .create_task(pid, v1, "A", "", Status::Todo, Priority::Low)
+            .unwrap()
+            .id
+            .unwrap();
+        let b = repo
+            .create_task(pid, v1, "B", "", Status::Todo, Priority::Low)
+            .unwrap()
+            .id
+            .unwrap();
+        repo.add_dependency(b, a).unwrap();
+        app.dispatch(Action::Navigate(Screen::VersionDashboard {
+            project_id: pid,
+            version_id: v1,
+        }));
+        let next = app.dispatch(Action::MoveTask {
+            task_id: b,
+            version_id: v2,
+        });
+        assert_eq!(next, None);
+        assert!(
+            app.error
+                .as_deref()
+                .unwrap()
+                .contains("dependencies or dependents")
+        );
+        assert_eq!(repo.get_task(b).unwrap().version_id, v1);
+    }
+
+    #[test]
+    fn move_task_outside_version_dashboard_is_ignored() {
+        let (repo, mut app) = setup_app();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let v1 = repo.default_version_id(pid).unwrap();
+        let v2 = repo.create_version(pid, "v0.2.0", "").unwrap().id.unwrap();
+        let task = repo
+            .create_task(pid, v1, "A", "", Status::Todo, Priority::Low)
+            .unwrap();
+        app.dispatch(Action::Navigate(Screen::ProjectDashboard {
+            project_id: pid,
+        }));
+        let next = app.dispatch(Action::MoveTask {
+            task_id: task.id.unwrap(),
+            version_id: v2,
+        });
+        assert_eq!(next, None);
+        assert_eq!(repo.get_task(task.id.unwrap()).unwrap().version_id, v1);
     }
 }
