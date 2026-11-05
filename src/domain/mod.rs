@@ -4,3 +4,4 @@ pub mod error;
 pub mod project;
 pub mod task;
 pub mod version;
+pub mod version_summary;
