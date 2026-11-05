@@ -1,6 +1,5 @@
 ---
 source: src/mcp/server.rs
-assertion_line: 934
 expression: "result.resource_templates.iter().map(|t|\n(&t.uri_template, &t.name)).collect::<Vec<_>>()"
 ---
 [
@@ -19,5 +18,13 @@ expression: "result.resource_templates.iter().map(|t|\n(&t.uri_template, &t.name
   [
     "pmp://versions/{id}/tasks",
     "version_tasks"
+  ],
+  [
+    "pmp://versions/{id}/summaries",
+    "version_summaries"
+  ],
+  [
+    "pmp://summaries/{id}",
+    "version_summary"
   ]
 ]

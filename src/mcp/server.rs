@@ -170,6 +170,30 @@ pub struct NoteIdParams {
     pub note_id: i64,
 }
 
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct VersionIdParams {
+    pub version_id: i64,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct CompactVersionParams {
+    pub version_id: i64,
+    pub summary: String,
+    /// When omitted or true, the version is marked `released` after compacting.
+    pub mark_released: Option<bool>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ReadVersionSummaryParams {
+    pub version_id: i64,
+    pub summary_id: i64,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct SummaryIdParams {
+    pub summary_id: i64,
+}
+
 #[tool_router]
 impl PmpServer {
     pub fn new(repo: Arc<dyn Repository>) -> Self {
@@ -199,6 +223,12 @@ impl PmpServer {
             ResourceTemplate::new("pmp://versions/{id}/tasks", "version_tasks")
                 .with_description("Tasks of one version. Use to see the work scheduled for a specific release.")
                 .with_mime_type("application/json"),
+            ResourceTemplate::new("pmp://versions/{id}/summaries", "version_summaries")
+                .with_description("Summaries of a version after compaction. Use to review what was frozen.")
+                .with_mime_type("application/json"),
+            ResourceTemplate::new("pmp://summaries/{id}", "version_summary")
+                .with_description("A single version summary by id, including its frozen snapshot.")
+                .with_mime_type("application/json"),
         ];
         Ok(ListResourceTemplatesResult::with_all_items(templates))
     }
@@ -210,12 +240,25 @@ impl PmpServer {
             "pmp://projects" => read_json_resource(repo, uri, |repo| repo.list_projects()).await,
             uri if uri.starts_with("pmp://versions/") => {
                 let tail = &uri["pmp://versions/".len()..];
-                let id = tail
-                    .strip_suffix("/tasks")
-                    .ok_or_else(|| ErrorData::invalid_params("unsupported resource uri", None))?
+                if let Some(prefix) = tail.strip_suffix("/summaries") {
+                    let id = prefix
+                        .parse::<i64>()
+                        .map_err(|_| ErrorData::invalid_params("invalid version id", None))?;
+                    read_json_resource(repo, uri, move |repo| repo.list_version_summaries(id)).await
+                } else {
+                    let id = tail
+                        .strip_suffix("/tasks")
+                        .ok_or_else(|| ErrorData::invalid_params("unsupported resource uri", None))?
+                        .parse::<i64>()
+                        .map_err(|_| ErrorData::invalid_params("invalid version id", None))?;
+                    read_json_resource(repo, uri, move |repo| repo.list_tasks_by_version(id)).await
+                }
+            }
+            uri if uri.starts_with("pmp://summaries/") => {
+                let id = uri["pmp://summaries/".len()..]
                     .parse::<i64>()
-                    .map_err(|_| ErrorData::invalid_params("invalid version id", None))?;
-                read_json_resource(repo, uri, move |repo| repo.list_tasks_by_version(id)).await
+                    .map_err(|_| ErrorData::invalid_params("invalid summary id", None))?;
+                read_json_resource(repo, uri, move |repo| repo.get_version_summary(id)).await
             }
             uri if uri.starts_with("pmp://projects/") => {
                 let tail = &uri["pmp://projects/".len()..];
@@ -726,6 +769,119 @@ impl PmpServer {
             "note not found",
         )
     }
+
+    #[tool(
+        name = "preview_compact_version",
+        description = "Preview the JSON snapshot that compact_version would freeze for a version, without changing anything. Includes the version, its tasks, notes and dependencies, plus the previous summary when recompacting. Use before compact_version to review what will be persisted."
+    )]
+    async fn preview_compact_version(
+        &self,
+        Parameters(params): Parameters<VersionIdParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let version_id = params.version_id;
+        let result = execute_repository(self.repo.clone(), move |repo| {
+            repo.get_version(version_id)?;
+            let snapshot = repo.build_compact_snapshot(version_id)?;
+            serde_json::from_str::<serde_json::Value>(&snapshot)
+                .map_err(|e| AppError::Validation(format!("snapshot parse error: {e}")))
+        })
+        .await?;
+        tool_result(result, "version not found")
+    }
+
+    #[tool(
+        name = "compact_version",
+        description = "Compact a version into a frozen summary. Validates that every task is done, builds the snapshot, deletes the version's tasks (and their notes/dependencies), stores the summary and marks the version released by default. When recompacting, the new summary must preserve the relevant knowledge from the previous summary (available in the preview as previous_summary) while incorporating the new tasks, notes and dependencies with their completed_at. Fails if there are unfinished tasks, or if the version is empty and has no previous summary."
+    )]
+    async fn compact_version(
+        &self,
+        Parameters(params): Parameters<CompactVersionParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let version_id = params.version_id;
+        let summary = params.summary;
+        let mark_released = params.mark_released.unwrap_or(true);
+        let result = execute_repository(self.repo.clone(), move |repo| {
+            repo.can_compact(version_id)?;
+            let snapshot = repo.build_compact_snapshot(version_id)?;
+            // Replace any previous summary so UNIQUE(version_id) stays valid.
+            for existing in repo.list_version_summaries(version_id)? {
+                if let Some(id) = existing.id {
+                    repo.delete_version_summary(id)?;
+                }
+            }
+            repo.delete_tasks_by_version(version_id)?;
+            let created = repo.create_version_summary(version_id, &summary, &snapshot)?;
+            if mark_released {
+                let version = repo.get_version(version_id)?;
+                repo.update_version(
+                    version_id,
+                    &version.name,
+                    &version.description,
+                    VersionStatus::Released,
+                )?;
+            }
+            Ok(created)
+        })
+        .await?;
+        tool_result(result, "version not found")
+    }
+
+    #[tool(
+        name = "list_version_summaries",
+        description = "List the summaries of a version, newest first. A version holds at most one summary; after compaction its tasks live only in the summary snapshot. Use to review what was frozen."
+    )]
+    async fn list_version_summaries(
+        &self,
+        Parameters(params): Parameters<VersionIdParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let version_id = params.version_id;
+        let result = execute_repository(self.repo.clone(), move |repo| {
+            repo.get_version(version_id)?;
+            repo.list_version_summaries(version_id)
+        })
+        .await?;
+        tool_result(result, "version not found")
+    }
+
+    #[tool(
+        name = "read_version_summary",
+        description = "Read one version summary by id, restricted to the given version. Returns the summary prose plus its frozen snapshot JSON. Use to inspect what a compacted version contained."
+    )]
+    async fn read_version_summary(
+        &self,
+        Parameters(params): Parameters<ReadVersionSummaryParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let version_id = params.version_id;
+        let summary_id = params.summary_id;
+        let result = execute_repository(self.repo.clone(), move |repo| {
+            let summary = repo.get_version_summary(summary_id)?;
+            if summary.version_id != version_id {
+                return Err(AppError::NotFound);
+            }
+            Ok(summary)
+        })
+        .await?;
+        tool_result(result, "summary not found")
+    }
+
+    #[tool(
+        name = "delete_version_summary",
+        description = "Delete a version summary by its id. Use to remove a compaction artifact; tasks already deleted during compaction are not restored."
+    )]
+    async fn delete_version_summary(
+        &self,
+        Parameters(params): Parameters<SummaryIdParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let summary_id = params.summary_id;
+        let result = execute_repository(self.repo.clone(), move |repo| {
+            repo.delete_version_summary(summary_id)
+        })
+        .await?;
+        tool_result(
+            result.map(|()| serde_json::json!({ "summary_id": summary_id })),
+            "summary not found",
+        )
+    }
 }
 
 async fn execute_repository<T, F>(
@@ -876,10 +1032,11 @@ mod tests {
     use crate::domain::version_summary::VersionSummary;
 
     use super::{
-        AddTaskNoteParams, CreateProjectParams, CreateTaskParams, CreateVersionParams,
-        ListTasksParams, ListVersionsParams, MoveTaskParams, NoteIdParams, PmpServer,
-        SetTaskDependenciesParams, TaskDependencyParams, TaskIdParams, UpdateProjectParams,
-        UpdateTaskParams, UpdateTaskPriorityParams, UpdateTaskStatusParams, UpdateVersionParams,
+        AddTaskNoteParams, CompactVersionParams, CreateProjectParams, CreateTaskParams,
+        CreateVersionParams, ListTasksParams, ListVersionsParams, MoveTaskParams, NoteIdParams,
+        PmpServer, ReadVersionSummaryParams, SetTaskDependenciesParams, SummaryIdParams,
+        TaskDependencyParams, TaskIdParams, UpdateProjectParams, UpdateTaskParams,
+        UpdateTaskPriorityParams, UpdateTaskStatusParams, UpdateVersionParams, VersionIdParams,
     };
     use crate::mcp::task_description::compose_description;
 
@@ -2135,6 +2292,229 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn preview_compact_version_returns_snapshot_json() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version = repo.create_version(pid, "v1.0.0", "").unwrap();
+        let task = repo
+            .create_task(
+                pid,
+                version.id.unwrap(),
+                "A",
+                "",
+                Status::Done,
+                Priority::Low,
+            )
+            .unwrap();
+        repo.add_task_note(task.id.unwrap(), "done!").unwrap();
+
+        let result = server
+            .preview_compact_version(Parameters(VersionIdParams {
+                version_id: version.id.unwrap(),
+            }))
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&tool_text(result)).unwrap();
+        assert_eq!(value["version"]["name"], "v1.0.0");
+        assert_eq!(value["tasks"].as_array().unwrap().len(), 1);
+        assert_eq!(value["notes"].as_array().unwrap().len(), 1);
+        assert!(value["previous_summary"].is_null());
+    }
+
+    #[tokio::test]
+    async fn compact_version_rejects_unfinished_tasks() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version = repo.create_version(pid, "v1.0.0", "").unwrap();
+        let vid = version.id.unwrap();
+        repo.create_task(pid, vid, "Done", "", Status::Done, Priority::Low)
+            .unwrap();
+        repo.create_task(pid, vid, "Pending", "", Status::Todo, Priority::Low)
+            .unwrap();
+
+        let result = server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "Summary".to_string(),
+                mark_released: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let text = tool_text(result);
+        assert!(text.contains("not done"));
+    }
+
+    #[tokio::test]
+    async fn compact_version_compacts_and_marks_released() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version = repo.create_version(pid, "v1.0.0", "").unwrap();
+        let vid = version.id.unwrap();
+        let task = repo
+            .create_task(pid, vid, "Done", "", Status::Done, Priority::Low)
+            .unwrap();
+        repo.add_task_note(task.id.unwrap(), "note").unwrap();
+
+        let result = server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "Summary".to_string(),
+                mark_released: None,
+            }))
+            .await
+            .unwrap();
+        let summary: VersionSummary = serde_json::from_str(&tool_text(result)).unwrap();
+        assert_eq!(summary.summary, "Summary");
+        assert_eq!(summary.version_id, vid);
+        assert!(repo.list_tasks_by_version(vid).unwrap().is_empty());
+        assert_eq!(
+            repo.get_version(vid).unwrap().status,
+            VersionStatus::Released
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_version_respects_mark_released_false() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version = repo.create_version(pid, "v1.0.0", "").unwrap();
+        let vid = version.id.unwrap();
+        repo.create_task(pid, vid, "Done", "", Status::Done, Priority::Low)
+            .unwrap();
+
+        let result = server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "Summary".to_string(),
+                mark_released: Some(false),
+            }))
+            .await
+            .unwrap();
+        let summary: VersionSummary = serde_json::from_str(&tool_text(result)).unwrap();
+        assert_eq!(summary.summary, "Summary");
+        assert_eq!(repo.get_version(vid).unwrap().status, VersionStatus::Open);
+    }
+
+    #[tokio::test]
+    async fn list_read_and_delete_version_summaries() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version = repo.create_version(pid, "v1.0.0", "").unwrap();
+        let vid = version.id.unwrap();
+        repo.create_task(pid, vid, "Done", "", Status::Done, Priority::Low)
+            .unwrap();
+        server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "Summary".to_string(),
+                mark_released: None,
+            }))
+            .await
+            .unwrap();
+
+        let listed = server
+            .list_version_summaries(Parameters(VersionIdParams { version_id: vid }))
+            .await
+            .unwrap();
+        let summaries: Vec<VersionSummary> = serde_json::from_str(&tool_text(listed)).unwrap();
+        assert_eq!(summaries.len(), 1);
+        let id = summaries[0].id.unwrap();
+
+        let read = server
+            .read_version_summary(Parameters(ReadVersionSummaryParams {
+                version_id: vid,
+                summary_id: id,
+            }))
+            .await
+            .unwrap();
+        let summary: VersionSummary = serde_json::from_str(&tool_text(read)).unwrap();
+        assert_eq!(summary.summary, "Summary");
+
+        let deleted = server
+            .delete_version_summary(Parameters(SummaryIdParams { summary_id: id }))
+            .await
+            .unwrap();
+        assert_eq!(deleted.is_error, Some(false));
+        assert!(repo.get_version_summary(id).is_err());
+    }
+
+    #[tokio::test]
+    async fn read_version_summary_rejects_mismatched_version() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version = repo.create_version(pid, "v1.0.0", "").unwrap();
+        let vid = version.id.unwrap();
+        repo.create_task(pid, vid, "Done", "", Status::Done, Priority::Low)
+            .unwrap();
+        server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "Summary".to_string(),
+                mark_released: None,
+            }))
+            .await
+            .unwrap();
+        let summaries = repo.list_version_summaries(vid).unwrap();
+        let id = summaries[0].id.unwrap();
+
+        let result = server
+            .read_version_summary(Parameters(ReadVersionSummaryParams {
+                version_id: 999_999,
+                summary_id: id,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(tool_text(result).contains("summary not found"));
+    }
+
+    #[tokio::test]
+    async fn compact_version_recompacts_preserving_previous_summary() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version = repo.create_version(pid, "v1.0.0", "").unwrap();
+        let vid = version.id.unwrap();
+
+        // First cycle: one done task, compact it.
+        let first = repo
+            .create_task(pid, vid, "First", "", Status::Todo, Priority::Low)
+            .unwrap();
+        repo.update_task_status(first.id.unwrap(), Status::Done)
+            .unwrap();
+        server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "First summary".to_string(),
+                mark_released: Some(false),
+            }))
+            .await
+            .unwrap();
+
+        // Second cycle: add a new task to the compacted version and recompact.
+        let second = repo
+            .create_task(pid, vid, "Second", "", Status::Todo, Priority::Low)
+            .unwrap();
+        repo.update_task_status(second.id.unwrap(), Status::Done)
+            .unwrap();
+        let result = server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "Second summary".to_string(),
+                mark_released: None,
+            }))
+            .await
+            .unwrap();
+        let summary: VersionSummary = serde_json::from_str(&tool_text(result)).unwrap();
+        assert_eq!(summary.summary, "Second summary");
+
+        let snapshot: serde_json::Value = serde_json::from_str(&summary.snapshot_json).unwrap();
+        let prev = &snapshot["previous_summary"];
+        assert!(!prev.is_null());
+        assert_eq!(prev["summary"], "First summary");
+    }
+
+    #[tokio::test]
     async fn mcp_server_e2e_lifecycle_and_list_tasks() {
         let repo = Arc::new(StubRepository::default());
         let project = repo.create_project("Alpha", "").unwrap();
@@ -2223,6 +2603,11 @@ mod tests {
         assert!(tools.iter().any(|t| t["name"] == "add_task_note"));
         assert!(tools.iter().any(|t| t["name"] == "delete_task_note"));
         assert!(tools.iter().any(|t| t["name"] == "move_task"));
+        assert!(tools.iter().any(|t| t["name"] == "preview_compact_version"));
+        assert!(tools.iter().any(|t| t["name"] == "compact_version"));
+        assert!(tools.iter().any(|t| t["name"] == "list_version_summaries"));
+        assert!(tools.iter().any(|t| t["name"] == "read_version_summary"));
+        assert!(tools.iter().any(|t| t["name"] == "delete_version_summary"));
 
         let create_request = serde_json::json!({
             "jsonrpc": "2.0",
