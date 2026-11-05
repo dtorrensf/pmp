@@ -456,3 +456,119 @@ fn list_tasks_by_version_only_returns_that_version() {
         assert_eq!(repo.list_tasks_by_project(pid).unwrap().len(), 2, "{name}");
     });
 }
+
+#[test]
+fn move_task_reassigns_only_version_id() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v1 = repo.default_version_id(pid).unwrap();
+        let v2 = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let id = repo
+            .create_task(pid, v1, "A", "desc", Status::InProgress, Priority::High)
+            .unwrap()
+            .id
+            .unwrap();
+        let before = repo.get_task(id).unwrap();
+
+        let moved = repo.move_task(id, v2).expect(name);
+        assert_eq!(moved.version_id, v2, "{name}");
+        assert_eq!(moved.name, before.name, "{name}");
+        assert_eq!(moved.description, before.description, "{name}");
+        assert_eq!(moved.status, before.status, "{name}");
+        assert_eq!(moved.priority, before.priority, "{name}");
+        assert_eq!(moved.created_at, before.created_at, "{name}");
+        assert_eq!(repo.get_task(id).unwrap().version_id, v2, "{name}");
+        assert!(repo.list_tasks_by_version(v1).unwrap().is_empty(), "{name}");
+        assert_eq!(repo.list_tasks_by_version(v2).unwrap().len(), 1, "{name}");
+    });
+}
+
+#[test]
+fn move_task_keeps_notes() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v1 = repo.default_version_id(pid).unwrap();
+        let v2 = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let id = repo
+            .create_task(pid, v1, "A", "", Status::Todo, Priority::Low)
+            .unwrap()
+            .id
+            .unwrap();
+        repo.add_task_note(id, "progress").unwrap();
+        repo.move_task(id, v2).expect(name);
+        let notes = repo.list_task_notes(id).unwrap();
+        assert_eq!(notes.len(), 1, "{name}");
+        assert_eq!(notes[0].content, "progress", "{name}");
+    });
+}
+
+#[test]
+fn move_task_rejects_version_from_another_project() {
+    for_each_repo(|name, repo| {
+        let p1 = repo.create_project("P1", "").unwrap().id.unwrap();
+        let p2 = repo.create_project("P2", "").unwrap().id.unwrap();
+        let v1 = repo.default_version_id(p1).unwrap();
+        let foreign = repo.default_version_id(p2).unwrap();
+        let id = repo
+            .create_task(p1, v1, "A", "", Status::Todo, Priority::Low)
+            .unwrap()
+            .id
+            .unwrap();
+        let err = repo.move_task(id, foreign).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "{name}: {err:?}");
+        assert_eq!(repo.get_task(id).unwrap().version_id, v1, "{name}");
+    });
+}
+
+#[test]
+fn move_task_rejects_tasks_with_dependencies_or_dependents() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v1 = repo.default_version_id(pid).unwrap();
+        let v2 = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let a = task_in_version(repo, pid, v1, "A");
+        let b = task_in_version(repo, pid, v1, "B");
+        repo.add_dependency(b, a).unwrap();
+
+        // b depends on a: both are blocked from moving.
+        let err = repo.move_task(b, v2).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "{name}: {err:?}");
+        let err = repo.move_task(a, v2).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "{name}: {err:?}");
+        assert_eq!(repo.get_task(a).unwrap().version_id, v1, "{name}");
+        assert_eq!(repo.get_task(b).unwrap().version_id, v1, "{name}");
+        assert_eq!(repo.get_dependencies(b).unwrap(), vec![a], "{name}");
+
+        // Once the edge is removed, the move succeeds.
+        repo.remove_dependency(b, a).unwrap();
+        repo.move_task(a, v2).expect(name);
+    });
+}
+
+#[test]
+fn move_task_to_current_version_is_noop() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v1 = repo.default_version_id(pid).unwrap();
+        let a = task_in_version(repo, pid, v1, "A");
+        let b = task_in_version(repo, pid, v1, "B");
+        repo.add_dependency(b, a).unwrap();
+        // No-op even with dependencies: nothing is written.
+        let same = repo.move_task(b, v1).expect(name);
+        assert_eq!(same.version_id, v1, "{name}");
+        assert_eq!(repo.get_dependencies(b).unwrap(), vec![a], "{name}");
+    });
+}
+
+#[test]
+fn move_task_unknown_task_or_version_returns_not_found() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v1 = repo.default_version_id(pid).unwrap();
+        let id = task_in_version(repo, pid, v1, "A");
+        let err = repo.move_task(999_999, v1).unwrap_err();
+        assert!(matches!(err, AppError::NotFound), "{name}: task {err:?}");
+        let err = repo.move_task(id, 999_999).unwrap_err();
+        assert!(matches!(err, AppError::NotFound), "{name}: version {err:?}");
+    });
+}

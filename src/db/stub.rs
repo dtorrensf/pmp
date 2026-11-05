@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use std::sync::Mutex;
 
-use crate::db::repository::{Repository, check_dependency_set, unique_ids};
+use crate::db::repository::{Repository, check_dependency_set, check_task_move, unique_ids};
 use crate::domain::error::AppError;
 use crate::domain::project::Project;
 use crate::domain::task::{Priority, Status, Task, TaskDependency, TaskNote};
@@ -317,6 +317,27 @@ impl Repository for StubRepository {
             .find(|t| t.id == Some(id))
             .ok_or(AppError::NotFound)?;
         task.priority = priority;
+        Ok(task.clone())
+    }
+
+    fn move_task(&self, task_id: i64, version_id: i64) -> Result<Task, AppError> {
+        let task = self.get_task(task_id)?;
+        let target = self.get_version(version_id)?;
+        if task.version_id == version_id {
+            return Ok(task);
+        }
+        check_task_move(
+            &task,
+            &target,
+            &self.get_dependencies(task_id)?,
+            &self.get_dependents(task_id)?,
+        )?;
+        let mut tasks = self.tasks.lock().unwrap();
+        let task = tasks
+            .iter_mut()
+            .find(|t| t.id == Some(task_id))
+            .ok_or(AppError::NotFound)?;
+        task.version_id = version_id;
         Ok(task.clone())
     }
 

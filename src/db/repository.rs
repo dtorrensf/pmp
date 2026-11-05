@@ -66,6 +66,11 @@ pub trait Repository: Send + Sync {
     ) -> Result<Task, AppError>;
     fn update_task_status(&self, id: i64, new_status: Status) -> Result<Task, AppError>;
     fn update_task_priority(&self, id: i64, priority: Priority) -> Result<Task, AppError>;
+    /// Reassigns a task to another version of its own project. Only `version_id`
+    /// changes. Moving to the current version is a no-op. Tasks that have
+    /// dependencies or dependents are rejected: those edges must stay within
+    /// one version, so they have to be removed first.
+    fn move_task(&self, task_id: i64, version_id: i64) -> Result<Task, AppError>;
     fn add_dependency(&self, task_id: i64, depends_on_id: i64) -> Result<(), AppError>;
     fn remove_dependency(&self, task_id: i64, depends_on_id: i64) -> Result<(), AppError>;
     /// Replaces the full set of tasks that `task_id` depends on, atomically.
@@ -118,6 +123,29 @@ fn reaches(graph: &HashMap<i64, Vec<i64>>, from: i64, target: i64) -> bool {
         }
     }
     false
+}
+
+/// Validates a task move to `target` (already loaded, so it exists). The
+/// caller handles the no-op case where the task is already in `target`.
+pub(crate) fn check_task_move(
+    task: &Task,
+    target: &Version,
+    dependencies: &[i64],
+    dependents: &[i64],
+) -> Result<(), AppError> {
+    if target.project_id != task.project_id {
+        return Err(AppError::Validation(
+            "version does not belong to the project".to_string(),
+        ));
+    }
+    if !dependencies.is_empty() || !dependents.is_empty() {
+        return Err(AppError::Validation(
+            "task has dependencies or dependents; remove them before moving it, \
+             because they must stay within the same version"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Removes duplicate ids while keeping the first occurrence order.

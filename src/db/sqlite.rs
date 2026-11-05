@@ -6,7 +6,7 @@ use std::sync::Mutex;
 
 use rusqlite::{Connection, Row, params};
 
-use crate::db::repository::{Repository, check_dependency_set, unique_ids};
+use crate::db::repository::{Repository, check_dependency_set, check_task_move, unique_ids};
 use crate::domain::error::AppError;
 use crate::domain::project::Project;
 use crate::domain::task::{Priority, Status, Task, TaskNote};
@@ -298,6 +298,27 @@ impl Repository for SqliteRepository {
             return Err(AppError::NotFound);
         }
         self.get_task(id)
+    }
+
+    fn move_task(&self, task_id: i64, version_id: i64) -> Result<Task, AppError> {
+        let task = self.get_task(task_id)?;
+        let target = self.get_version(version_id)?;
+        if task.version_id == version_id {
+            return Ok(task);
+        }
+        check_task_move(
+            &task,
+            &target,
+            &self.get_dependencies(task_id)?,
+            &self.get_dependents(task_id)?,
+        )?;
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE tasks SET version_id = ?1 WHERE id = ?2",
+            params![version_id, task_id],
+        )?;
+        drop(conn);
+        self.get_task(task_id)
     }
 
     fn add_dependency(&self, task_id: i64, depends_on_id: i64) -> Result<(), AppError> {

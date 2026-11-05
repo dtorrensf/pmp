@@ -996,6 +996,10 @@ mod tests {
             unimplemented!()
         }
 
+        fn move_task(&self, _: i64, _: i64) -> Result<Task, AppError> {
+            unimplemented!()
+        }
+
         fn add_dependency(&self, _: i64, _: i64) -> Result<(), AppError> {
             unimplemented!()
         }
