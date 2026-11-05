@@ -150,6 +150,8 @@ fn render_app_frame(app: &mut App, frame: &mut Frame) {
     }
     if let Some(error) = &app.error {
         render_error(frame, error, area);
+    } else if let Some(notice) = app.notice() {
+        render_notice(frame, notice, area);
     }
 }
 
@@ -206,6 +208,18 @@ fn render_error(frame: &mut Frame, error: &str, area: Rect) {
         .block(Block::default().title("Error").borders(Borders::ALL))
         .wrap(Wrap { trim: true });
     frame.render_widget(paragraph, error_area);
+}
+
+fn render_notice(frame: &mut Frame, notice: &str, area: Rect) {
+    let notice_area = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(3)])
+        .split(area)[1];
+    let paragraph = Paragraph::new(notice)
+        .style(Style::default().fg(Color::Green))
+        .block(Block::default().title("Info").borders(Borders::ALL))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, notice_area);
 }
 
 trait EventSource {

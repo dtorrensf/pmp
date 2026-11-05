@@ -19,6 +19,8 @@ pub struct App {
     pub repo: Arc<dyn Repository>,
     pub action: Option<Action>,
     pub error: Option<String>,
+    /// Non-error notification banner (e.g. export path feedback).
+    notice: Option<String>,
     /// Newer pmp version reported by the background update check, if any.
     update_available: Option<String>,
     /// Whether the update banner is currently open.
@@ -49,6 +51,7 @@ impl App {
             repo: repo.clone(),
             action: None,
             error: None,
+            notice: None,
             update_available: None,
             show_update: false,
             pending_update: None,
@@ -110,6 +113,11 @@ impl App {
 
     pub fn update_version(&self) -> Option<&str> {
         self.update_available.as_deref()
+    }
+
+    /// Current non-error notification, if any.
+    pub fn notice(&self) -> Option<&str> {
+        self.notice.as_deref()
     }
 
     /// Returns the version compiled into the running binary, used in the
@@ -450,6 +458,22 @@ impl App {
                         None
                     }
                 }
+            }
+            Action::ExportVersionSummary { summary_id } => {
+                match crate::mcp::export::export_version_summary_markdown(
+                    self.repo.as_ref(),
+                    summary_id,
+                    None,
+                ) {
+                    Ok(path) => {
+                        self.error = None;
+                        self.notice = Some(format!("Exported to {}", path.display()));
+                    }
+                    Err(e) => {
+                        self.error = Some(e.to_string());
+                    }
+                }
+                None
             }
             Action::Quit => None,
             Action::Noop => None,
@@ -1772,5 +1796,31 @@ mod tests {
         });
         assert_eq!(next, None);
         assert_eq!(repo.get_task(task.id.unwrap()).unwrap().version_id, v1);
+    }
+
+    #[test]
+    fn export_version_summary_writes_file_and_sets_notice() {
+        let (repo, mut app) = setup_app();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let task = repo
+            .create_task(pid, v, "A", "", Status::Done, Priority::Low)
+            .unwrap();
+        repo.update_task_status(task.id.unwrap(), Status::Done)
+            .unwrap();
+        let snapshot = repo.build_compact_snapshot(v).unwrap();
+        let summary = repo
+            .create_version_summary(v, "Summary", &snapshot)
+            .unwrap();
+        let summary_id = summary.id.unwrap();
+
+        let next = app.dispatch(Action::ExportVersionSummary { summary_id });
+        assert_eq!(next, None);
+
+        let notice = app.notice().unwrap().to_string();
+        assert!(notice.starts_with("Exported to "));
+        let path = notice.trim_start_matches("Exported to ");
+        assert!(std::path::Path::new(path).exists());
+        std::fs::remove_file(path).unwrap();
     }
 }

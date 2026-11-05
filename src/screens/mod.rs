@@ -141,6 +141,9 @@ pub enum Action {
         task_id: i64,
         content: String,
     },
+    ExportVersionSummary {
+        summary_id: i64,
+    },
     Refresh,
 }
 

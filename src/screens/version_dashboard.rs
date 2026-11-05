@@ -44,6 +44,7 @@ impl VersionDashboard {
         (key(KeyCode::Char('f')), "Filter"),
         (key(KeyCode::Char('m')), "Move"),
         (key(KeyCode::Char('s')), "Summary"),
+        (key(KeyCode::Char('e')), "Export"),
         (key(KeyCode::Char('c')), "New"),
         (key(KeyCode::Esc), "Back"),
         (key(KeyCode::Char('q')), "Quit"),
@@ -174,6 +175,12 @@ impl Component for VersionDashboard {
                                 version_id: self.version_id,
                                 summary_id,
                             }));
+                        }
+                        return None;
+                    }
+                    KeyCode::Char('e') => {
+                        if let Some(summary_id) = self.latest_summary_id() {
+                            return Some(Action::ExportVersionSummary { summary_id });
                         }
                         return None;
                     }
@@ -311,6 +318,7 @@ mod tests {
                 (KeyCode::Char('f'), "Filter"),
                 (KeyCode::Char('m'), "Move"),
                 (KeyCode::Char('s'), "Summary"),
+                (KeyCode::Char('e'), "Export"),
                 (KeyCode::Char('c'), "New"),
                 (KeyCode::Esc, "Back"),
                 (KeyCode::Char('q'), "Quit"),
@@ -502,6 +510,27 @@ mod tests {
                 summary_id,
             }))
         );
+    }
+
+    #[test]
+    fn e_key_exports_when_summary_exists_and_does_nothing_otherwise() {
+        let (repo, mut screen, _project_id) = setup_with_tasks();
+        assert_eq!(screen.handle_event(&key_event(KeyCode::Char('e'))), None);
+
+        let version_id = screen.version_id();
+        for task in screen.tasks().to_vec() {
+            repo.update_task_status(task.id.unwrap(), Status::Done)
+                .unwrap();
+        }
+        let snapshot = repo.build_compact_snapshot(version_id).unwrap();
+        let summary = repo
+            .create_version_summary(version_id, "Summary", &snapshot)
+            .unwrap();
+        let summary_id = summary.id.unwrap();
+        screen.init().unwrap();
+
+        let action = screen.handle_event(&key_event(KeyCode::Char('e')));
+        assert_eq!(action, Some(Action::ExportVersionSummary { summary_id }));
     }
 
     #[test]
