@@ -105,7 +105,7 @@ impl Repository for SqliteRepository {
     fn list_tasks_by_project(&self, project_id: i64) -> Result<Vec<Task>, AppError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, project_id, name, description, status, priority, created_at, version_id
+            "SELECT id, project_id, name, description, status, priority, created_at, version_id, completed_at
              FROM tasks WHERE project_id = ?1
              ORDER BY CASE WHEN status = 'done' THEN 1 ELSE 0 END, priority DESC, created_at DESC",
         )?;
@@ -192,7 +192,7 @@ impl Repository for SqliteRepository {
     fn list_tasks_by_version(&self, version_id: i64) -> Result<Vec<Task>, AppError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, project_id, name, description, status, priority, created_at, version_id
+            "SELECT id, project_id, name, description, status, priority, created_at, version_id, completed_at
              FROM tasks WHERE version_id = ?1
              ORDER BY CASE WHEN status = 'done' THEN 1 ELSE 0 END, priority DESC, created_at DESC",
         )?;
@@ -247,7 +247,7 @@ impl Repository for SqliteRepository {
     fn get_task(&self, id: i64) -> Result<Task, AppError> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT id, project_id, name, description, status, priority, created_at, version_id
+            "SELECT id, project_id, name, description, status, priority, created_at, version_id, completed_at
              FROM tasks WHERE id = ?1",
             [id],
             task_from_row,
@@ -279,10 +279,20 @@ impl Repository for SqliteRepository {
 
     fn update_task_status(&self, id: i64, new_status: Status) -> Result<Task, AppError> {
         let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "UPDATE tasks SET status = ?1 WHERE id = ?2",
-            params![new_status.as_str(), id],
-        )?;
+        match new_status {
+            Status::Done => {
+                conn.execute(
+                    "UPDATE tasks SET status = ?1, completed_at = COALESCE(completed_at, datetime('now')) WHERE id = ?2",
+                    params![new_status.as_str(), id],
+                )?;
+            }
+            _ => {
+                conn.execute(
+                    "UPDATE tasks SET status = ?1, completed_at = NULL WHERE id = ?2",
+                    params![new_status.as_str(), id],
+                )?;
+            }
+        }
         drop(conn);
         self.get_task(id)
     }
@@ -522,6 +532,7 @@ fn task_from_row(row: &Row) -> Result<Task, rusqlite::Error> {
         })?,
         created_at: row.get(6)?,
         version_id: row.get(7)?,
+        completed_at: row.get(8)?,
     })
 }
 
@@ -739,6 +750,33 @@ mod tests {
 
         let fetched = repo.get_task(task.id.unwrap()).unwrap();
         assert_eq!(fetched.status, Status::Done);
+    }
+
+    #[test]
+    fn update_task_status_sets_and_clears_completed_at() {
+        let (_dir, repo) = setup();
+        let project = repo.create_project("P", "").unwrap();
+        let project_id = project.id.unwrap();
+        let task = repo
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "T",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
+            .unwrap();
+        let id = task.id.unwrap();
+        assert_eq!(task.completed_at, None);
+
+        let done = repo.update_task_status(id, Status::Done).unwrap();
+        assert_eq!(done.status, Status::Done);
+        assert!(done.completed_at.is_some());
+
+        let reopened = repo.update_task_status(id, Status::Todo).unwrap();
+        assert_eq!(reopened.status, Status::Todo);
+        assert_eq!(reopened.completed_at, None);
     }
 
     #[test]

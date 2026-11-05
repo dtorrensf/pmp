@@ -202,6 +202,7 @@ pub struct Task {
     pub status: Status,
     pub priority: Priority,
     pub created_at: String,
+    pub completed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -306,6 +307,7 @@ mod tests {
             status: Status::Todo,
             priority: Priority::Medium,
             created_at: "now".to_string(),
+            completed_at: None,
         };
         assert!(task.id.is_none());
         assert_eq!(task.project_id, 1);

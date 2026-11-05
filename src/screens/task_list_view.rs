@@ -573,6 +573,7 @@ mod tests {
             status,
             priority: Priority::Low,
             created_at: String::new(),
+            completed_at: None,
         }
     }
 

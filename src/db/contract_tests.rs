@@ -572,3 +572,20 @@ fn move_task_unknown_task_or_version_returns_not_found() {
         assert!(matches!(err, AppError::NotFound), "{name}: version {err:?}");
     });
 }
+
+#[test]
+fn update_task_status_sets_and_clears_completed_at() {
+    for_each_repo(|name, repo| {
+        let task_id = create_task(repo);
+        let task = repo.get_task(task_id).unwrap();
+        assert_eq!(task.completed_at, None, "{name}");
+
+        let done = repo.update_task_status(task_id, Status::Done).unwrap();
+        assert_eq!(done.status, Status::Done, "{name}");
+        assert!(done.completed_at.is_some(), "{name}");
+
+        let reopened = repo.update_task_status(task_id, Status::Todo).unwrap();
+        assert_eq!(reopened.status, Status::Todo, "{name}");
+        assert_eq!(reopened.completed_at, None, "{name}");
+    });
+}

@@ -34,6 +34,7 @@ mod tests {
             status,
             priority: Priority::Low,
             created_at: "now".to_string(),
+            completed_at: None,
         }
     }
 

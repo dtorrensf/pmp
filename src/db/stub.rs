@@ -265,6 +265,7 @@ impl Repository for StubRepository {
             status,
             priority,
             created_at: "now".to_string(),
+            completed_at: None,
         };
         self.tasks.lock().unwrap().push(task.clone());
         Ok(task)
@@ -307,6 +308,14 @@ impl Repository for StubRepository {
             .find(|t| t.id == Some(id))
             .ok_or(AppError::NotFound)?;
         task.status = new_status;
+        task.completed_at = match new_status {
+            Status::Done => Some(
+                task.completed_at
+                    .clone()
+                    .unwrap_or_else(|| "now".to_string()),
+            ),
+            _ => None,
+        };
         Ok(task.clone())
     }
 
