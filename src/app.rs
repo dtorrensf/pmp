@@ -1823,4 +1823,37 @@ mod tests {
         assert!(std::path::Path::new(path).exists());
         std::fs::remove_file(path).unwrap();
     }
+
+    #[test]
+    fn esc_from_version_summary_returns_to_version_dashboard() {
+        let (repo, mut app) = setup_app();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let task = repo
+            .create_task(pid, v, "A", "", Status::Done, Priority::Low)
+            .unwrap();
+        repo.update_task_status(task.id.unwrap(), Status::Done)
+            .unwrap();
+        let snapshot = repo.build_compact_snapshot(v).unwrap();
+        let summary = repo
+            .create_version_summary(v, "Summary", &snapshot)
+            .unwrap();
+        let summary_id = summary.id.unwrap();
+
+        app.dispatch(Action::Navigate(Screen::VersionSummary {
+            project_id: pid,
+            version_id: v,
+            summary_id,
+        }));
+        let action = app
+            .active_component()
+            .handle_event(&key_event(KeyCode::Esc));
+        assert_eq!(
+            action,
+            Some(Action::Navigate(Screen::VersionDashboard {
+                project_id: pid,
+                version_id: v,
+            }))
+        );
+    }
 }

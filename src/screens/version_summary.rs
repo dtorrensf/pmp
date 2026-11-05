@@ -276,6 +276,34 @@ mod tests {
     }
 
     #[test]
+    fn version_summary_scroll_snapshot() {
+        let repo = Arc::new(StubRepository::default());
+        let project = repo.create_project("Alpha", "").unwrap();
+        let pid = project.id.unwrap();
+        let version = repo.create_version(pid, "v1.0.0", "").unwrap();
+        let vid = version.id.unwrap();
+        let task = repo
+            .create_task(pid, vid, "A", "", Status::Done, Priority::High)
+            .unwrap();
+        repo.add_task_note(task.id.unwrap(), "note").unwrap();
+        let snapshot = repo.build_compact_snapshot(vid).unwrap();
+        let prose = (1..=20)
+            .map(|i| format!("Summary line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let summary = repo.create_version_summary(vid, &prose, &snapshot).unwrap();
+        let summary_id = summary.id.unwrap();
+
+        let mut screen = VersionSummaryScreen::new(repo.clone());
+        screen.set_ids(pid, vid, summary_id);
+        screen.init().unwrap();
+        for _ in 0..4 {
+            screen.handle_event(&key_event(KeyCode::Char('j')));
+        }
+        insta::assert_snapshot!(render_to_string(&screen, 60, 20));
+    }
+
+    #[test]
     fn keybindings_match_spec() {
         let keys: Vec<(KeyCode, &str)> = VersionSummaryScreen::KEYBINDINGS
             .iter()

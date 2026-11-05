@@ -2374,6 +2374,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn compact_version_rejects_empty_version_without_summary() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version = repo.create_version(pid, "v1.0.0", "").unwrap();
+        let vid = version.id.unwrap();
+
+        let result = server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "Summary".to_string(),
+                mark_released: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(tool_text(result).contains("empty version"));
+    }
+
+    #[tokio::test]
     async fn compact_version_compacts_and_marks_released() {
         let (server, repo) = server();
         let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();

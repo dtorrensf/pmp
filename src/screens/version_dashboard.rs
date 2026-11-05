@@ -752,6 +752,29 @@ mod tests {
     }
 
     #[test]
+    fn version_dashboard_with_summary_snapshot() {
+        let (repo, mut screen, _project_id) = setup_with_tasks();
+        let version_id = screen.version_id();
+        for task in screen.tasks().to_vec() {
+            repo.update_task_status(task.id.unwrap(), Status::Done)
+                .unwrap();
+        }
+        let snapshot = repo.build_compact_snapshot(version_id).unwrap();
+        repo.create_version_summary(version_id, "Summary", &snapshot)
+            .unwrap();
+        let version = repo.get_version(version_id).unwrap();
+        repo.update_version(
+            version_id,
+            &version.name,
+            &version.description,
+            VersionStatus::Released,
+        )
+        .unwrap();
+        screen.init().unwrap();
+        insta::assert_snapshot!(render_to_string(&screen, 60, 24));
+    }
+
+    #[test]
     fn version_dashboard_empty_snapshot() {
         let repo = Arc::new(StubRepository::default());
         let project = repo.create_project("Empty", "No tasks here").unwrap();

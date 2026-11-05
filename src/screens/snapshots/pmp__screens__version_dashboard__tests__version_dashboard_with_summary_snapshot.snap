@@ -1,0 +1,28 @@
+---
+source: src/screens/version_dashboard.rs
+expression: "render_to_string(&screen, 60, 24)"
+---
+┌Alpha · v0 · Released · 1 summaries───────────────────────┐
+│┌Tasks───────────────────────────────────────────────────┐│
+││ID   Name                 Status         Priority       ││
+││5    T3                   Done           High           ││
+││4    T2                   Done           Medium         ││
+││7    T5                   Done           Medium         ││
+││3    T1                   Done           Low            ││
+││6    T4                   Done           Low            ││
+││                                                        ││
+││                                                        ││
+││                                                        ││
+││                                                        ││
+││                                                        ││
+││                                                        ││
+││                                                        ││
+││                                                        ││
+││                                                        ││
+││                                                        ││
+││                                                        ││
+││                                                        ││
+││                                                        ││
+││                                                        ││
+│└────────────────────────────────────────────────────────┘│
+└──────────────────────────────────────────────────────────┘
