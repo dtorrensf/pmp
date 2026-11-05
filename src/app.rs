@@ -10,7 +10,7 @@ use crate::domain::error::AppError;
 use crate::domain::task::Status;
 use crate::screens::{
     Action, Component, ProjectDashboard, ProjectForm, ProjectListScreen, Screen, TaskForm,
-    VersionDashboard, VersionForm,
+    VersionDashboard, VersionForm, VersionSummaryScreen,
 };
 
 pub struct App {
@@ -38,6 +38,7 @@ struct Components {
     task_form: TaskForm,
     version_dashboard: VersionDashboard,
     version_form: VersionForm,
+    version_summary: VersionSummaryScreen,
 }
 
 impl App {
@@ -60,6 +61,7 @@ impl App {
                 task_form: TaskForm::new(repo.clone()),
                 version_dashboard: VersionDashboard::new(repo.clone()),
                 version_form: VersionForm::new(repo.clone()),
+                version_summary: VersionSummaryScreen::new(repo.clone()),
             },
         };
         if let Err(e) = app.init_screen(&Screen::ProjectList) {
@@ -505,6 +507,16 @@ impl App {
                 self.components.version_form.set_version_id(*version_id);
                 self.components.version_form.init()
             }
+            Screen::VersionSummary {
+                project_id,
+                version_id,
+                summary_id,
+            } => {
+                self.components
+                    .version_summary
+                    .set_ids(*project_id, *version_id, *summary_id);
+                self.components.version_summary.init()
+            }
         }
     }
 
@@ -543,6 +555,16 @@ impl App {
                 self.components.version_form.set_project_id(*project_id);
                 self.components.version_form.set_version_id(*version_id);
                 &mut self.components.version_form
+            }
+            Screen::VersionSummary {
+                project_id,
+                version_id,
+                summary_id,
+            } => {
+                self.components
+                    .version_summary
+                    .set_ids(*project_id, *version_id, *summary_id);
+                &mut self.components.version_summary
             }
         }
     }

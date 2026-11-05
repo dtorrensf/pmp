@@ -18,6 +18,7 @@ pub mod task_list_view;
 pub mod test_utils;
 pub mod version_dashboard;
 pub mod version_form;
+pub mod version_summary;
 
 pub use dashboard::ProjectDashboard;
 pub use project_form::ProjectForm;
@@ -25,6 +26,7 @@ pub use project_list::ProjectListScreen;
 pub use task_form::TaskForm;
 pub use version_dashboard::VersionDashboard;
 pub use version_form::VersionForm;
+pub use version_summary::VersionSummaryScreen;
 
 pub trait Component {
     fn init(&mut self) -> anyhow::Result<()> {
@@ -72,6 +74,11 @@ pub enum Screen {
     VersionForm {
         project_id: i64,
         version_id: Option<i64>,
+    },
+    VersionSummary {
+        project_id: i64,
+        version_id: i64,
+        summary_id: i64,
     },
 }
 

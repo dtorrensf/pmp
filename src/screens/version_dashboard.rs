@@ -14,7 +14,8 @@ use ratatui::{
 
 use crate::db::repository::Repository;
 use crate::domain::task::{Priority, Status, Task};
-use crate::domain::version::Version;
+use crate::domain::version::{Version, VersionStatus};
+use crate::domain::version_summary::VersionSummary;
 use crate::screens::components::keys::key;
 use crate::screens::task_list_view::TaskListView;
 pub use crate::screens::task_list_view::{FilterField, FilterState, TaskListMode};
@@ -26,6 +27,7 @@ pub struct VersionDashboard {
     version_id: i64,
     project_name: Option<String>,
     version: Option<Version>,
+    summaries: Vec<VersionSummary>,
     view: TaskListView,
 }
 
@@ -41,6 +43,7 @@ impl VersionDashboard {
         (key(KeyCode::Char('r')), "Refresh"),
         (key(KeyCode::Char('f')), "Filter"),
         (key(KeyCode::Char('m')), "Move"),
+        (key(KeyCode::Char('s')), "Summary"),
         (key(KeyCode::Char('c')), "New"),
         (key(KeyCode::Esc), "Back"),
         (key(KeyCode::Char('q')), "Quit"),
@@ -53,6 +56,7 @@ impl VersionDashboard {
             version_id: 0,
             project_name: None,
             version: None,
+            summaries: Vec::new(),
             view: TaskListView::new(),
         }
     }
@@ -109,9 +113,14 @@ impl VersionDashboard {
         self.project_id = version.project_id;
         self.project_name = Some(self.repo.get_project(version.project_id)?.name);
         self.version = Some(version);
+        self.summaries = self.repo.list_version_summaries(self.version_id)?;
         let tasks = self.repo.list_tasks_by_version(self.version_id)?;
         self.view.set_tasks(tasks);
         Ok(())
+    }
+
+    fn latest_summary_id(&self) -> Option<i64> {
+        self.summaries.first().and_then(|s| s.id)
     }
 }
 
@@ -158,6 +167,16 @@ impl Component for VersionDashboard {
                             task_id: None,
                         }));
                     }
+                    KeyCode::Char('s') => {
+                        if let Some(summary_id) = self.latest_summary_id() {
+                            return Some(Action::Navigate(Screen::VersionSummary {
+                                project_id: self.project_id,
+                                version_id: self.version_id,
+                                summary_id,
+                            }));
+                        }
+                        return None;
+                    }
                     KeyCode::Esc | KeyCode::Backspace => {
                         return Some(Action::Navigate(Screen::ProjectDashboard {
                             project_id: self.project_id,
@@ -174,7 +193,23 @@ impl Component for VersionDashboard {
 
     fn render(&self, frame: &mut Frame, area: Rect) {
         let title = match (&self.project_name, &self.version) {
+            (Some(project), Some(v)) if v.status == VersionStatus::Released => {
+                format!(
+                    "{project} · {} · {} · {} summaries",
+                    v.name,
+                    v.status.label(),
+                    self.summaries.len()
+                )
+            }
             (Some(project), Some(v)) => format!("{project} · {} · {}", v.name, v.status.label()),
+            (_, Some(v)) if v.status == VersionStatus::Released => {
+                format!(
+                    "{} · {} · {} summaries",
+                    v.name,
+                    v.status.label(),
+                    self.summaries.len()
+                )
+            }
             (_, Some(v)) => format!("{} · {}", v.name, v.status.label()),
             _ => "Version".to_string(),
         };
@@ -195,6 +230,7 @@ mod tests {
 
     use crate::db::stub::StubRepository;
     use crate::domain::task::{Priority, Status};
+    use crate::domain::version::VersionStatus;
     use crate::screens::components::confirm_dialog::ConfirmDialog;
     use crate::screens::test_utils::{buffer_to_string, key_event, render_to_string};
 
@@ -274,6 +310,7 @@ mod tests {
                 (KeyCode::Char('r'), "Refresh"),
                 (KeyCode::Char('f'), "Filter"),
                 (KeyCode::Char('m'), "Move"),
+                (KeyCode::Char('s'), "Summary"),
                 (KeyCode::Char('c'), "New"),
                 (KeyCode::Esc, "Back"),
                 (KeyCode::Char('q'), "Quit"),
@@ -439,6 +476,62 @@ mod tests {
                 task_id: None,
             }))
         );
+    }
+
+    #[test]
+    fn s_key_navigates_to_version_summary_when_summary_exists() {
+        let (repo, mut screen, project_id) = setup_with_tasks();
+        let version_id = screen.version_id();
+        for task in screen.tasks().to_vec() {
+            repo.update_task_status(task.id.unwrap(), Status::Done)
+                .unwrap();
+        }
+        let snapshot = repo.build_compact_snapshot(version_id).unwrap();
+        let summary = repo
+            .create_version_summary(version_id, "Summary", &snapshot)
+            .unwrap();
+        let summary_id = summary.id.unwrap();
+        screen.init().unwrap();
+
+        let action = screen.handle_event(&key_event(KeyCode::Char('s')));
+        assert_eq!(
+            action,
+            Some(Action::Navigate(Screen::VersionSummary {
+                project_id,
+                version_id,
+                summary_id,
+            }))
+        );
+    }
+
+    #[test]
+    fn released_header_shows_summary_count() {
+        let (repo, mut screen, _project_id) = setup_with_tasks();
+        let version_id = screen.version_id();
+        for task in screen.tasks().to_vec() {
+            repo.update_task_status(task.id.unwrap(), Status::Done)
+                .unwrap();
+        }
+        let snapshot = repo.build_compact_snapshot(version_id).unwrap();
+        repo.create_version_summary(version_id, "Summary", &snapshot)
+            .unwrap();
+        let version = repo.get_version(version_id).unwrap();
+        repo.update_version(
+            version_id,
+            &version.name,
+            &version.description,
+            VersionStatus::Released,
+        )
+        .unwrap();
+        screen.init().unwrap();
+
+        let backend = TestBackend::new(60, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| screen.render(frame, frame.area()))
+            .unwrap();
+        let text = buffer_to_string(terminal.backend().buffer());
+        assert!(text.contains("Released · 1 summaries"));
     }
 
     #[test]
