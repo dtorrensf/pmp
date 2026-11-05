@@ -25,4 +25,4 @@ expression: render_app_to_string(&mut app)
 ││                                                                            ││
 │└────────────────────────────────────────────────────────────────────────────┘│
 └──────────────────────────────────────────────────────────────────────────────┘
-j/Down: Down  k/Up: Up  Enter: Open  c: New Version  d: Delete  r: Cycle Status
+j/Down: Down  k/Up: Up  Enter: Open  c: New Version  v: Edit Version  d: Delete

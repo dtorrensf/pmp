@@ -599,10 +599,13 @@ mod tests {
     fn dashboard_footer_shows_context_keys() {
         let (_repo, mut app) = setup_app_with_project();
         app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id: 1 }));
-        let text = render_app_to_string(&mut app);
+        // Render wide enough to fit every context key; the footer truncates at
+        // 80 columns, which would hide the trailing keys.
+        let text = render_app_to_string_at_size(&mut app, 160, 24);
         let last_line = text.lines().last().unwrap();
         assert!(last_line.contains("Enter: Open"));
         assert!(last_line.contains("c: New Version"));
+        assert!(last_line.contains("v: Edit Version"));
         assert!(last_line.contains("r: Cycle Status"));
         assert!(last_line.contains("d: Delete"));
     }

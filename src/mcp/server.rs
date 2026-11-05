@@ -85,6 +85,17 @@ pub struct CreateVersionParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+pub struct UpdateVersionParams {
+    pub version_id: i64,
+    /// New name. Must not be blank.
+    pub name: String,
+    /// New description. When omitted, the current description is kept.
+    pub description: Option<String>,
+    /// New status: `open` or `released`. When omitted, the current status is kept.
+    pub status: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct UpdateTaskStatusParams {
     pub task_id: i64,
     pub status: Status,
@@ -358,6 +369,32 @@ impl PmpServer {
         })
         .await?;
         tool_result(result, "project not found")
+    }
+
+    #[tool(
+        name = "update_version",
+        description = "Rename a version and/or change its description or status. Requires the version id and a non-empty name. Omit description or status to keep the current ones. Status is open or released. Fails when the name already exists in the same project. Use to edit version metadata instead of editing the database."
+    )]
+    async fn update_version(
+        &self,
+        Parameters(params): Parameters<UpdateVersionParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = execute_repository(self.repo.clone(), move |repo| {
+            if params.name.trim().is_empty() {
+                return Err(AppError::Validation(
+                    "version name cannot be empty".to_string(),
+                ));
+            }
+            let current = repo.get_version(params.version_id)?;
+            let description = params.description.unwrap_or(current.description);
+            let status = match params.status.as_deref() {
+                Some(value) => VersionStatus::try_from_str(value)?,
+                None => current.status,
+            };
+            repo.update_version(params.version_id, &params.name, &description, status)
+        })
+        .await?;
+        tool_result(result, "version not found")
     }
 
     #[tool(
@@ -819,7 +856,7 @@ mod tests {
         AddTaskNoteParams, CreateProjectParams, CreateTaskParams, CreateVersionParams,
         ListTasksParams, ListVersionsParams, NoteIdParams, PmpServer, SetTaskDependenciesParams,
         TaskDependencyParams, TaskIdParams, UpdateProjectParams, UpdateTaskParams,
-        UpdateTaskPriorityParams, UpdateTaskStatusParams,
+        UpdateTaskPriorityParams, UpdateTaskStatusParams, UpdateVersionParams,
     };
     use crate::mcp::task_description::compose_description;
 
@@ -2034,6 +2071,7 @@ mod tests {
         assert!(tools.iter().any(|t| t["name"] == "list_projects"));
         assert!(tools.iter().any(|t| t["name"] == "create_project"));
         assert!(tools.iter().any(|t| t["name"] == "update_project"));
+        assert!(tools.iter().any(|t| t["name"] == "update_version"));
         assert!(tools.iter().any(|t| t["name"] == "update_task"));
         assert!(tools.iter().any(|t| t["name"] == "update_task_status"));
         assert!(tools.iter().any(|t| t["name"] == "create_task"));
@@ -2418,6 +2456,104 @@ mod tests {
 
         let invalid = server
             .create_version(Parameters(params("v0.3.0", Some("closed"))))
+            .await
+            .unwrap();
+        assert_eq!(invalid.is_error, Some(true));
+        assert!(tool_text(invalid).contains("invalid version status"));
+    }
+
+    #[tokio::test]
+    async fn update_version_renames_and_keeps_omitted_fields() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version_id = repo
+            .create_version(pid, "v0.1.0", "keep me")
+            .unwrap()
+            .id
+            .unwrap();
+
+        let renamed: Version = serde_json::from_str(&tool_text(
+            server
+                .update_version(Parameters(UpdateVersionParams {
+                    version_id,
+                    name: "v0.2.0".to_string(),
+                    description: None,
+                    status: None,
+                }))
+                .await
+                .unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(renamed.name, "v0.2.0");
+        assert_eq!(renamed.description, "keep me");
+        assert_eq!(renamed.status, VersionStatus::Open);
+
+        let described: Version = serde_json::from_str(&tool_text(
+            server
+                .update_version(Parameters(UpdateVersionParams {
+                    version_id,
+                    name: "v0.2.0".to_string(),
+                    description: Some("changed".to_string()),
+                    status: Some("released".to_string()),
+                }))
+                .await
+                .unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(described.description, "changed");
+        assert_eq!(described.status, VersionStatus::Released);
+    }
+
+    #[tokio::test]
+    async fn update_version_rejects_empty_duplicate_unknown_and_invalid_status() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version_id = repo.create_version(pid, "v0.1.0", "").unwrap().id.unwrap();
+        repo.create_version(pid, "v0.2.0", "").unwrap();
+
+        let empty = server
+            .update_version(Parameters(UpdateVersionParams {
+                version_id,
+                name: "  ".to_string(),
+                description: None,
+                status: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(empty.is_error, Some(true));
+        assert!(tool_text(empty).contains("version name cannot be empty"));
+
+        let duplicate = server
+            .update_version(Parameters(UpdateVersionParams {
+                version_id,
+                name: "v0.2.0".to_string(),
+                description: None,
+                status: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(duplicate.is_error, Some(true));
+        assert!(tool_text(duplicate).contains("version already exists"));
+
+        let unknown = server
+            .update_version(Parameters(UpdateVersionParams {
+                version_id: 999,
+                name: "v1.0.0".to_string(),
+                description: None,
+                status: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(unknown.is_error, Some(true));
+        assert!(tool_text(unknown).contains("version not found"));
+
+        let invalid = server
+            .update_version(Parameters(UpdateVersionParams {
+                version_id,
+                name: "v0.1.0".to_string(),
+                description: None,
+                status: Some("closed".to_string()),
+            }))
             .await
             .unwrap();
         assert_eq!(invalid.is_error, Some(true));

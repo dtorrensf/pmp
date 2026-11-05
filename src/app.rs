@@ -1523,6 +1523,92 @@ mod tests {
     }
 
     #[test]
+    fn v_from_project_dashboard_opens_version_edit_form() {
+        let repo = Arc::new(StubRepository::default());
+        let project_id = repo.create_project("P", "").unwrap().id.unwrap();
+        let version_id = repo.default_version_id(project_id).unwrap();
+        let mut app = App::new(repo.clone());
+        app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id }));
+
+        let action = app
+            .active_component()
+            .handle_event(&key_event(KeyCode::Char('v')));
+        assert_eq!(
+            action,
+            Some(Action::Navigate(Screen::VersionForm {
+                project_id,
+                version_id: Some(version_id),
+            }))
+        );
+
+        if let Some(action) = action {
+            app.dispatch(action);
+        }
+        assert_eq!(
+            app.screen,
+            Screen::VersionForm {
+                project_id,
+                version_id: Some(version_id),
+            }
+        );
+        assert_eq!(
+            app.components.version_form.return_to(),
+            &Screen::ProjectDashboard { project_id }
+        );
+    }
+
+    #[test]
+    fn save_version_with_id_updates_and_returns_to_dashboard() {
+        let repo = Arc::new(StubRepository::default());
+        let project_id = repo.create_project("P", "").unwrap().id.unwrap();
+        let version_id = repo
+            .create_version(project_id, "v1.0.0", "old")
+            .unwrap()
+            .id
+            .unwrap();
+        let mut app = App::new(repo.clone());
+        let next = app.dispatch(Action::SaveVersion {
+            version_id: Some(version_id),
+            project_id,
+            name: "v2.0.0".to_string(),
+            description: "new".to_string(),
+            status: VersionStatus::Released,
+        });
+        assert!(app.error.is_none());
+        assert_eq!(
+            next,
+            Some(Action::Navigate(Screen::ProjectDashboard { project_id }))
+        );
+        let updated = repo.get_version(version_id).unwrap();
+        assert_eq!(updated.name, "v2.0.0");
+        assert_eq!(updated.description, "new");
+        assert_eq!(updated.status, VersionStatus::Released);
+    }
+
+    #[test]
+    fn save_version_with_duplicate_name_keeps_old_name_and_sets_error() {
+        let repo = Arc::new(StubRepository::default());
+        let project_id = repo.create_project("P", "").unwrap().id.unwrap();
+        let version_id = repo
+            .create_version(project_id, "v1.0.0", "")
+            .unwrap()
+            .id
+            .unwrap();
+        repo.create_version(project_id, "v2.0.0", "").unwrap();
+        let mut app = App::new(repo.clone());
+        let next = app.dispatch(Action::SaveVersion {
+            version_id: Some(version_id),
+            project_id,
+            name: "v2.0.0".to_string(),
+            description: String::new(),
+            status: VersionStatus::Open,
+        });
+        assert_eq!(next, None);
+        assert!(app.error.is_some());
+        assert_eq!(repo.get_version(version_id).unwrap().name, "v1.0.0");
+    }
+
+    #[test]
     fn delete_version_removes_it_and_navigates_to_project() {
         let repo = Arc::new(StubRepository::default());
         let project_id = repo.create_project("P", "").unwrap().id.unwrap();
