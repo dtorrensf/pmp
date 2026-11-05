@@ -11,6 +11,7 @@ use crate::domain::error::AppError;
 use crate::domain::project::Project;
 use crate::domain::task::{Priority, Status, Task, TaskNote};
 use crate::domain::version::{self, Version, VersionStatus};
+use crate::domain::version_summary::VersionSummary;
 
 mod embedded {
     use refinery::embed_migrations;
@@ -484,6 +485,67 @@ impl Repository for SqliteRepository {
         }
         Ok(())
     }
+
+    fn list_version_summaries(&self, version_id: i64) -> Result<Vec<VersionSummary>, AppError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, version_id, summary, snapshot_json, generated_at, created_at
+             FROM version_summaries WHERE version_id = ?1
+             ORDER BY generated_at DESC, id DESC",
+        )?;
+        let summaries = stmt
+            .query_map([version_id], version_summary_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(summaries)
+    }
+
+    fn get_version_summary(&self, id: i64) -> Result<VersionSummary, AppError> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, version_id, summary, snapshot_json, generated_at, created_at
+             FROM version_summaries WHERE id = ?1",
+            [id],
+            version_summary_from_row,
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => AppError::NotFound,
+            _ => e.into(),
+        })
+    }
+
+    fn create_version_summary(
+        &self,
+        version_id: i64,
+        summary: &str,
+        snapshot_json: &str,
+    ) -> Result<VersionSummary, AppError> {
+        self.get_version(version_id)?;
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO version_summaries (version_id, summary, snapshot_json)
+             VALUES (?1, ?2, ?3)",
+            params![version_id, summary, snapshot_json],
+        )
+        .map_err(version_summary_write_error)?;
+        let id = conn.last_insert_rowid();
+        drop(conn);
+        self.get_version_summary(id)
+    }
+
+    fn delete_version_summary(&self, id: i64) -> Result<(), AppError> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute("DELETE FROM version_summaries WHERE id = ?1", [id])?;
+        if rows == 0 {
+            return Err(AppError::NotFound);
+        }
+        Ok(())
+    }
+
+    fn delete_tasks_by_version(&self, version_id: i64) -> Result<(), AppError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM tasks WHERE version_id = ?1", [version_id])?;
+        Ok(())
+    }
 }
 
 fn would_create_cycle(graph: &HashMap<i64, Vec<i64>>, task_id: i64, depends_on_id: i64) -> bool {
@@ -569,6 +631,29 @@ fn task_note_from_row(row: &Row) -> Result<TaskNote, rusqlite::Error> {
         content: row.get(2)?,
         created_at: row.get(3)?,
     })
+}
+
+fn version_summary_from_row(row: &Row) -> Result<VersionSummary, rusqlite::Error> {
+    Ok(VersionSummary {
+        id: Some(row.get(0)?),
+        version_id: row.get(1)?,
+        summary: row.get(2)?,
+        snapshot_json: row.get(3)?,
+        generated_at: row.get(4)?,
+        created_at: row.get(5)?,
+    })
+}
+
+/// Maps a UNIQUE(version_id) violation to a validation error.
+fn version_summary_write_error(err: rusqlite::Error) -> AppError {
+    match err {
+        rusqlite::Error::SqliteFailure(ref failure, _)
+            if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+        {
+            AppError::Validation("version already has a summary".to_string())
+        }
+        other => other.into(),
+    }
 }
 
 #[cfg(test)]

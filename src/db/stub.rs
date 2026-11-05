@@ -7,6 +7,7 @@ use crate::domain::error::AppError;
 use crate::domain::project::Project;
 use crate::domain::task::{Priority, Status, Task, TaskDependency, TaskNote};
 use crate::domain::version::{self, Version, VersionStatus};
+use crate::domain::version_summary::VersionSummary;
 
 pub struct StubRepository {
     pub projects: Mutex<Vec<Project>>,
@@ -15,6 +16,7 @@ pub struct StubRepository {
     pub dependencies: Mutex<Vec<TaskDependency>>,
     pub task_notes: Mutex<Vec<TaskNote>>,
     pub versions: Mutex<Vec<Version>>,
+    pub version_summaries: Mutex<Vec<VersionSummary>>,
 }
 
 impl Default for StubRepository {
@@ -26,6 +28,7 @@ impl Default for StubRepository {
             dependencies: Mutex::new(Vec::new()),
             task_notes: Mutex::new(Vec::new()),
             versions: Mutex::new(Vec::new()),
+            version_summaries: Mutex::new(Vec::new()),
         }
     }
 }
@@ -543,6 +546,83 @@ impl Repository for StubRepository {
             .position(|n| n.id == Some(note_id))
             .ok_or(AppError::NotFound)?;
         notes.remove(pos);
+        Ok(())
+    }
+
+    fn list_version_summaries(&self, version_id: i64) -> Result<Vec<VersionSummary>, AppError> {
+        let mut summaries: Vec<VersionSummary> = self
+            .version_summaries
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.version_id == version_id)
+            .cloned()
+            .collect();
+        summaries.sort_by(|a, b| {
+            b.generated_at
+                .cmp(&a.generated_at)
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        Ok(summaries)
+    }
+
+    fn get_version_summary(&self, id: i64) -> Result<VersionSummary, AppError> {
+        self.version_summaries
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|s| s.id == Some(id))
+            .cloned()
+            .ok_or(AppError::NotFound)
+    }
+
+    fn create_version_summary(
+        &self,
+        version_id: i64,
+        summary: &str,
+        snapshot_json: &str,
+    ) -> Result<VersionSummary, AppError> {
+        self.get_version(version_id)?;
+        let mut summaries = self.version_summaries.lock().unwrap();
+        if summaries.iter().any(|s| s.version_id == version_id) {
+            return Err(AppError::Validation(
+                "version already has a summary".to_string(),
+            ));
+        }
+        let summary = VersionSummary {
+            id: Some(self.next_id()),
+            version_id,
+            summary: summary.to_string(),
+            snapshot_json: snapshot_json.to_string(),
+            generated_at: "now".to_string(),
+            created_at: "now".to_string(),
+        };
+        summaries.push(summary.clone());
+        Ok(summary)
+    }
+
+    fn delete_version_summary(&self, id: i64) -> Result<(), AppError> {
+        let mut summaries = self.version_summaries.lock().unwrap();
+        let pos = summaries
+            .iter()
+            .position(|s| s.id == Some(id))
+            .ok_or(AppError::NotFound)?;
+        summaries.remove(pos);
+        Ok(())
+    }
+
+    fn delete_tasks_by_version(&self, version_id: i64) -> Result<(), AppError> {
+        let task_ids: Vec<i64> = self
+            .tasks
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|t| t.version_id == version_id)
+            .filter_map(|t| t.id)
+            .collect();
+        for id in &task_ids {
+            self.delete_task(*id)?;
+        }
         Ok(())
     }
 }

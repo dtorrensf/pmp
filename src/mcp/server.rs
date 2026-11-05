@@ -873,6 +873,7 @@ mod tests {
     use crate::domain::project::Project;
     use crate::domain::task::{Priority, Status, Task, TaskNote};
     use crate::domain::version::{Version, VersionStatus};
+    use crate::domain::version_summary::VersionSummary;
 
     use super::{
         AddTaskNoteParams, CreateProjectParams, CreateTaskParams, CreateVersionParams,
@@ -1067,6 +1068,31 @@ mod tests {
         }
 
         fn delete_task_note(&self, _: i64) -> Result<(), AppError> {
+            unimplemented!()
+        }
+
+        fn list_version_summaries(&self, _: i64) -> Result<Vec<VersionSummary>, AppError> {
+            unimplemented!()
+        }
+
+        fn get_version_summary(&self, _: i64) -> Result<VersionSummary, AppError> {
+            unimplemented!()
+        }
+
+        fn create_version_summary(
+            &self,
+            _: i64,
+            _: &str,
+            _: &str,
+        ) -> Result<VersionSummary, AppError> {
+            unimplemented!()
+        }
+
+        fn delete_version_summary(&self, _: i64) -> Result<(), AppError> {
+            unimplemented!()
+        }
+
+        fn delete_tasks_by_version(&self, _: i64) -> Result<(), AppError> {
             unimplemented!()
         }
     }

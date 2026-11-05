@@ -4,8 +4,10 @@ use std::collections::{HashMap, HashSet};
 
 use crate::domain::error::AppError;
 use crate::domain::project::Project;
-use crate::domain::task::{Priority, Status, Task, TaskNote};
+use crate::domain::snapshot::CompactSnapshot;
+use crate::domain::task::{Priority, Status, Task, TaskDependency, TaskNote};
 use crate::domain::version::{Version, VersionStatus};
+use crate::domain::version_summary::VersionSummary;
 
 pub trait Repository: Send + Sync {
     fn list_projects(&self) -> Result<Vec<Project>, AppError>;
@@ -85,6 +87,67 @@ pub trait Repository: Send + Sync {
     fn list_task_notes(&self, task_id: i64) -> Result<Vec<TaskNote>, AppError>;
     fn add_task_note(&self, task_id: i64, content: &str) -> Result<TaskNote, AppError>;
     fn delete_task_note(&self, note_id: i64) -> Result<(), AppError>;
+    fn list_version_summaries(&self, version_id: i64) -> Result<Vec<VersionSummary>, AppError>;
+    fn get_version_summary(&self, id: i64) -> Result<VersionSummary, AppError>;
+    fn create_version_summary(
+        &self,
+        version_id: i64,
+        summary: &str,
+        snapshot_json: &str,
+    ) -> Result<VersionSummary, AppError>;
+    fn delete_version_summary(&self, id: i64) -> Result<(), AppError>;
+    /// Deletes every task of a version in bulk. Dependencies and notes of the
+    /// removed tasks are cascade-deleted.
+    fn delete_tasks_by_version(&self, version_id: i64) -> Result<(), AppError>;
+
+    /// Builds the frozen JSON snapshot used on compaction: the version, its
+    /// previous summary (when recompacting), and all tasks, notes and
+    /// dependencies. `previous_summary.snapshot_json` recursively embeds the
+    /// prior snapshot, preserving history.
+    fn build_compact_snapshot(&self, version_id: i64) -> Result<String, AppError> {
+        let version = self.get_version(version_id)?;
+        let previous_summary = self.list_version_summaries(version_id)?.into_iter().next();
+        let tasks = self.list_tasks_by_version(version_id)?;
+        let mut notes = Vec::new();
+        let mut dependencies = Vec::new();
+        for task in &tasks {
+            if let Some(id) = task.id {
+                notes.extend(self.list_task_notes(id)?);
+                dependencies.extend(self.get_dependencies(id)?.into_iter().map(|depends_on_id| {
+                    TaskDependency {
+                        task_id: id,
+                        depends_on_id,
+                    }
+                }));
+            }
+        }
+        let snapshot = CompactSnapshot {
+            version,
+            previous_summary,
+            tasks,
+            notes,
+            dependencies,
+        };
+        serde_json::to_string(&snapshot)
+            .map_err(|e| AppError::Validation(format!("snapshot serialization error: {e}")))
+    }
+
+    /// Validates the preconditions for compacting a version: every task must be
+    /// done, and an empty version is only allowed when it already has a summary.
+    fn can_compact(&self, version_id: i64) -> Result<(), AppError> {
+        let tasks = self.list_tasks_by_version(version_id)?;
+        if tasks.iter().any(|t| t.status != Status::Done) {
+            return Err(AppError::Validation(
+                "version has tasks that are not done; finish them before compacting".to_string(),
+            ));
+        }
+        if tasks.is_empty() && self.list_version_summaries(version_id)?.is_empty() {
+            return Err(AppError::Validation(
+                "cannot compact an empty version without a previous summary".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Validates that `task_id` may depend on exactly `depends_on_ids`, given the
