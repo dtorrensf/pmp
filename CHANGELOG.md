@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Features
+
+* Add version compaction: freeze a released version into a summary snapshot, review it from the TUI and export it as Markdown with Mermaid charts.
+
 ## [0.5.0](https://github.com/dtorrensf/pmp/compare/pmp-v0.4.1...pmp-v0.5.0) (2026-10-25)
 
 

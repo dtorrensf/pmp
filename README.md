@@ -31,6 +31,7 @@ With PMP, you get a local, blazing-fast, keyboard-driven project manager powered
 - 🔒 **Total Privacy**: All your data is stored locally using SQLite. Your data is yours alone!
 - 🔗 **Task Dependencies**: Prevents moving tasks to "Done" if their dependencies haven't been resolved yet.
 - 🏷️ **Versions**: Group a project's tasks into versions (for example `v0.2.0`), follow each version's progress, and mark it as released. Tasks and dependencies stay within their version.
+- 🧊 **Version Compaction**: Freeze a released version into a summary snapshot; review it from the TUI or export it as Markdown with Mermaid charts.
 
 ---
 
