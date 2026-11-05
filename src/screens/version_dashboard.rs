@@ -24,6 +24,7 @@ pub struct VersionDashboard {
     repo: Arc<dyn Repository>,
     project_id: i64,
     version_id: i64,
+    project_name: Option<String>,
     version: Option<Version>,
     view: TaskListView,
 }
@@ -49,6 +50,7 @@ impl VersionDashboard {
             repo,
             project_id: 0,
             version_id: 0,
+            project_name: None,
             version: None,
             view: TaskListView::new(),
         }
@@ -90,6 +92,7 @@ impl VersionDashboard {
     fn load_tasks(&mut self) -> anyhow::Result<()> {
         let version = self.repo.get_version(self.version_id)?;
         self.project_id = version.project_id;
+        self.project_name = Some(self.repo.get_project(version.project_id)?.name);
         self.version = Some(version);
         let tasks = self.repo.list_tasks_by_version(self.version_id)?;
         self.view.set_tasks(tasks);
@@ -151,9 +154,10 @@ impl Component for VersionDashboard {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect) {
-        let title = match &self.version {
-            Some(v) => format!("{} · {}", v.name, v.status.label()),
-            None => "Version".to_string(),
+        let title = match (&self.project_name, &self.version) {
+            (Some(project), Some(v)) => format!("{project} · {} · {}", v.name, v.status.label()),
+            (_, Some(v)) => format!("{} · {}", v.name, v.status.label()),
+            _ => "Version".to_string(),
         };
         let block = Block::default().title(title).borders(Borders::ALL);
         let inner = block.inner(area);
@@ -314,7 +318,7 @@ mod tests {
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let text = buffer_to_string(&buffer);
-        assert!(text.contains("v0 · Open"));
+        assert!(text.contains("Alpha · v0 · Open"));
     }
 
     #[test]
