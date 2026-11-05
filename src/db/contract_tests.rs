@@ -574,6 +574,173 @@ fn move_task_unknown_task_or_version_returns_not_found() {
 }
 
 #[test]
+fn can_compact_rejects_non_done_tasks() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let a = task_in_version(repo, pid, v, "A");
+        assert!(
+            matches!(repo.can_compact(v), Err(AppError::Validation(_))),
+            "{name}: todo task must block compaction"
+        );
+        repo.update_task_status(a, Status::Done).unwrap();
+        assert!(repo.can_compact(v).is_ok(), "{name}");
+    });
+}
+
+#[test]
+fn can_compact_rejects_empty_version_without_previous_summary() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        assert!(
+            matches!(repo.can_compact(v), Err(AppError::Validation(_))),
+            "{name}"
+        );
+    });
+}
+
+#[test]
+fn can_compact_accepts_empty_version_with_previous_summary() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let a = task_in_version(repo, pid, v, "A");
+        repo.update_task_status(a, Status::Done).unwrap();
+        let snapshot = repo.build_compact_snapshot(v).unwrap();
+        repo.create_version_summary(v, "First", &snapshot).unwrap();
+        repo.delete_tasks_by_version(v).unwrap();
+        assert!(repo.can_compact(v).is_ok(), "{name}");
+    });
+}
+
+#[test]
+fn build_compact_snapshot_omits_previous_summary_on_first_compaction() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        task_in_version(repo, pid, v, "A");
+        let snapshot = repo.build_compact_snapshot(v).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
+        assert!(json["previous_summary"].is_null(), "{name}");
+        assert_eq!(json["tasks"].as_array().unwrap().len(), 1, "{name}");
+    });
+}
+
+#[test]
+fn build_compact_snapshot_includes_previous_summary_recursively() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let a = task_in_version(repo, pid, v, "A");
+        repo.update_task_status(a, Status::Done).unwrap();
+
+        let first = repo.build_compact_snapshot(v).unwrap();
+        repo.create_version_summary(v, "First", &first).unwrap();
+
+        let second = repo.build_compact_snapshot(v).unwrap();
+        let second_json: serde_json::Value = serde_json::from_str(&second).unwrap();
+        let prev = &second_json["previous_summary"];
+        assert!(!prev.is_null(), "{name}: previous_summary must be present");
+        assert_eq!(prev["summary"], "First", "{name}");
+
+        let prev_snapshot: serde_json::Value =
+            serde_json::from_str(prev["snapshot_json"].as_str().unwrap()).unwrap();
+        let first_json: serde_json::Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(prev_snapshot, first_json, "{name}");
+    });
+}
+
+#[test]
+fn delete_tasks_by_version_cascades_notes_and_dependencies() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let keep_v = repo.default_version_id(pid).unwrap();
+        let keep = task_in_version(repo, pid, keep_v, "Keep");
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let a = task_in_version(repo, pid, v, "A");
+        let b = task_in_version(repo, pid, v, "B");
+        repo.add_dependency(b, a).unwrap();
+        repo.add_task_note(a, "note A").unwrap();
+
+        repo.delete_tasks_by_version(v).unwrap();
+
+        assert!(
+            matches!(repo.get_task(a), Err(AppError::NotFound)),
+            "{name}"
+        );
+        assert!(
+            matches!(repo.get_task(b), Err(AppError::NotFound)),
+            "{name}"
+        );
+        assert!(repo.get_dependencies(b).unwrap().is_empty(), "{name}");
+        assert!(repo.list_task_notes(a).unwrap().is_empty(), "{name}");
+        assert!(repo.get_task(keep).is_ok(), "{name}");
+    });
+}
+
+#[test]
+fn create_version_summary_rejects_duplicate_for_same_version() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let a = task_in_version(repo, pid, v, "A");
+        repo.update_task_status(a, Status::Done).unwrap();
+        let snapshot = repo.build_compact_snapshot(v).unwrap();
+        repo.create_version_summary(v, "First", &snapshot).unwrap();
+        assert!(
+            matches!(
+                repo.create_version_summary(v, "Second", &snapshot),
+                Err(AppError::Validation(_))
+            ),
+            "{name}"
+        );
+    });
+}
+
+#[test]
+fn delete_version_summary_allows_recreate() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let a = task_in_version(repo, pid, v, "A");
+        repo.update_task_status(a, Status::Done).unwrap();
+        let snapshot = repo.build_compact_snapshot(v).unwrap();
+        let summary = repo.create_version_summary(v, "First", &snapshot).unwrap();
+        let id = summary.id.unwrap();
+
+        repo.delete_version_summary(id).unwrap();
+        assert!(
+            matches!(repo.get_version_summary(id), Err(AppError::NotFound)),
+            "{name}"
+        );
+
+        let recreated = repo.create_version_summary(v, "Second", &snapshot).unwrap();
+        assert_eq!(recreated.summary, "Second", "{name}");
+    });
+}
+
+#[test]
+fn compact_flow_preserves_unique_invariant() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let a = task_in_version(repo, pid, v, "A");
+        repo.update_task_status(a, Status::Done).unwrap();
+
+        let snapshot = repo.build_compact_snapshot(v).unwrap();
+        repo.delete_tasks_by_version(v).unwrap();
+        repo.create_version_summary(v, "Summary", &snapshot)
+            .unwrap();
+
+        let summaries = repo.list_version_summaries(v).unwrap();
+        assert_eq!(summaries.len(), 1, "{name}");
+        assert_eq!(summaries[0].summary, "Summary", "{name}");
+        assert_eq!(summaries[0].snapshot_json, snapshot, "{name}");
+    });
+}
+
+#[test]
 fn update_task_status_sets_and_clears_completed_at() {
     for_each_repo(|name, repo| {
         let task_id = create_task(repo);
