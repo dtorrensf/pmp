@@ -194,6 +194,13 @@ pub struct SummaryIdParams {
     pub summary_id: i64,
 }
 
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ExportVersionSummaryParams {
+    pub summary_id: i64,
+    /// Optional destination path. When omitted, defaults to the data dir exports folder.
+    pub path: Option<String>,
+}
+
 #[tool_router]
 impl PmpServer {
     pub fn new(repo: Arc<dyn Repository>) -> Self {
@@ -882,6 +889,26 @@ impl PmpServer {
             "summary not found",
         )
     }
+
+    #[tool(
+        name = "export_version_summary",
+        description = "Export a version summary to a self-contained Markdown file with Mermaid charts (status pie, priority pie, dependency flowchart) and a task table. Use to share or render a compacted version outside the app. Returns the written path."
+    )]
+    async fn export_version_summary(
+        &self,
+        Parameters(params): Parameters<ExportVersionSummaryParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let summary_id = params.summary_id;
+        let path = params.path;
+        let result = execute_repository(self.repo.clone(), move |repo| {
+            crate::mcp::export::export_version_summary_markdown(repo.as_ref(), summary_id, path)
+        })
+        .await?;
+        tool_result(
+            result.map(|path| serde_json::json!({ "path": path.to_string_lossy() })),
+            "summary not found",
+        )
+    }
 }
 
 async fn execute_repository<T, F>(
@@ -1033,10 +1060,11 @@ mod tests {
 
     use super::{
         AddTaskNoteParams, CompactVersionParams, CreateProjectParams, CreateTaskParams,
-        CreateVersionParams, ListTasksParams, ListVersionsParams, MoveTaskParams, NoteIdParams,
-        PmpServer, ReadVersionSummaryParams, SetTaskDependenciesParams, SummaryIdParams,
-        TaskDependencyParams, TaskIdParams, UpdateProjectParams, UpdateTaskParams,
-        UpdateTaskPriorityParams, UpdateTaskStatusParams, UpdateVersionParams, VersionIdParams,
+        CreateVersionParams, ExportVersionSummaryParams, ListTasksParams, ListVersionsParams,
+        MoveTaskParams, NoteIdParams, PmpServer, ReadVersionSummaryParams,
+        SetTaskDependenciesParams, SummaryIdParams, TaskDependencyParams, TaskIdParams,
+        UpdateProjectParams, UpdateTaskParams, UpdateTaskPriorityParams, UpdateTaskStatusParams,
+        UpdateVersionParams, VersionIdParams,
     };
     use crate::mcp::task_description::compose_description;
 
@@ -2515,6 +2543,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn export_version_summary_writes_markdown_with_mermaid() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version = repo.create_version(pid, "v1.0.0", "").unwrap();
+        let vid = version.id.unwrap();
+        let task = repo
+            .create_task(pid, vid, "A", "", Status::Done, Priority::High)
+            .unwrap();
+        repo.add_task_note(task.id.unwrap(), "done note").unwrap();
+        server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "Prose summary".to_string(),
+                mark_released: None,
+            }))
+            .await
+            .unwrap();
+        let summaries = repo.list_version_summaries(vid).unwrap();
+        let summary_id = summaries[0].id.unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("export.md");
+        let result = server
+            .export_version_summary(Parameters(ExportVersionSummaryParams {
+                summary_id,
+                path: Some(target.to_string_lossy().into_owned()),
+            }))
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&tool_text(result)).unwrap();
+        assert_eq!(value["path"], target.to_string_lossy().as_ref());
+
+        let markdown = std::fs::read_to_string(&target).unwrap();
+        assert!(markdown.contains("Prose summary"));
+        assert!(markdown.contains("```mermaid"));
+        assert!(markdown.contains("pie title Tasks by status"));
+        assert!(markdown.contains("pie title Tasks by priority"));
+        assert!(markdown.contains("flowchart LR"));
+        assert!(markdown.contains("done note"));
+    }
+
+    #[tokio::test]
     async fn mcp_server_e2e_lifecycle_and_list_tasks() {
         let repo = Arc::new(StubRepository::default());
         let project = repo.create_project("Alpha", "").unwrap();
@@ -2608,6 +2678,7 @@ mod tests {
         assert!(tools.iter().any(|t| t["name"] == "list_version_summaries"));
         assert!(tools.iter().any(|t| t["name"] == "read_version_summary"));
         assert!(tools.iter().any(|t| t["name"] == "delete_version_summary"));
+        assert!(tools.iter().any(|t| t["name"] == "export_version_summary"));
 
         let create_request = serde_json::json!({
             "jsonrpc": "2.0",
