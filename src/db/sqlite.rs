@@ -541,9 +541,12 @@ impl Repository for SqliteRepository {
         Ok(())
     }
 
-    fn delete_tasks_by_version(&self, version_id: i64) -> Result<(), AppError> {
+    fn delete_done_tasks_by_version(&self, version_id: i64) -> Result<(), AppError> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM tasks WHERE version_id = ?1", [version_id])?;
+        conn.execute(
+            "DELETE FROM tasks WHERE version_id = ?1 AND status = 'done'",
+            [version_id],
+        )?;
         Ok(())
     }
 }

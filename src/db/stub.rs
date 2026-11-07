@@ -611,13 +611,13 @@ impl Repository for StubRepository {
         Ok(())
     }
 
-    fn delete_tasks_by_version(&self, version_id: i64) -> Result<(), AppError> {
+    fn delete_done_tasks_by_version(&self, version_id: i64) -> Result<(), AppError> {
         let task_ids: Vec<i64> = self
             .tasks
             .lock()
             .unwrap()
             .iter()
-            .filter(|t| t.version_id == version_id)
+            .filter(|t| t.version_id == version_id && t.status == Status::Done)
             .filter_map(|t| t.id)
             .collect();
         for id in &task_ids {

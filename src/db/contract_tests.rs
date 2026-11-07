@@ -609,7 +609,7 @@ fn can_compact_accepts_empty_version_with_previous_summary() {
         repo.update_task_status(a, Status::Done).unwrap();
         let snapshot = repo.build_compact_snapshot(v).unwrap();
         repo.create_version_summary(v, "First", &snapshot).unwrap();
-        repo.delete_tasks_by_version(v).unwrap();
+        repo.delete_done_tasks_by_version(v).unwrap();
         assert!(repo.can_compact(v).is_ok(), "{name}");
     });
 }
@@ -619,7 +619,8 @@ fn build_compact_snapshot_omits_previous_summary_on_first_compaction() {
     for_each_repo(|name, repo| {
         let pid = repo.create_project("P", "").unwrap().id.unwrap();
         let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
-        task_in_version(repo, pid, v, "A");
+        let a = task_in_version(repo, pid, v, "A");
+        repo.update_task_status(a, Status::Done).unwrap();
         let snapshot = repo.build_compact_snapshot(v).unwrap();
         let json: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
         assert!(json["previous_summary"].is_null(), "{name}");
@@ -652,7 +653,7 @@ fn build_compact_snapshot_includes_previous_summary_recursively() {
 }
 
 #[test]
-fn delete_tasks_by_version_cascades_notes_and_dependencies() {
+fn delete_done_tasks_by_version_cascades_notes_and_dependencies() {
     for_each_repo(|name, repo| {
         let pid = repo.create_project("P", "").unwrap().id.unwrap();
         let keep_v = repo.default_version_id(pid).unwrap();
@@ -660,22 +661,115 @@ fn delete_tasks_by_version_cascades_notes_and_dependencies() {
         let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         let a = task_in_version(repo, pid, v, "A");
         let b = task_in_version(repo, pid, v, "B");
+        // b (todo) depends on a (done): the edge must disappear with a.
         repo.add_dependency(b, a).unwrap();
         repo.add_task_note(a, "note A").unwrap();
+        repo.update_task_status(a, Status::Done).unwrap();
 
-        repo.delete_tasks_by_version(v).unwrap();
+        repo.delete_done_tasks_by_version(v).unwrap();
 
         assert!(
             matches!(repo.get_task(a), Err(AppError::NotFound)),
             "{name}"
         );
-        assert!(
-            matches!(repo.get_task(b), Err(AppError::NotFound)),
-            "{name}"
-        );
         assert!(repo.get_dependencies(b).unwrap().is_empty(), "{name}");
         assert!(repo.list_task_notes(a).unwrap().is_empty(), "{name}");
         assert!(repo.get_task(keep).is_ok(), "{name}");
+    });
+}
+
+#[test]
+fn delete_done_tasks_by_version_keeps_todo_tasks_intact() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let done = task_in_version(repo, pid, v, "Done");
+        let todo = task_in_version(repo, pid, v, "Todo");
+        repo.add_task_note(todo, "keep me").unwrap();
+        repo.update_task_status(done, Status::Done).unwrap();
+
+        repo.delete_done_tasks_by_version(v).unwrap();
+
+        assert!(
+            matches!(repo.get_task(done), Err(AppError::NotFound)),
+            "{name}"
+        );
+        let remaining = repo.get_task(todo).unwrap();
+        assert_eq!(remaining.status, Status::Todo, "{name}");
+        assert_eq!(repo.list_task_notes(todo).unwrap().len(), 1, "{name}");
+        assert_eq!(repo.list_tasks_by_version(v).unwrap().len(), 1, "{name}");
+    });
+}
+
+#[test]
+fn can_compact_rejects_in_progress_tasks() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let done = task_in_version(repo, pid, v, "Done");
+        let wip = task_in_version(repo, pid, v, "WIP");
+        repo.update_task_status(done, Status::Done).unwrap();
+        repo.update_task_status(wip, Status::InProgress).unwrap();
+        assert!(
+            matches!(repo.can_compact(v), Err(AppError::Validation(_))),
+            "{name}: in_progress must block compaction"
+        );
+    });
+}
+
+#[test]
+fn can_compact_rejects_only_todo_without_previous_summary() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        task_in_version(repo, pid, v, "A");
+        task_in_version(repo, pid, v, "B");
+        assert!(
+            matches!(repo.can_compact(v), Err(AppError::Validation(_))),
+            "{name}"
+        );
+    });
+}
+
+#[test]
+fn can_compact_accepts_mix_of_done_and_todo() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let done = task_in_version(repo, pid, v, "Done");
+        task_in_version(repo, pid, v, "Todo");
+        repo.update_task_status(done, Status::Done).unwrap();
+        assert!(repo.can_compact(v).is_ok(), "{name}");
+    });
+}
+
+#[test]
+fn build_compact_snapshot_contains_only_done_tasks_with_their_notes_and_deps() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let a = task_in_version(repo, pid, v, "A");
+        let b = task_in_version(repo, pid, v, "B");
+        let todo = task_in_version(repo, pid, v, "Todo");
+        repo.add_dependency(b, a).unwrap();
+        repo.add_dependency(todo, b).unwrap();
+        repo.add_task_note(a, "note A").unwrap();
+        repo.add_task_note(todo, "note todo").unwrap();
+        repo.update_task_status(a, Status::Done).unwrap();
+        repo.update_task_status(b, Status::Done).unwrap();
+
+        let snapshot = repo.build_compact_snapshot(v).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
+        let tasks = json["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 2, "{name}");
+        assert!(tasks.iter().all(|t| t["status"] == "done"), "{name}");
+        let notes = json["notes"].as_array().unwrap();
+        assert_eq!(notes.len(), 1, "{name}");
+        assert_eq!(notes[0]["task_id"], a, "{name}");
+        let deps = json["dependencies"].as_array().unwrap();
+        assert_eq!(deps.len(), 1, "{name}");
+        assert_eq!(deps[0]["task_id"], b, "{name}");
+        assert_eq!(deps[0]["depends_on_id"], a, "{name}");
     });
 }
 
@@ -729,7 +823,7 @@ fn compact_flow_preserves_unique_invariant() {
         repo.update_task_status(a, Status::Done).unwrap();
 
         let snapshot = repo.build_compact_snapshot(v).unwrap();
-        repo.delete_tasks_by_version(v).unwrap();
+        repo.delete_done_tasks_by_version(v).unwrap();
         repo.create_version_summary(v, "Summary", &snapshot)
             .unwrap();
 

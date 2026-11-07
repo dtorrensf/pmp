@@ -179,7 +179,8 @@ pub struct VersionIdParams {
 pub struct CompactVersionParams {
     pub version_id: i64,
     pub summary: String,
-    /// When omitted or true, the version is marked `released` after compacting.
+    /// When omitted or true, the version is marked `released` after compacting
+    /// once no tasks remain. Ignored while todo tasks remain: the version stays open.
     pub mark_released: Option<bool>,
 }
 
@@ -779,7 +780,7 @@ impl PmpServer {
 
     #[tool(
         name = "preview_compact_version",
-        description = "Preview the JSON snapshot that compact_version would freeze for a version, without changing anything. Includes the version, its tasks, notes and dependencies, plus the previous summary when recompacting. Use before compact_version to review what will be persisted."
+        description = "Preview the JSON snapshot that compact_version would freeze for a version, without changing anything. Includes the version, its done tasks (todo tasks are not frozen), their notes and dependencies, plus the previous summary when recompacting. Use before compact_version to review what will be persisted."
     )]
     async fn preview_compact_version(
         &self,
@@ -798,7 +799,7 @@ impl PmpServer {
 
     #[tool(
         name = "compact_version",
-        description = "Compact a version into a frozen summary. Validates that every task is done, builds the snapshot, deletes the version's tasks (and their notes/dependencies), stores the summary and marks the version released by default. When recompacting, the new summary must preserve the relevant knowledge from the previous summary (available in the preview as previous_summary) while incorporating the new tasks, notes and dependencies with their completed_at. Fails if there are unfinished tasks, or if the version is empty and has no previous summary."
+        description = "Compact a version into a frozen summary. Freezes only its done tasks (with their notes/dependencies) and deletes them; todo tasks stay in the version. Fails if any task is in_progress, or if there is nothing to freeze (no done tasks and no previous summary). If todo tasks remain, the version stays open; otherwise it is marked released by default. When recompacting, the new summary must preserve the relevant knowledge from the previous summary (available in the preview as previous_summary) while incorporating the new tasks, notes and dependencies with their completed_at."
     )]
     async fn compact_version(
         &self,
@@ -816,16 +817,23 @@ impl PmpServer {
                     repo.delete_version_summary(id)?;
                 }
             }
-            repo.delete_tasks_by_version(version_id)?;
+            repo.delete_done_tasks_by_version(version_id)?;
             let created = repo.create_version_summary(version_id, &summary, &snapshot)?;
-            if mark_released {
+            // Pending (todo) tasks keep the version open for further work;
+            // otherwise the version is released unless the caller opts out.
+            let has_remaining_tasks = !repo.list_tasks_by_version(version_id)?.is_empty();
+            let target_status = if has_remaining_tasks {
+                Some(VersionStatus::Open)
+            } else if mark_released {
+                Some(VersionStatus::Released)
+            } else {
+                None
+            };
+            if let Some(status) = target_status {
                 let version = repo.get_version(version_id)?;
-                repo.update_version(
-                    version_id,
-                    &version.name,
-                    &version.description,
-                    VersionStatus::Released,
-                )?;
+                if version.status != status {
+                    repo.update_version(version_id, &version.name, &version.description, status)?;
+                }
             }
             Ok(created)
         })
@@ -1277,7 +1285,7 @@ mod tests {
             unimplemented!()
         }
 
-        fn delete_tasks_by_version(&self, _: i64) -> Result<(), AppError> {
+        fn delete_done_tasks_by_version(&self, _: i64) -> Result<(), AppError> {
             unimplemented!()
         }
     }
@@ -2350,14 +2358,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compact_version_rejects_unfinished_tasks() {
+    async fn compact_version_rejects_tasks_in_progress() {
         let (server, repo) = server();
         let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
         let version = repo.create_version(pid, "v1.0.0", "").unwrap();
         let vid = version.id.unwrap();
         repo.create_task(pid, vid, "Done", "", Status::Done, Priority::Low)
             .unwrap();
-        repo.create_task(pid, vid, "Pending", "", Status::Todo, Priority::Low)
+        repo.create_task(pid, vid, "Working", "", Status::InProgress, Priority::Low)
             .unwrap();
 
         let result = server
@@ -2370,7 +2378,7 @@ mod tests {
             .unwrap();
         assert_eq!(result.is_error, Some(true));
         let text = tool_text(result);
-        assert!(text.contains("not done"));
+        assert!(text.contains("in progress"));
     }
 
     #[tokio::test]
@@ -2389,7 +2397,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.is_error, Some(true));
-        assert!(tool_text(result).contains("empty version"));
+        assert!(tool_text(result).contains("nothing to compact"));
     }
 
     #[tokio::test]
@@ -2559,6 +2567,106 @@ mod tests {
         let prev = &snapshot["previous_summary"];
         assert!(!prev.is_null());
         assert_eq!(prev["summary"], "First summary");
+    }
+
+    #[tokio::test]
+    async fn partial_compaction_freezes_only_done_and_keeps_version_open() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let vid = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let done = repo
+            .create_task(pid, vid, "Done", "", Status::Done, Priority::Low)
+            .unwrap();
+        let todo = repo
+            .create_task(pid, vid, "Todo", "", Status::Todo, Priority::Low)
+            .unwrap();
+        repo.add_task_note(todo.id.unwrap(), "todo note").unwrap();
+
+        let result = server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "Partial".to_string(),
+                mark_released: None,
+            }))
+            .await
+            .unwrap();
+        let summary: VersionSummary = serde_json::from_str(&tool_text(result)).unwrap();
+
+        let snapshot: serde_json::Value = serde_json::from_str(&summary.snapshot_json).unwrap();
+        let tasks = snapshot["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0]["id"], done.id.unwrap());
+        assert!(snapshot["notes"].as_array().unwrap().is_empty());
+
+        let remaining = repo.list_tasks_by_version(vid).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, todo.id);
+        assert_eq!(repo.get_version(vid).unwrap().status, VersionStatus::Open);
+    }
+
+    #[tokio::test]
+    async fn compact_version_rejects_when_in_progress_even_with_done_tasks() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let vid = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        repo.create_task(pid, vid, "Done", "", Status::Done, Priority::Low)
+            .unwrap();
+        repo.create_task(pid, vid, "WIP", "", Status::InProgress, Priority::Low)
+            .unwrap();
+
+        let result = server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "Summary".to_string(),
+                mark_released: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(repo.list_version_summaries(vid).unwrap().is_empty());
+        assert_eq!(repo.list_tasks_by_version(vid).unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn partial_then_full_compaction_releases_version() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let vid = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        repo.create_task(pid, vid, "First", "", Status::Done, Priority::Low)
+            .unwrap();
+        let later = repo
+            .create_task(pid, vid, "Later", "", Status::Todo, Priority::Low)
+            .unwrap();
+        server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "Partial".to_string(),
+                mark_released: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(repo.get_version(vid).unwrap().status, VersionStatus::Open);
+
+        repo.update_task_status(later.id.unwrap(), Status::Done)
+            .unwrap();
+        let result = server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "Final".to_string(),
+                mark_released: None,
+            }))
+            .await
+            .unwrap();
+        let summary: VersionSummary = serde_json::from_str(&tool_text(result)).unwrap();
+        assert_eq!(summary.summary, "Final");
+        assert!(repo.list_tasks_by_version(vid).unwrap().is_empty());
+        assert_eq!(
+            repo.get_version(vid).unwrap().status,
+            VersionStatus::Released
+        );
+
+        let snapshot: serde_json::Value = serde_json::from_str(&summary.snapshot_json).unwrap();
+        assert_eq!(snapshot["previous_summary"]["summary"], "Partial");
     }
 
     #[tokio::test]

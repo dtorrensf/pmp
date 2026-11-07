@@ -200,7 +200,9 @@ impl Component for VersionDashboard {
 
     fn render(&self, frame: &mut Frame, area: Rect) {
         let title = match (&self.project_name, &self.version) {
-            (Some(project), Some(v)) if v.status == VersionStatus::Released => {
+            (Some(project), Some(v))
+                if v.status == VersionStatus::Released || !self.summaries.is_empty() =>
+            {
                 format!(
                     "{project} · {} · {} · {} summaries",
                     v.name,
@@ -209,7 +211,7 @@ impl Component for VersionDashboard {
                 )
             }
             (Some(project), Some(v)) => format!("{project} · {} · {}", v.name, v.status.label()),
-            (_, Some(v)) if v.status == VersionStatus::Released => {
+            (_, Some(v)) if v.status == VersionStatus::Released || !self.summaries.is_empty() => {
                 format!(
                     "{} · {} · {} summaries",
                     v.name,
@@ -561,6 +563,31 @@ mod tests {
             .unwrap();
         let text = buffer_to_string(terminal.backend().buffer());
         assert!(text.contains("Released · 1 summaries"));
+    }
+
+    #[test]
+    fn open_header_shows_summary_count_with_pending_tasks() {
+        let (repo, mut screen, _project_id) = setup_with_tasks();
+        let version_id = screen.version_id();
+        let first = screen.tasks()[0].id.unwrap();
+        repo.update_task_status(first, Status::Done).unwrap();
+        let snapshot = repo.build_compact_snapshot(version_id).unwrap();
+        repo.create_version_summary(version_id, "Partial", &snapshot)
+            .unwrap();
+        screen.init().unwrap();
+
+        let backend = TestBackend::new(60, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| screen.render(frame, frame.area()))
+            .unwrap();
+        let text = buffer_to_string(terminal.backend().buffer());
+        assert!(text.contains("Alpha · v0 · Open · 1 summaries"), "{text}");
+        assert_eq!(
+            repo.get_version(version_id).unwrap().status,
+            VersionStatus::Open
+        );
+        assert!(!screen.tasks().is_empty(), "pending tasks must remain");
     }
 
     #[test]

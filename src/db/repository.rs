@@ -96,18 +96,24 @@ pub trait Repository: Send + Sync {
         snapshot_json: &str,
     ) -> Result<VersionSummary, AppError>;
     fn delete_version_summary(&self, id: i64) -> Result<(), AppError>;
-    /// Deletes every task of a version in bulk. Dependencies and notes of the
-    /// removed tasks are cascade-deleted.
-    fn delete_tasks_by_version(&self, version_id: i64) -> Result<(), AppError>;
+    /// Deletes only the `Done` tasks of a version in bulk. Dependencies and
+    /// notes of the removed tasks are cascade-deleted, including edges from
+    /// `Todo` tasks that depended on them. Tasks in other states are kept.
+    fn delete_done_tasks_by_version(&self, version_id: i64) -> Result<(), AppError>;
 
     /// Builds the frozen JSON snapshot used on compaction: the version, its
-    /// previous summary (when recompacting), and all tasks, notes and
-    /// dependencies. `previous_summary.snapshot_json` recursively embeds the
-    /// prior snapshot, preserving history.
+    /// previous summary (when recompacting), and the `Done` tasks with their
+    /// notes and dependencies. `Todo`/`InProgress` tasks are never included.
+    /// `previous_summary.snapshot_json` recursively embeds the prior snapshot,
+    /// preserving history.
     fn build_compact_snapshot(&self, version_id: i64) -> Result<String, AppError> {
         let version = self.get_version(version_id)?;
         let previous_summary = self.list_version_summaries(version_id)?.into_iter().next();
-        let tasks = self.list_tasks_by_version(version_id)?;
+        let tasks: Vec<Task> = self
+            .list_tasks_by_version(version_id)?
+            .into_iter()
+            .filter(|t| t.status == Status::Done)
+            .collect();
         let mut notes = Vec::new();
         let mut dependencies = Vec::new();
         for task in &tasks {
@@ -132,18 +138,22 @@ pub trait Repository: Send + Sync {
             .map_err(|e| AppError::Validation(format!("snapshot serialization error: {e}")))
     }
 
-    /// Validates the preconditions for compacting a version: every task must be
-    /// done, and an empty version is only allowed when it already has a summary.
+    /// Validates the preconditions for compacting a version. Compaction is
+    /// rejected while any task is `InProgress`. It also requires something to
+    /// freeze: at least one `Done` task, or an existing previous summary (so
+    /// a version with only `Todo` tasks and no summary is rejected).
     fn can_compact(&self, version_id: i64) -> Result<(), AppError> {
         let tasks = self.list_tasks_by_version(version_id)?;
-        if tasks.iter().any(|t| t.status != Status::Done) {
+        if tasks.iter().any(|t| t.status == Status::InProgress) {
             return Err(AppError::Validation(
-                "version has tasks that are not done; finish them before compacting".to_string(),
+                "version has tasks in progress; finish or pause them before compacting".to_string(),
             ));
         }
-        if tasks.is_empty() && self.list_version_summaries(version_id)?.is_empty() {
+        let has_done = tasks.iter().any(|t| t.status == Status::Done);
+        if !has_done && self.list_version_summaries(version_id)?.is_empty() {
             return Err(AppError::Validation(
-                "cannot compact an empty version without a previous summary".to_string(),
+                "nothing to compact: the version has no done tasks and no previous summary"
+                    .to_string(),
             ));
         }
         Ok(())
