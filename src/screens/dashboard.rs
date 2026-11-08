@@ -470,6 +470,7 @@ fn bar_segments(counts: [u64; 3], width: usize) -> [usize; 3] {
 
 #[cfg(test)]
 mod tests {
+    use crate::db::repository::*;
     use std::sync::Arc;
 
     use crossterm::event::KeyCode;

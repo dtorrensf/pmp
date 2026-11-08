@@ -9,7 +9,7 @@ use ratatui::{
 };
 use ratatui_textarea::TextArea;
 
-use crate::db::repository::Repository;
+use crate::db::repository::{Repository, RepositoryPolicy};
 use crate::domain::version::VersionStatus;
 use crate::screens::components::fields::{
     field_cursor_x, render_description_field, render_field, render_readonly_field,
@@ -194,7 +194,7 @@ mod tests {
 
     use crossterm::event::KeyCode;
 
-    use crate::db::repository::Repository;
+    use crate::db::repository::{ProjectRepository, VersionRepository};
     use crate::db::stub::StubRepository;
     use crate::screens::test_utils::{
         buffer_to_string, char_event, ctrl_s_event, key_event, render_to_string,

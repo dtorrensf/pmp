@@ -175,6 +175,7 @@ fn escape_mermaid(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::repository::*;
     use crate::db::stub::StubRepository;
     use crate::domain::task::{Priority, Status};
 

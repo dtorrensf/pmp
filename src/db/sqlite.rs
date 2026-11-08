@@ -8,7 +8,8 @@ use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use rusqlite::{Connection, Row, params};
 
 use crate::db::repository::{
-    Repository, check_dependency_set, check_done_transition, check_task_move, unique_ids,
+    DependencyRepository, NoteRepository, ProjectRepository, SummaryRepository, TaskRepository,
+    VersionRepository, check_dependency_set, check_done_transition, check_task_move, unique_ids,
 };
 use crate::domain::error::AppError;
 use crate::domain::project::Project;
@@ -63,7 +64,7 @@ impl SqliteRepository {
     }
 }
 
-impl Repository for SqliteRepository {
+impl ProjectRepository for SqliteRepository {
     fn list_projects(&self) -> Result<Vec<Project>, AppError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt =
@@ -113,18 +114,14 @@ impl Repository for SqliteRepository {
         })
     }
 
-    fn list_tasks_by_project(&self, project_id: i64) -> Result<Vec<Task>, AppError> {
+    fn delete_project(&self, id: i64) -> Result<(), AppError> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(&format!(
-            "SELECT {TASK_COLUMNS} FROM tasks WHERE project_id = ?1
-                 ORDER BY CASE WHEN status = ?2 THEN 1 ELSE 0 END, priority DESC, created_at DESC"
-        ))?;
-        let tasks = stmt
-            .query_map(params![project_id, Status::Done.as_str()], task_from_row)?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(tasks)
+        conn.execute("DELETE FROM projects WHERE id = ?1", [id])?;
+        Ok(())
     }
+}
 
+impl VersionRepository for SqliteRepository {
     fn list_versions_by_project(&self, project_id: i64) -> Result<Vec<Version>, AppError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(&format!(
@@ -198,6 +195,20 @@ impl Repository for SqliteRepository {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM versions WHERE id = ?1", [id])?;
         Ok(())
+    }
+}
+
+impl TaskRepository for SqliteRepository {
+    fn list_tasks_by_project(&self, project_id: i64) -> Result<Vec<Task>, AppError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {TASK_COLUMNS} FROM tasks WHERE project_id = ?1
+                 ORDER BY CASE WHEN status = ?2 THEN 1 ELSE 0 END, priority DESC, created_at DESC"
+        ))?;
+        let tasks = stmt
+            .query_map(params![project_id, Status::Done.as_str()], task_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(tasks)
     }
 
     fn list_tasks_by_version(&self, version_id: i64) -> Result<Vec<Task>, AppError> {
@@ -348,6 +359,23 @@ impl Repository for SqliteRepository {
         self.get_task(task_id)
     }
 
+    fn delete_task(&self, id: i64) -> Result<(), AppError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM tasks WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    fn delete_done_tasks_by_version(&self, version_id: i64) -> Result<(), AppError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM tasks WHERE version_id = ?1 AND status = ?2",
+            params![version_id, Status::Done.as_str()],
+        )?;
+        Ok(())
+    }
+}
+
+impl DependencyRepository for SqliteRepository {
     fn add_dependency(&self, task_id: i64, depends_on_id: i64) -> Result<(), AppError> {
         if task_id == depends_on_id {
             return Err(AppError::DependencyCycle);
@@ -433,18 +461,6 @@ impl Repository for SqliteRepository {
         Ok(count > 0)
     }
 
-    fn delete_project(&self, id: i64) -> Result<(), AppError> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM projects WHERE id = ?1", [id])?;
-        Ok(())
-    }
-
-    fn delete_task(&self, id: i64) -> Result<(), AppError> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM tasks WHERE id = ?1", [id])?;
-        Ok(())
-    }
-
     fn get_dependents(&self, task_id: i64) -> Result<Vec<i64>, AppError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -463,7 +479,9 @@ impl Repository for SqliteRepository {
         let graph = self.load_dependency_graph()?;
         Ok(would_create_cycle(&graph, task_id, candidate_id))
     }
+}
 
+impl NoteRepository for SqliteRepository {
     fn list_task_notes(&self, task_id: i64) -> Result<Vec<TaskNote>, AppError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -501,7 +519,9 @@ impl Repository for SqliteRepository {
         }
         Ok(())
     }
+}
 
+impl SummaryRepository for SqliteRepository {
     fn list_version_summaries(&self, version_id: i64) -> Result<Vec<VersionSummary>, AppError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -554,15 +574,6 @@ impl Repository for SqliteRepository {
         if rows == 0 {
             return Err(AppError::NotFound);
         }
-        Ok(())
-    }
-
-    fn delete_done_tasks_by_version(&self, version_id: i64) -> Result<(), AppError> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "DELETE FROM tasks WHERE version_id = ?1 AND status = ?2",
-            params![version_id, Status::Done.as_str()],
-        )?;
         Ok(())
     }
 
@@ -715,6 +726,7 @@ fn version_summary_write_error(err: rusqlite::Error) -> AppError {
 
 #[cfg(test)]
 mod tests {
+    use crate::db::repository::*;
     use crate::domain::task::{Priority, Status};
 
     use super::*;

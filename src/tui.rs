@@ -241,6 +241,7 @@ impl EventSource for CrosstermEvents {
 
 #[cfg(test)]
 mod tests {
+    use crate::db::repository::RepositoryPolicy;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
@@ -249,7 +250,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    use crate::db::repository::Repository;
+    use crate::db::repository::{ProjectRepository, TaskRepository};
     use crate::db::stub::StubRepository;
     use crate::domain::task::{Priority, Status};
     use crate::screens::AUTO_REFRESH_INTERVAL;

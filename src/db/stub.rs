@@ -3,7 +3,9 @@
 use std::sync::Mutex;
 
 use crate::db::repository::{
-    Repository, check_dependency_set, check_done_transition, check_task_move, unique_ids,
+    DependencyRepository, NoteRepository, ProjectRepository, SummaryRepository,
+    TaskRepository, VersionRepository, check_dependency_set, check_done_transition,
+    check_task_move, unique_ids,
 };
 use crate::domain::error::AppError;
 use crate::domain::project::Project;
@@ -76,7 +78,7 @@ fn sort_tasks(tasks: &mut [Task]) {
     });
 }
 
-impl Repository for StubRepository {
+impl ProjectRepository for StubRepository {
     fn list_projects(&self) -> Result<Vec<Project>, AppError> {
         Ok(self.projects.lock().unwrap().clone())
     }
@@ -121,19 +123,34 @@ impl Repository for StubRepository {
             .ok_or(AppError::NotFound)
     }
 
-    fn list_tasks_by_project(&self, project_id: i64) -> Result<Vec<Task>, AppError> {
-        let mut tasks: Vec<Task> = self
-            .tasks
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|t| t.project_id == project_id)
-            .cloned()
-            .collect();
-        sort_tasks(&mut tasks);
-        Ok(tasks)
+    fn delete_project(&self, id: i64) -> Result<(), AppError> {
+        let task_ids: Vec<i64> = {
+            let tasks = self.tasks.lock().unwrap();
+            tasks
+                .iter()
+                .filter(|t| t.project_id == id)
+                .filter_map(|t| t.id)
+                .collect()
+        };
+        let mut deps = self.dependencies.lock().unwrap();
+        for tid in &task_ids {
+            deps.retain(|d| d.task_id != *tid && d.depends_on_id != *tid);
+        }
+        drop(deps);
+        let mut notes = self.task_notes.lock().unwrap();
+        notes.retain(|n| !task_ids.contains(&n.task_id));
+        drop(notes);
+        let mut tasks = self.tasks.lock().unwrap();
+        tasks.retain(|t| t.project_id != id);
+        drop(tasks);
+        self.versions.lock().unwrap().retain(|v| v.project_id != id);
+        let mut projects = self.projects.lock().unwrap();
+        projects.retain(|p| p.id != Some(id));
+        Ok(())
     }
+}
 
+impl VersionRepository for StubRepository {
     fn list_versions_by_project(&self, project_id: i64) -> Result<Vec<Version>, AppError> {
         let mut versions: Vec<Version> = self
             .versions
@@ -237,6 +254,21 @@ impl Repository for StubRepository {
         }
         self.versions.lock().unwrap().retain(|v| v.id != Some(id));
         Ok(())
+    }
+}
+
+impl TaskRepository for StubRepository {
+    fn list_tasks_by_project(&self, project_id: i64) -> Result<Vec<Task>, AppError> {
+        let mut tasks: Vec<Task> = self
+            .tasks
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|t| t.project_id == project_id)
+            .cloned()
+            .collect();
+        sort_tasks(&mut tasks);
+        Ok(tasks)
     }
 
     fn list_tasks_by_version(&self, version_id: i64) -> Result<Vec<Task>, AppError> {
@@ -364,6 +396,35 @@ impl Repository for StubRepository {
         Ok(task.clone())
     }
 
+    fn delete_task(&self, id: i64) -> Result<(), AppError> {
+        let mut tasks = self.tasks.lock().unwrap();
+        tasks.retain(|t| t.id != Some(id));
+        drop(tasks);
+        let mut deps = self.dependencies.lock().unwrap();
+        deps.retain(|d| d.task_id != id && d.depends_on_id != id);
+        drop(deps);
+        let mut notes = self.task_notes.lock().unwrap();
+        notes.retain(|n| n.task_id != id);
+        Ok(())
+    }
+
+    fn delete_done_tasks_by_version(&self, version_id: i64) -> Result<(), AppError> {
+        let task_ids: Vec<i64> = self
+            .tasks
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|t| t.version_id == version_id && t.status == Status::Done)
+            .filter_map(|t| t.id)
+            .collect();
+        for id in &task_ids {
+            self.delete_task(*id)?;
+        }
+        Ok(())
+    }
+}
+
+impl DependencyRepository for StubRepository {
     fn add_dependency(&self, task_id: i64, depends_on_id: i64) -> Result<(), AppError> {
         let task = self.get_task(task_id)?;
         let depends_on = self.get_task(depends_on_id)?;
@@ -447,44 +508,6 @@ impl Repository for StubRepository {
         }))
     }
 
-    fn delete_project(&self, id: i64) -> Result<(), AppError> {
-        let task_ids: Vec<i64> = {
-            let tasks = self.tasks.lock().unwrap();
-            tasks
-                .iter()
-                .filter(|t| t.project_id == id)
-                .filter_map(|t| t.id)
-                .collect()
-        };
-        let mut deps = self.dependencies.lock().unwrap();
-        for tid in &task_ids {
-            deps.retain(|d| d.task_id != *tid && d.depends_on_id != *tid);
-        }
-        drop(deps);
-        let mut notes = self.task_notes.lock().unwrap();
-        notes.retain(|n| !task_ids.contains(&n.task_id));
-        drop(notes);
-        let mut tasks = self.tasks.lock().unwrap();
-        tasks.retain(|t| t.project_id != id);
-        drop(tasks);
-        self.versions.lock().unwrap().retain(|v| v.project_id != id);
-        let mut projects = self.projects.lock().unwrap();
-        projects.retain(|p| p.id != Some(id));
-        Ok(())
-    }
-
-    fn delete_task(&self, id: i64) -> Result<(), AppError> {
-        let mut tasks = self.tasks.lock().unwrap();
-        tasks.retain(|t| t.id != Some(id));
-        drop(tasks);
-        let mut deps = self.dependencies.lock().unwrap();
-        deps.retain(|d| d.task_id != id && d.depends_on_id != id);
-        drop(deps);
-        let mut notes = self.task_notes.lock().unwrap();
-        notes.retain(|n| n.task_id != id);
-        Ok(())
-    }
-
     fn get_dependents(&self, task_id: i64) -> Result<Vec<i64>, AppError> {
         let mut dependents: Vec<i64> = self
             .dependencies
@@ -522,7 +545,9 @@ impl Repository for StubRepository {
         }
         Ok(false)
     }
+}
 
+impl NoteRepository for StubRepository {
     fn list_task_notes(&self, task_id: i64) -> Result<Vec<TaskNote>, AppError> {
         let mut notes: Vec<TaskNote> = self
             .task_notes
@@ -559,7 +584,9 @@ impl Repository for StubRepository {
         notes.remove(pos);
         Ok(())
     }
+}
 
+impl SummaryRepository for StubRepository {
     fn list_version_summaries(&self, version_id: i64) -> Result<Vec<VersionSummary>, AppError> {
         let mut summaries: Vec<VersionSummary> = self
             .version_summaries
@@ -637,26 +664,12 @@ impl Repository for StubRepository {
         self.delete_done_tasks_by_version(version_id)?;
         Ok(created)
     }
-
-    fn delete_done_tasks_by_version(&self, version_id: i64) -> Result<(), AppError> {
-        let task_ids: Vec<i64> = self
-            .tasks
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|t| t.version_id == version_id && t.status == Status::Done)
-            .filter_map(|t| t.id)
-            .collect();
-        for id in &task_ids {
-            self.delete_task(*id)?;
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::repository::RepositoryPolicy;
 
     fn repository_with_tasks() -> (StubRepository, [i64; 3]) {
         let repo = StubRepository::default();

@@ -231,6 +231,7 @@ impl Component for VersionDashboard {
 
 #[cfg(test)]
 mod tests {
+    use crate::db::repository::*;
     use std::sync::Arc;
 
     use crossterm::event::KeyCode;

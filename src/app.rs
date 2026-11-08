@@ -558,11 +558,15 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use crate::db::repository::RepositoryPolicy;
     use std::sync::Arc;
 
     use crossterm::event::KeyCode;
 
-    use crate::db::repository::Repository;
+    use crate::db::repository::{
+        DependencyRepository, NoteRepository, ProjectRepository, SummaryRepository,
+        TaskRepository, VersionRepository,
+    };
     use crate::db::stub::StubRepository;
     use crate::domain::task::{Priority, Status};
     use crate::domain::version::VersionStatus;

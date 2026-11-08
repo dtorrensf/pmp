@@ -653,13 +653,16 @@ fn render_dep_popup(form: &TaskForm, frame: &mut Frame, area: Rect) {
 
 #[cfg(test)]
 mod tests {
+    use crate::db::repository::RepositoryPolicy;
     use std::sync::Arc;
 
     use crossterm::event::KeyCode;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    use crate::db::repository::Repository;
+    use crate::db::repository::{
+        DependencyRepository, NoteRepository, ProjectRepository, TaskRepository,
+    };
     use crate::db::stub::StubRepository;
     use crate::domain::task::{Priority, Status};
     use crate::screens::test_utils::{

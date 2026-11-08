@@ -7,7 +7,7 @@
 //! (Liskov Substitution Principle). Add new behavioral guarantees here
 //! whenever the trait contract grows.
 
-use crate::db::repository::Repository;
+use crate::db::repository::{Repository, RepositoryPolicy};
 use crate::db::sqlite::SqliteRepository;
 use crate::db::stub::StubRepository;
 use crate::domain::error::AppError;

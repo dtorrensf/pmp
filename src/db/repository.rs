@@ -3,26 +3,38 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::domain::error::AppError;
+use crate::domain::policy::{CompactService, CompactionQueries, VersionPolicy, VersionQueries};
 use crate::domain::project::Project;
-use crate::domain::snapshot::CompactSnapshot;
-use crate::domain::task::{Priority, Status, Task, TaskDependency, TaskNote};
+use crate::domain::task::{Priority, Status, Task, TaskNote};
 use crate::domain::version::{Version, VersionStatus};
 use crate::domain::version_summary::VersionSummary;
 
-pub trait Repository: Send + Sync {
+/// Project persistence: projects and their deletion.
+pub trait ProjectRepository {
     fn list_projects(&self) -> Result<Vec<Project>, AppError>;
+
     fn create_project(&self, name: &str, description: &str) -> Result<Project, AppError>;
+
     fn update_project(&self, id: i64, name: &str, description: &str) -> Result<Project, AppError>;
+
     fn get_project(&self, id: i64) -> Result<Project, AppError>;
-    fn list_tasks_by_project(&self, project_id: i64) -> Result<Vec<Task>, AppError>;
+
+    fn delete_project(&self, id: i64) -> Result<(), AppError>;
+}
+
+/// Version persistence: release lines of a project.
+pub trait VersionRepository {
     fn list_versions_by_project(&self, project_id: i64) -> Result<Vec<Version>, AppError>;
+
     fn create_version(
         &self,
         project_id: i64,
         name: &str,
         description: &str,
     ) -> Result<Version, AppError>;
+
     fn get_version(&self, id: i64) -> Result<Version, AppError>;
+
     fn update_version(
         &self,
         id: i64,
@@ -30,24 +42,16 @@ pub trait Repository: Send + Sync {
         description: &str,
         status: VersionStatus,
     ) -> Result<Version, AppError>;
+
     fn delete_version(&self, id: i64) -> Result<(), AppError>;
+}
+
+/// Task persistence, including status, priority and moves between versions.
+pub trait TaskRepository {
+    fn list_tasks_by_project(&self, project_id: i64) -> Result<Vec<Task>, AppError>;
+
     fn list_tasks_by_version(&self, version_id: i64) -> Result<Vec<Task>, AppError>;
-    /// Suggests the next semver version name for the project (see
-    /// `domain::version::next_version_name`).
-    fn next_version_name(&self, project_id: i64) -> Result<String, AppError> {
-        let versions = self.list_versions_by_project(project_id)?;
-        Ok(crate::domain::version::next_version_name(
-            versions.iter().map(|v| v.name.as_str()),
-        ))
-    }
-    /// Version that receives tasks when none is chosen explicitly: the newest
-    /// open version, falling back to the newest version of any status.
-    fn default_version_id(&self, project_id: i64) -> Result<i64, AppError> {
-        self.list_versions_by_project(project_id)?
-            .first()
-            .and_then(|v| v.id)
-            .ok_or(AppError::NotFound)
-    }
+
     fn create_task(
         &self,
         project_id: i64,
@@ -57,7 +61,9 @@ pub trait Repository: Send + Sync {
         status: Status,
         priority: Priority,
     ) -> Result<Task, AppError>;
+
     fn get_task(&self, id: i64) -> Result<Task, AppError>;
+
     fn update_task(
         &self,
         id: i64,
@@ -66,36 +72,68 @@ pub trait Repository: Send + Sync {
         status: Status,
         priority: Priority,
     ) -> Result<Task, AppError>;
+
     fn update_task_status(&self, id: i64, new_status: Status) -> Result<Task, AppError>;
+
     fn update_task_priority(&self, id: i64, priority: Priority) -> Result<Task, AppError>;
+
     /// Reassigns a task to another version of its own project. Only `version_id`
     /// changes. Moving to the current version is a no-op. Tasks that have
     /// dependencies or dependents are rejected: those edges must stay within
     /// one version, so they have to be removed first.
     fn move_task(&self, task_id: i64, version_id: i64) -> Result<Task, AppError>;
+
+    fn delete_task(&self, id: i64) -> Result<(), AppError>;
+
+    /// Deletes only the `Done` tasks of a version in bulk. Dependencies and
+    /// notes of the removed tasks are cascade-deleted, including edges from
+    /// `Todo` tasks that depended on them. Tasks in other states are kept.
+    fn delete_done_tasks_by_version(&self, version_id: i64) -> Result<(), AppError>;
+}
+
+/// Dependency edges between tasks of the same version.
+pub trait DependencyRepository {
     fn add_dependency(&self, task_id: i64, depends_on_id: i64) -> Result<(), AppError>;
+
     fn remove_dependency(&self, task_id: i64, depends_on_id: i64) -> Result<(), AppError>;
+
     /// Replaces the full set of tasks that `task_id` depends on, atomically.
     /// Validates the whole set before writing; on error nothing changes.
     fn set_dependencies(&self, task_id: i64, depends_on_ids: &[i64]) -> Result<(), AppError>;
+
     fn get_dependencies(&self, task_id: i64) -> Result<Vec<i64>, AppError>;
+
     fn has_incomplete_dependencies(&self, task_id: i64) -> Result<bool, AppError>;
-    fn delete_project(&self, id: i64) -> Result<(), AppError>;
-    fn delete_task(&self, id: i64) -> Result<(), AppError>;
+
     fn get_dependents(&self, task_id: i64) -> Result<Vec<i64>, AppError>;
+
     fn would_create_cycle(&self, task_id: i64, candidate_id: i64) -> Result<bool, AppError>;
+}
+
+/// Notes attached to a task.
+pub trait NoteRepository {
     fn list_task_notes(&self, task_id: i64) -> Result<Vec<TaskNote>, AppError>;
+
     fn add_task_note(&self, task_id: i64, content: &str) -> Result<TaskNote, AppError>;
+
     fn delete_task_note(&self, note_id: i64) -> Result<(), AppError>;
+}
+
+/// Frozen version summaries and compaction.
+pub trait SummaryRepository {
     fn list_version_summaries(&self, version_id: i64) -> Result<Vec<VersionSummary>, AppError>;
+
     fn get_version_summary(&self, id: i64) -> Result<VersionSummary, AppError>;
+
     fn create_version_summary(
         &self,
         version_id: i64,
         summary: &str,
         snapshot_json: &str,
     ) -> Result<VersionSummary, AppError>;
+
     fn delete_version_summary(&self, id: i64) -> Result<(), AppError>;
+
     /// Atomically compacts a version: replaces its previous summary (if any),
     /// stores the new one and deletes its `Done` tasks. Either all of these
     /// writes are applied or none is; on error the version is left unchanged.
@@ -105,68 +143,34 @@ pub trait Repository: Send + Sync {
         summary: &str,
         snapshot_json: &str,
     ) -> Result<VersionSummary, AppError>;
-    /// Deletes only the `Done` tasks of a version in bulk. Dependencies and
-    /// notes of the removed tasks are cascade-deleted, including edges from
-    /// `Todo` tasks that depended on them. Tasks in other states are kept.
-    fn delete_done_tasks_by_version(&self, version_id: i64) -> Result<(), AppError>;
+}
 
-    /// Builds the frozen JSON snapshot used on compaction: the version, its
-    /// previous summary (when recompacting), and the `Done` tasks with their
-    /// notes and dependencies. `Todo`/`InProgress` tasks are never included.
-    /// `previous_summary.snapshot_json` recursively embeds the prior snapshot,
-    /// preserving history.
-    fn build_compact_snapshot(&self, version_id: i64) -> Result<String, AppError> {
-        let version = self.get_version(version_id)?;
-        let previous_summary = self.list_version_summaries(version_id)?.into_iter().next();
-        let tasks: Vec<Task> = self
-            .list_tasks_by_version(version_id)?
-            .into_iter()
-            .filter(|t| t.status == Status::Done)
-            .collect();
-        let mut notes = Vec::new();
-        let mut dependencies = Vec::new();
-        for task in &tasks {
-            if let Some(id) = task.id {
-                notes.extend(self.list_task_notes(id)?);
-                dependencies.extend(self.get_dependencies(id)?.into_iter().map(|depends_on_id| {
-                    TaskDependency {
-                        task_id: id,
-                        depends_on_id,
-                    }
-                }));
-            }
-        }
-        let snapshot = CompactSnapshot {
-            version,
-            previous_summary,
-            tasks,
-            notes,
-            dependencies,
-        };
-        serde_json::to_string(&snapshot)
-            .map_err(|e| AppError::Validation(format!("snapshot serialization error: {e}")))
-    }
+/// The full persistence port: every aggregate interface. Implementations
+/// provide the aggregate traits; this one is implemented for all of them.
+/// Business rules live in `domain::policy` and are reached through
+/// [`RepositoryPolicy`].
+pub trait Repository:
+    ProjectRepository
+    + VersionRepository
+    + TaskRepository
+    + DependencyRepository
+    + NoteRepository
+    + SummaryRepository
+    + Send
+    + Sync
+{
+}
 
-    /// Validates the preconditions for compacting a version. Compaction is
-    /// rejected while any task is `InProgress`. It also requires something to
-    /// freeze: at least one `Done` task, or an existing previous summary (so
-    /// a version with only `Todo` tasks and no summary is rejected).
-    fn can_compact(&self, version_id: i64) -> Result<(), AppError> {
-        let tasks = self.list_tasks_by_version(version_id)?;
-        if tasks.iter().any(|t| t.status == Status::InProgress) {
-            return Err(AppError::Validation(
-                "version has tasks in progress; finish or pause them before compacting".to_string(),
-            ));
-        }
-        let has_done = tasks.iter().any(|t| t.status == Status::Done);
-        if !has_done && self.list_version_summaries(version_id)?.is_empty() {
-            return Err(AppError::Validation(
-                "nothing to compact: the version has no done tasks and no previous summary"
-                    .to_string(),
-            ));
-        }
-        Ok(())
-    }
+impl<T> Repository for T where
+    T: ProjectRepository
+        + VersionRepository
+        + TaskRepository
+        + DependencyRepository
+        + NoteRepository
+        + SummaryRepository
+        + Send
+        + Sync
+{
 }
 
 /// Validates that `task_id` may depend on exactly `depends_on_ids`, given the
@@ -288,5 +292,66 @@ mod tests {
         let fail = || -> Result<bool, AppError> { panic!("dependencies must not be checked") };
         assert!(check_done_transition(Status::Done, Status::Todo, fail).is_ok());
         assert!(check_done_transition(Status::Todo, Status::InProgress, fail).is_ok());
+    }
+}
+
+/// Lets the domain policy read through any repository, so the rules run
+/// against the same data the persistence port exposes.
+impl<T: Repository + ?Sized> VersionQueries for T {
+    fn list_versions_by_project(&self, project_id: i64) -> Result<Vec<Version>, AppError> {
+        VersionRepository::list_versions_by_project(self, project_id)
+    }
+}
+
+impl<T: Repository + ?Sized> CompactionQueries for T {
+    fn get_version(&self, id: i64) -> Result<Version, AppError> {
+        VersionRepository::get_version(self, id)
+    }
+
+    fn list_version_summaries(&self, version_id: i64) -> Result<Vec<VersionSummary>, AppError> {
+        SummaryRepository::list_version_summaries(self, version_id)
+    }
+
+    fn list_tasks_by_version(&self, version_id: i64) -> Result<Vec<Task>, AppError> {
+        TaskRepository::list_tasks_by_version(self, version_id)
+    }
+
+    fn list_task_notes(&self, task_id: i64) -> Result<Vec<TaskNote>, AppError> {
+        NoteRepository::list_task_notes(self, task_id)
+    }
+
+    fn get_dependencies(&self, task_id: i64) -> Result<Vec<i64>, AppError> {
+        DependencyRepository::get_dependencies(self, task_id)
+    }
+}
+
+/// Convenience for callers that hold a repository: runs the domain rules in
+/// `domain::policy` against it.
+pub trait RepositoryPolicy {
+    /// Suggests the next semver version name for the project.
+    fn next_version_name(&self, project_id: i64) -> Result<String, AppError>;
+    /// Version that receives tasks when none is chosen explicitly.
+    fn default_version_id(&self, project_id: i64) -> Result<i64, AppError>;
+    /// Validates the preconditions for compacting a version.
+    fn can_compact(&self, version_id: i64) -> Result<(), AppError>;
+    /// Builds the frozen JSON snapshot used on compaction.
+    fn build_compact_snapshot(&self, version_id: i64) -> Result<String, AppError>;
+}
+
+impl<T: Repository + ?Sized> RepositoryPolicy for T {
+    fn next_version_name(&self, project_id: i64) -> Result<String, AppError> {
+        VersionPolicy::new(self).suggest_name(project_id)
+    }
+
+    fn default_version_id(&self, project_id: i64) -> Result<i64, AppError> {
+        VersionPolicy::new(self).default_version_id(project_id)
+    }
+
+    fn can_compact(&self, version_id: i64) -> Result<(), AppError> {
+        CompactService::new(self).can_compact(version_id)
+    }
+
+    fn build_compact_snapshot(&self, version_id: i64) -> Result<String, AppError> {
+        CompactService::new(self).build_snapshot(version_id)
     }
 }

@@ -16,7 +16,7 @@ use rmcp::{tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
 use tokio::task;
 
-use crate::db::repository::Repository;
+use crate::db::repository::{Repository, RepositoryPolicy};
 use crate::domain::error::AppError;
 use crate::domain::task::{Priority, Status};
 use crate::domain::validation::validate_name;
@@ -1052,6 +1052,7 @@ fn app_error_to_mcp(err: AppError) -> ErrorData {
 
 #[cfg(test)]
 mod tests {
+    use crate::db::repository::RepositoryPolicy;
     use std::sync::Arc;
 
     use rmcp::ErrorData;
@@ -1059,7 +1060,10 @@ mod tests {
     use rmcp::model::{CallToolResult, ErrorCode, ReadResourceResult, ResourceContents};
 
     use super::PriorityParam;
-    use crate::db::repository::Repository;
+    use crate::db::repository::{
+        DependencyRepository, NoteRepository, ProjectRepository, SummaryRepository,
+        TaskRepository, VersionRepository,
+    };
     use crate::db::stub::StubRepository;
     use crate::domain::error::AppError;
     use crate::domain::project::Project;
@@ -1127,7 +1131,7 @@ mod tests {
 
     struct FailingRepository;
 
-    impl Repository for FailingRepository {
+    impl ProjectRepository for FailingRepository {
         fn list_projects(&self) -> Result<Vec<Project>, AppError> {
             Ok(vec![])
         }
@@ -1144,22 +1148,12 @@ mod tests {
             unimplemented!()
         }
 
-        fn list_tasks_by_project(&self, _: i64) -> Result<Vec<Task>, AppError> {
-            Err(AppError::DbError(rusqlite::Error::InvalidQuery))
-        }
-
-        fn create_task(
-            &self,
-            _: i64,
-            _: i64,
-            _: &str,
-            _: &str,
-            _: Status,
-            _: Priority,
-        ) -> Result<Task, AppError> {
+        fn delete_project(&self, _: i64) -> Result<(), AppError> {
             unimplemented!()
         }
+    }
 
+    impl VersionRepository for FailingRepository {
         fn list_versions_by_project(&self, _: i64) -> Result<Vec<Version>, AppError> {
             Err(AppError::DbError(rusqlite::Error::InvalidQuery))
         }
@@ -1183,6 +1177,24 @@ mod tests {
         }
 
         fn delete_version(&self, _: i64) -> Result<(), AppError> {
+            unimplemented!()
+        }
+    }
+
+    impl TaskRepository for FailingRepository {
+        fn list_tasks_by_project(&self, _: i64) -> Result<Vec<Task>, AppError> {
+            Err(AppError::DbError(rusqlite::Error::InvalidQuery))
+        }
+
+        fn create_task(
+            &self,
+            _: i64,
+            _: i64,
+            _: &str,
+            _: &str,
+            _: Status,
+            _: Priority,
+        ) -> Result<Task, AppError> {
             unimplemented!()
         }
 
@@ -1217,6 +1229,16 @@ mod tests {
             unimplemented!()
         }
 
+        fn delete_task(&self, _: i64) -> Result<(), AppError> {
+            unimplemented!()
+        }
+
+        fn delete_done_tasks_by_version(&self, _: i64) -> Result<(), AppError> {
+            unimplemented!()
+        }
+    }
+
+    impl DependencyRepository for FailingRepository {
         fn add_dependency(&self, _: i64, _: i64) -> Result<(), AppError> {
             unimplemented!()
         }
@@ -1237,14 +1259,6 @@ mod tests {
             unimplemented!()
         }
 
-        fn delete_project(&self, _: i64) -> Result<(), AppError> {
-            unimplemented!()
-        }
-
-        fn delete_task(&self, _: i64) -> Result<(), AppError> {
-            unimplemented!()
-        }
-
         fn get_dependents(&self, _: i64) -> Result<Vec<i64>, AppError> {
             unimplemented!()
         }
@@ -1252,7 +1266,9 @@ mod tests {
         fn would_create_cycle(&self, _: i64, _: i64) -> Result<bool, AppError> {
             unimplemented!()
         }
+    }
 
+    impl NoteRepository for FailingRepository {
         fn list_task_notes(&self, _: i64) -> Result<Vec<TaskNote>, AppError> {
             unimplemented!()
         }
@@ -1264,7 +1280,9 @@ mod tests {
         fn delete_task_note(&self, _: i64) -> Result<(), AppError> {
             unimplemented!()
         }
+    }
 
+    impl SummaryRepository for FailingRepository {
         fn list_version_summaries(&self, _: i64) -> Result<Vec<VersionSummary>, AppError> {
             unimplemented!()
         }
@@ -1283,10 +1301,6 @@ mod tests {
         }
 
         fn delete_version_summary(&self, _: i64) -> Result<(), AppError> {
-            unimplemented!()
-        }
-
-        fn delete_done_tasks_by_version(&self, _: i64) -> Result<(), AppError> {
             unimplemented!()
         }
 

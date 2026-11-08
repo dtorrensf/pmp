@@ -146,7 +146,9 @@ pub enum Action {
 
 #[cfg(test)]
 pub mod tests {
-    use crate::db::repository::Repository;
+    use crate::db::repository::{
+        DependencyRepository, ProjectRepository, RepositoryPolicy, TaskRepository,
+    };
     use crate::db::stub::StubRepository;
     use crate::domain::task::{Priority, Status};
 

@@ -201,6 +201,7 @@ fn render_list(screen: &ProjectListScreen, frame: &mut Frame, area: Rect) {
 
 #[cfg(test)]
 mod tests {
+    use crate::db::repository::*;
     use std::sync::Arc;
 
     use crossterm::event::KeyCode;

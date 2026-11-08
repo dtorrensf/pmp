@@ -192,6 +192,7 @@ fn bar(count: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::db::repository::*;
     use crossterm::event::KeyCode;
 
     use crate::db::stub::StubRepository;
