@@ -850,3 +850,43 @@ fn update_task_status_sets_and_clears_completed_at() {
         assert_eq!(reopened.completed_at, None, "{name}");
     });
 }
+
+#[test]
+fn compact_version_replaces_summary_and_removes_only_done_tasks() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let a = task_in_version(repo, pid, v, "A");
+        let b = task_in_version(repo, pid, v, "B");
+        repo.update_task_status(a, Status::Done).unwrap();
+
+        let snapshot = repo.build_compact_snapshot(v).unwrap();
+        repo.compact_version(v, "First", &snapshot).unwrap();
+        assert!(
+            matches!(repo.get_task(a), Err(AppError::NotFound)),
+            "{name}"
+        );
+        assert!(repo.get_task(b).is_ok(), "todo task must stay: {name}");
+
+        repo.update_task_status(b, Status::Done).unwrap();
+        let snapshot = repo.build_compact_snapshot(v).unwrap();
+        repo.compact_version(v, "Second", &snapshot).unwrap();
+        let summaries = repo.list_version_summaries(v).unwrap();
+        assert_eq!(summaries.len(), 1, "{name}");
+        assert_eq!(summaries[0].summary, "Second", "{name}");
+    });
+}
+
+#[test]
+fn compact_version_on_unknown_version_changes_nothing() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let a = task_in_version(repo, pid, v, "A");
+        repo.update_task_status(a, Status::Done).unwrap();
+
+        assert!(repo.compact_version(9999, "X", "{}").is_err(), "{name}");
+        assert!(repo.get_task(a).is_ok(), "done task must survive: {name}");
+        assert!(repo.list_version_summaries(v).unwrap().is_empty(), "{name}");
+    });
+}

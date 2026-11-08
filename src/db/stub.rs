@@ -611,6 +611,22 @@ impl Repository for StubRepository {
         Ok(())
     }
 
+    fn compact_version(
+        &self,
+        version_id: i64,
+        summary: &str,
+        snapshot_json: &str,
+    ) -> Result<VersionSummary, AppError> {
+        self.get_version(version_id)?;
+        self.version_summaries
+            .lock()
+            .unwrap()
+            .retain(|s| s.version_id != version_id);
+        let created = self.create_version_summary(version_id, summary, snapshot_json)?;
+        self.delete_done_tasks_by_version(version_id)?;
+        Ok(created)
+    }
+
     fn delete_done_tasks_by_version(&self, version_id: i64) -> Result<(), AppError> {
         let task_ids: Vec<i64> = self
             .tasks

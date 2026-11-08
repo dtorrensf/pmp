@@ -549,6 +549,37 @@ impl Repository for SqliteRepository {
         )?;
         Ok(())
     }
+
+    fn compact_version(
+        &self,
+        version_id: i64,
+        summary: &str,
+        snapshot_json: &str,
+    ) -> Result<VersionSummary, AppError> {
+        self.get_version(version_id)?;
+        let mut conn = self.conn.lock().unwrap();
+        // Single transaction: dropping it without commit (on any error) rolls
+        // back every write, so done tasks are never deleted without a snapshot.
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM version_summaries WHERE version_id = ?1",
+            [version_id],
+        )?;
+        tx.execute(
+            "INSERT INTO version_summaries (version_id, summary, snapshot_json)
+             VALUES (?1, ?2, ?3)",
+            params![version_id, summary, snapshot_json],
+        )
+        .map_err(version_summary_write_error)?;
+        let id = tx.last_insert_rowid();
+        tx.execute(
+            "DELETE FROM tasks WHERE version_id = ?1 AND status = 'done'",
+            [version_id],
+        )?;
+        tx.commit()?;
+        drop(conn);
+        self.get_version_summary(id)
+    }
 }
 
 fn would_create_cycle(graph: &HashMap<i64, Vec<i64>>, task_id: i64, depends_on_id: i64) -> bool {
@@ -670,6 +701,38 @@ mod tests {
         let path = dir.path().join("test.db");
         let repo = SqliteRepository::open(&path).unwrap();
         (dir, repo)
+    }
+
+    #[test]
+    fn compact_version_rolls_back_when_summary_insert_fails() {
+        let (_dir, repo) = setup();
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let done = repo
+            .create_task(pid, v, "Done", "", Status::Done, Priority::Low)
+            .unwrap()
+            .id
+            .unwrap();
+        repo.create_version_summary(v, "Old", "{}").unwrap();
+        // Force the second write of the transaction to fail.
+        repo.conn
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER fail_summary_insert BEFORE INSERT ON version_summaries
+                 BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+            )
+            .unwrap();
+
+        assert!(repo.compact_version(v, "New", "{}").is_err());
+
+        let summaries = repo.list_version_summaries(v).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].summary, "Old");
+        assert!(
+            repo.get_task(done).is_ok(),
+            "done task must survive the failure"
+        );
     }
 
     #[test]

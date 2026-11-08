@@ -811,14 +811,9 @@ impl PmpServer {
         let result = execute_repository(self.repo.clone(), move |repo| {
             repo.can_compact(version_id)?;
             let snapshot = repo.build_compact_snapshot(version_id)?;
-            // Replace any previous summary so UNIQUE(version_id) stays valid.
-            for existing in repo.list_version_summaries(version_id)? {
-                if let Some(id) = existing.id {
-                    repo.delete_version_summary(id)?;
-                }
-            }
-            repo.delete_done_tasks_by_version(version_id)?;
-            let created = repo.create_version_summary(version_id, &summary, &snapshot)?;
+            // Replaces the previous summary, stores the new one and deletes the
+            // done tasks in one transaction: a failure leaves everything intact.
+            let created = repo.compact_version(version_id, &summary, &snapshot)?;
             // Pending (todo) tasks keep the version open for further work;
             // otherwise the version is released unless the caller opts out.
             let has_remaining_tasks = !repo.list_tasks_by_version(version_id)?.is_empty();
@@ -1286,6 +1281,10 @@ mod tests {
         }
 
         fn delete_done_tasks_by_version(&self, _: i64) -> Result<(), AppError> {
+            unimplemented!()
+        }
+
+        fn compact_version(&self, _: i64, _: &str, _: &str) -> Result<VersionSummary, AppError> {
             unimplemented!()
         }
     }

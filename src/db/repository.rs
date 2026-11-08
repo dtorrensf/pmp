@@ -96,6 +96,15 @@ pub trait Repository: Send + Sync {
         snapshot_json: &str,
     ) -> Result<VersionSummary, AppError>;
     fn delete_version_summary(&self, id: i64) -> Result<(), AppError>;
+    /// Atomically compacts a version: replaces its previous summary (if any),
+    /// stores the new one and deletes its `Done` tasks. Either all of these
+    /// writes are applied or none is; on error the version is left unchanged.
+    fn compact_version(
+        &self,
+        version_id: i64,
+        summary: &str,
+        snapshot_json: &str,
+    ) -> Result<VersionSummary, AppError>;
     /// Deletes only the `Done` tasks of a version in bulk. Dependencies and
     /// notes of the removed tasks are cascade-deleted, including edges from
     /// `Todo` tasks that depended on them. Tasks in other states are kept.
