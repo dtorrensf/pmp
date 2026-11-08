@@ -6,14 +6,15 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
     widgets::{Block, Borders, Clear},
 };
 use ratatui_textarea::TextArea;
 
 use crate::db::repository::Repository;
 use crate::domain::version::VersionStatus;
-use crate::screens::components::fields::{render_field, render_readonly_field};
+use crate::screens::components::fields::{
+    render_description_field, render_field, render_readonly_field,
+};
 use crate::screens::components::keys::{ctrl, key};
 use crate::screens::{Action, Component, Screen};
 
@@ -206,18 +207,13 @@ impl Component for VersionForm {
             false,
         );
 
-        let desc_style = if self.active_field == DESCRIPTION {
-            Style::default().add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-        };
-        let desc_block = Block::default()
-            .title("Description")
-            .borders(Borders::ALL)
-            .border_style(desc_style);
-        let mut desc_textarea = self.description.clone();
-        desc_textarea.set_block(desc_block);
-        frame.render_widget(&desc_textarea, chunks[1]);
+        render_description_field(
+            frame,
+            chunks[1],
+            "Description",
+            &self.description,
+            self.active_field == DESCRIPTION,
+        );
 
         render_readonly_field(
             frame,
@@ -336,6 +332,16 @@ mod tests {
         let before = form.name.clone();
         form.handle_event(&char_event('z'));
         assert_eq!(form.name, before);
+    }
+
+    #[test]
+    fn long_description_word_wraps_instead_of_clipping() {
+        let mut form = form_for_create();
+        form.description.insert_str(
+            "Esta descripción de versión es bastante más larga que el ancho disponible para que haga wrap",
+        );
+        let text = render_to_string(&form, 60, 24);
+        assert!(text.contains("wrap"), "description was clipped:\n{text}");
     }
 
     #[test]

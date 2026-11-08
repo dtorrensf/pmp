@@ -58,14 +58,7 @@ impl Component for ProjectForm {
             let project = self.repo.get_project(id)?;
             self.name = project.name;
             let mut textarea = TextArea::default();
-            for line in project.description.lines() {
-                if !textarea.lines().join("").is_empty() {
-                    textarea.insert_newline();
-                }
-                for c in line.chars() {
-                    textarea.insert_char(c);
-                }
-            }
+            textarea.insert_str(&project.description);
             self.description = textarea;
         } else {
             self.name.clear();
@@ -233,6 +226,16 @@ mod tests {
         form.set_project_id(project.id);
         form.init().unwrap();
         form
+    }
+
+    #[test]
+    fn edit_keeps_leading_blank_line_in_description() {
+        let repo = Arc::new(StubRepository::default());
+        let project = repo.create_project("Alpha", "\nSecond line").unwrap();
+        let mut form = ProjectForm::new(repo.clone());
+        form.set_project_id(project.id);
+        form.init().unwrap();
+        assert_eq!(form.description.lines(), ["", "Second line"]);
     }
 
     #[test]
