@@ -890,3 +890,68 @@ fn compact_version_on_unknown_version_changes_nothing() {
         assert!(repo.list_version_summaries(v).unwrap().is_empty(), "{name}");
     });
 }
+
+fn two_tasks(repo: &dyn Repository) -> (i64, i64) {
+    let project = repo.create_project("P", "").unwrap();
+    let pid = project.id.unwrap();
+    let vid = repo.default_version_id(pid).unwrap();
+    let create = |name: &str| {
+        repo.create_task(pid, vid, name, "", Status::Todo, Priority::Medium)
+            .unwrap()
+            .id
+            .unwrap()
+    };
+    (create("A"), create("B"))
+}
+
+#[test]
+fn done_is_rejected_while_a_dependency_is_incomplete() {
+    for_each_repo(|name, repo| {
+        let (a, b) = two_tasks(repo);
+        repo.add_dependency(a, b).unwrap();
+
+        match repo.update_task_status(a, Status::Done) {
+            Err(AppError::Validation(message)) => {
+                assert!(message.contains("incomplete dependencies"), "{name}");
+            }
+            other => panic!("{name}: expected validation error, got {other:?}"),
+        }
+        assert_eq!(repo.get_task(a).unwrap().status, Status::Todo, "{name}");
+
+        let edit = repo.update_task(a, "A", "", Status::Done, Priority::Medium);
+        assert!(matches!(edit, Err(AppError::Validation(_))), "{name}");
+        assert_eq!(repo.get_task(a).unwrap().status, Status::Todo, "{name}");
+    });
+}
+
+#[test]
+fn done_is_allowed_once_dependencies_are_done() {
+    for_each_repo(|name, repo| {
+        let (a, b) = two_tasks(repo);
+        repo.add_dependency(a, b).unwrap();
+        repo.update_task_status(b, Status::Done).unwrap();
+        assert_eq!(
+            repo.update_task_status(a, Status::Done).unwrap().status,
+            Status::Done,
+            "{name}"
+        );
+    });
+}
+
+#[test]
+fn done_to_done_is_a_noop_even_with_incomplete_dependencies() {
+    for_each_repo(|name, repo| {
+        let (a, b) = two_tasks(repo);
+        // A is finished first; a blocker is added afterwards.
+        repo.update_task_status(a, Status::Done).unwrap();
+        repo.add_dependency(a, b).unwrap();
+
+        assert_eq!(
+            repo.update_task_status(a, Status::Done).unwrap().status,
+            Status::Done,
+            "{name}"
+        );
+        let edit = repo.update_task(a, "A", "", Status::Done, Priority::Medium);
+        assert!(edit.is_ok(), "{name}: {edit:?}");
+    });
+}

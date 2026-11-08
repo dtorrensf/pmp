@@ -207,6 +207,28 @@ fn reaches(graph: &HashMap<i64, Vec<i64>>, from: i64, target: i64) -> bool {
     false
 }
 
+/// The rule for moving a task to `next_status`: a task cannot enter Done while
+/// it has incomplete dependencies. Done to Done is a no-op and always allowed,
+/// so a task finished before a new blocker was added keeps its status.
+/// `has_incomplete_dependencies` is only called when the move enters Done.
+/// Every `update_task` and `update_task_status` implementation calls this, so
+/// the TUI and the MCP server get the same behaviour.
+pub(crate) fn check_done_transition(
+    current_status: Status,
+    next_status: Status,
+    has_incomplete_dependencies: impl FnOnce() -> Result<bool, AppError>,
+) -> Result<(), AppError> {
+    if next_status != Status::Done || current_status == Status::Done {
+        return Ok(());
+    }
+    if has_incomplete_dependencies()? {
+        return Err(AppError::Validation(
+            "cannot mark task as done: it has incomplete dependencies".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Validates a task move to `target` (already loaded, so it exists). The
 /// caller handles the no-op case where the task is already in `target`.
 pub(crate) fn check_task_move(
@@ -240,10 +262,31 @@ pub(crate) fn unique_ids(ids: &[i64]) -> Vec<i64> {
 mod tests {
     use std::sync::Arc;
 
-    use super::Repository;
+    use super::{Repository, check_done_transition};
+    use crate::domain::error::AppError;
+    use crate::domain::task::Status;
 
     #[test]
     fn repository_trait_is_object_safe() {
         let _: Option<Arc<dyn Repository>> = None;
+    }
+
+    #[test]
+    fn done_transition_rule_covers_every_case() {
+        let blocked = || Ok(true);
+        let clear = || Ok(false);
+        // Entering Done with incomplete dependencies is rejected.
+        assert!(matches!(
+            check_done_transition(Status::Todo, Status::Done, blocked),
+            Err(AppError::Validation(_))
+        ));
+        // Entering Done without incomplete dependencies is allowed.
+        assert!(check_done_transition(Status::Todo, Status::Done, clear).is_ok());
+        // Done to Done is a no-op and is allowed even when blocked.
+        assert!(check_done_transition(Status::Done, Status::Done, blocked).is_ok());
+        // Leaving Done or moving between open states never consults dependencies.
+        let fail = || -> Result<bool, AppError> { panic!("dependencies must not be checked") };
+        assert!(check_done_transition(Status::Done, Status::Todo, fail).is_ok());
+        assert!(check_done_transition(Status::Todo, Status::InProgress, fail).is_ok());
     }
 }

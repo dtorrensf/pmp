@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use std::sync::Mutex;
 
-use crate::db::repository::{Repository, check_dependency_set, check_task_move, unique_ids};
+use crate::db::repository::{
+    Repository, check_dependency_set, check_done_transition, check_task_move, unique_ids,
+};
 use crate::domain::error::AppError;
 use crate::domain::project::Project;
 use crate::domain::task::{Priority, Status, Task, TaskDependency, TaskNote};
@@ -293,6 +295,10 @@ impl Repository for StubRepository {
         status: Status,
         priority: Priority,
     ) -> Result<Task, AppError> {
+        let current = self.get_task(id)?;
+        check_done_transition(current.status, status, || {
+            self.has_incomplete_dependencies(id)
+        })?;
         let mut tasks = self.tasks.lock().unwrap();
         let task = tasks
             .iter_mut()
@@ -306,6 +312,10 @@ impl Repository for StubRepository {
     }
 
     fn update_task_status(&self, id: i64, new_status: Status) -> Result<Task, AppError> {
+        let current = self.get_task(id)?;
+        check_done_transition(current.status, new_status, || {
+            self.has_incomplete_dependencies(id)
+        })?;
         let mut tasks = self.tasks.lock().unwrap();
         let task = tasks
             .iter_mut()

@@ -6,7 +6,9 @@ use std::sync::Mutex;
 
 use rusqlite::{Connection, Row, params};
 
-use crate::db::repository::{Repository, check_dependency_set, check_task_move, unique_ids};
+use crate::db::repository::{
+    Repository, check_dependency_set, check_done_transition, check_task_move, unique_ids,
+};
 use crate::domain::error::AppError;
 use crate::domain::project::Project;
 use crate::domain::task::{Priority, Status, Task, TaskNote};
@@ -268,6 +270,10 @@ impl Repository for SqliteRepository {
         status: Status,
         priority: Priority,
     ) -> Result<Task, AppError> {
+        let current = self.get_task(id)?;
+        check_done_transition(current.status, status, || {
+            self.has_incomplete_dependencies(id)
+        })?;
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE tasks
@@ -280,6 +286,10 @@ impl Repository for SqliteRepository {
     }
 
     fn update_task_status(&self, id: i64, new_status: Status) -> Result<Task, AppError> {
+        let current = self.get_task(id)?;
+        check_done_transition(current.status, new_status, || {
+            self.has_incomplete_dependencies(id)
+        })?;
         let conn = self.conn.lock().unwrap();
         match new_status {
             Status::Done => {

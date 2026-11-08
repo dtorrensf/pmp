@@ -7,7 +7,6 @@ use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::db::repository::Repository;
 use crate::domain::error::AppError;
-use crate::domain::task::Status;
 use crate::screens::{
     Action, Component, ProjectDashboard, ProjectForm, ProjectListScreen, Screen, TaskForm,
     VersionDashboard, VersionForm, VersionSummaryScreen,
@@ -231,26 +230,6 @@ impl App {
                         return None;
                     }
                 };
-                // Block Done transition when dependencies are incomplete
-                // (only for existing tasks being edited, not new tasks).
-                if status == Status::Done
-                    && let Some(id) = task_id
-                {
-                    match self.repo.has_incomplete_dependencies(id) {
-                        Ok(true) => {
-                            self.error = Some(
-                                "cannot mark task as done: it has incomplete dependencies"
-                                    .to_string(),
-                            );
-                            return None;
-                        }
-                        Ok(false) => self.error = None,
-                        Err(e) => {
-                            self.error = Some(e.to_string());
-                            return None;
-                        }
-                    }
-                }
                 let result = match task_id {
                     Some(id) => self
                         .repo
@@ -299,23 +278,6 @@ impl App {
                     },
                     _ => return None,
                 };
-                // Block Done transition when dependencies are incomplete.
-                if new_status == Status::Done {
-                    match self.repo.has_incomplete_dependencies(task_id) {
-                        Ok(true) => {
-                            self.error = Some(
-                                "cannot mark task as done: it has incomplete dependencies"
-                                    .to_string(),
-                            );
-                            return None;
-                        }
-                        Ok(false) => self.error = None,
-                        Err(e) => {
-                            self.error = Some(e.to_string());
-                            return None;
-                        }
-                    }
-                }
                 match self.repo.update_task_status(task_id, new_status) {
                     Ok(_) => {
                         self.error = None;

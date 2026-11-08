@@ -578,15 +578,6 @@ impl PmpServer {
         let task_id = params.task_id;
         let new_status = params.status;
         run_tool(self.repo.clone(), TASK_NOT_FOUND, move |repo| {
-            let task = repo.get_task(task_id)?;
-            if new_status == Status::Done
-                && task.status != Status::Done
-                && repo.has_incomplete_dependencies(task_id)?
-            {
-                return Err(AppError::Validation(
-                    "cannot mark task as done: it has incomplete dependencies".to_string(),
-                ));
-            }
             repo.update_task_status(task_id, new_status)
         })
         .await
