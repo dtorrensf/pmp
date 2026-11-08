@@ -914,6 +914,13 @@ impl PmpServer {
     }
 }
 
+/// Internal failure sent to the client. The detail goes to the server log
+/// only: it can contain file paths or SQL text.
+fn internal_error(detail: impl std::fmt::Display) -> ErrorData {
+    tracing::error!(error = %detail, "internal MCP error");
+    ErrorData::internal_error("internal error", None::<serde_json::Value>)
+}
+
 async fn execute_repository<T, F>(
     repo: Arc<dyn Repository>,
     operation: F,
@@ -924,7 +931,7 @@ where
 {
     task::spawn_blocking(move || operation(repo))
         .await
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))
+        .map_err(internal_error)
 }
 
 async fn read_json_resource<T, F>(
@@ -939,15 +946,14 @@ where
     let value = execute_repository(repo, operation)
         .await?
         .map_err(app_error_to_mcp)?;
-    let text = serde_json::to_string_pretty(&value)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let text = serde_json::to_string_pretty(&value).map_err(internal_error)?;
     Ok(ReadResourceResult::new(vec![
         ResourceContents::text(text, uri).with_mime_type("application/json"),
     ]))
 }
 
 fn json_content<T: Serialize>(value: &T) -> Result<ContentBlock, ErrorData> {
-    ContentBlock::json(value).map_err(|e| ErrorData::internal_error(e.to_string(), None))
+    ContentBlock::json(value).map_err(internal_error)
 }
 
 fn tool_success<T: Serialize>(value: &T) -> Result<CallToolResult, ErrorData> {
@@ -1028,16 +1034,17 @@ pub async fn serve(repo: Arc<dyn Repository>) -> Result<()> {
     Ok(())
 }
 
+/// The single mapping from domain errors to MCP protocol errors, used by
+/// tools and resources alike. Database errors are logged on the server and
+/// reported to the client as a generic internal error.
 fn app_error_to_mcp(err: AppError) -> ErrorData {
     match err {
         AppError::NotFound => ErrorData::new(
-            ErrorCode(-32602),
+            ErrorCode::RESOURCE_NOT_FOUND,
             "resource not found".to_string(),
             None::<serde_json::Value>,
         ),
-        AppError::DbError(_) => {
-            ErrorData::internal_error(err.to_string(), None::<serde_json::Value>)
-        }
+        AppError::DbError(source) => internal_error(source),
         AppError::Validation(_) | AppError::DependencyCycle => {
             ErrorData::invalid_params(err.to_string(), None::<serde_json::Value>)
         }
@@ -1067,7 +1074,7 @@ mod tests {
         MoveTaskParams, NoteIdParams, PmpServer, ReadVersionSummaryParams,
         SetTaskDependenciesParams, SummaryIdParams, TaskDependencyParams, TaskIdParams,
         UpdateProjectParams, UpdateTaskParams, UpdateTaskPriorityParams, UpdateTaskStatusParams,
-        UpdateVersionParams, VersionIdParams,
+        UpdateVersionParams, VersionIdParams, app_error_to_mcp,
     };
     use crate::mcp::task_description::compose_description;
 
@@ -1368,7 +1375,7 @@ mod tests {
             .await
             .unwrap_err();
         let ErrorData { code, .. } = err;
-        assert_eq!(code, ErrorCode(-32602));
+        assert_eq!(code, ErrorCode::RESOURCE_NOT_FOUND);
         insta::assert_json_snapshot!(err);
     }
 
@@ -1462,6 +1469,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn db_error_details_are_not_sent_to_client() {
+        let server = PmpServer::new(Arc::new(FailingRepository));
+        let err = server
+            .list_tasks(Parameters(ListTasksParams {
+                project_id: 1,
+                version_id: None,
+                status: None,
+                priority: None,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
+        assert_eq!(err.message, "internal error");
+        assert!(!err.message.contains("InvalidQuery"));
+        assert!(err.data.is_none());
+    }
+
+    #[test]
+    fn app_error_mapping_is_stable_for_each_variant() {
+        let not_found = app_error_to_mcp(AppError::NotFound);
+        assert_eq!(not_found.code, ErrorCode::RESOURCE_NOT_FOUND);
+        let db = app_error_to_mcp(AppError::DbError(rusqlite::Error::InvalidQuery));
+        assert_eq!(db.code, ErrorCode::INTERNAL_ERROR);
+        assert_eq!(db.message, "internal error");
+        let validation = app_error_to_mcp(AppError::Validation("bad".into()));
+        assert_eq!(validation.code, ErrorCode::INVALID_PARAMS);
+        let cycle = app_error_to_mcp(AppError::DependencyCycle);
+        assert_eq!(cycle.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    #[tokio::test]
     async fn list_tasks_db_error_returns_internal_error() {
         let repo = Arc::new(FailingRepository);
         let server = PmpServer::new(repo);
@@ -1474,7 +1512,7 @@ mod tests {
             }))
             .await
             .unwrap_err();
-        assert_eq!(err.code, ErrorCode(-32603));
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
     }
 
     #[tokio::test]
@@ -2020,7 +2058,7 @@ mod tests {
             }))
             .await
             .unwrap_err();
-        assert_eq!(err.code, ErrorCode(-32603));
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
     }
 
     #[tokio::test]
@@ -2136,7 +2174,7 @@ mod tests {
             }))
             .await
             .unwrap_err();
-        assert_eq!(err.code, ErrorCode(-32603));
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
     }
 
     #[tokio::test]
