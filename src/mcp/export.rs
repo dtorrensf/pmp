@@ -6,7 +6,7 @@
 //! status and priority, a dependency flowchart (when small enough) and a task
 //! table plus per-task notes, all derived from the frozen `CompactSnapshot`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::db::repository::Repository;
@@ -17,12 +17,33 @@ use crate::domain::version_summary::VersionSummary;
 
 const MAX_FLOWCHART_TASKS: usize = 20;
 
-/// Writes the Markdown export for `summary_id` to `path` (or the default data
-/// dir location when omitted) and returns the path written.
+/// Maximum length of the version-name portion of an export file name.
+const MAX_EXPORT_STEM_LEN: usize = 80;
+
+/// Writes the Markdown export for `summary_id` to the data dir exports folder
+/// and returns the path written. The destination is always chosen by the
+/// server: clients cannot ask for an arbitrary path.
 pub fn export_version_summary_markdown(
     repo: &dyn Repository,
     summary_id: i64,
-    path: Option<String>,
+) -> Result<PathBuf, AppError> {
+    let base = exports_dir()?;
+    export_version_summary_markdown_to(repo, summary_id, &base)
+}
+
+fn exports_dir() -> Result<PathBuf, AppError> {
+    Ok(dirs::data_dir()
+        .ok_or_else(|| AppError::Validation("no data directory available".to_string()))?
+        .join("pmp")
+        .join("exports"))
+}
+
+/// Shared by tests: writes the export under `exports_dir` instead of the data
+/// dir, applying the same sanitization and confinement checks.
+pub(crate) fn export_version_summary_markdown_to(
+    repo: &dyn Repository,
+    summary_id: i64,
+    exports_dir: &Path,
 ) -> Result<PathBuf, AppError> {
     let summary = repo.get_version_summary(summary_id)?;
     let snapshot: CompactSnapshot = serde_json::from_str(&summary.snapshot_json)
@@ -31,29 +52,73 @@ pub fn export_version_summary_markdown(
     let project = repo.get_project(version.project_id)?;
 
     let markdown = render_markdown(&project.name, &version.name, &summary, &snapshot);
-    let target = match path {
-        Some(path) => PathBuf::from(path),
-        None => default_export_path(&version.name, summary_id)?,
-    };
-
-    let parent = target.parent().unwrap_or_else(|| std::path::Path::new("."));
-    std::fs::create_dir_all(parent)
+    std::fs::create_dir_all(exports_dir)
         .map_err(|e| AppError::Validation(format!("cannot create export directory: {e}")))?;
+    let base = exports_dir
+        .canonicalize()
+        .map_err(|e| AppError::Validation(format!("cannot resolve export directory: {e}")))?;
+    let target = export_path(&base, &version.name, summary_id);
+    ensure_within_dir(&base, &target)?;
     std::fs::write(&target, markdown)
         .map_err(|e| AppError::Validation(format!("cannot write export file: {e}")))?;
     Ok(target)
 }
 
-fn default_export_path(version_name: &str, summary_id: i64) -> Result<PathBuf, AppError> {
-    let base = dirs::data_dir()
-        .ok_or_else(|| AppError::Validation("no data directory available".to_string()))?
-        .join("pmp")
-        .join("exports");
+/// Builds a file name inside `base` from a sanitized version name. The result
+/// never contains separators or `..`, because all non-alphanumeric characters
+/// are collapsed to `-`.
+fn export_path(base: &Path, version_name: &str, summary_id: i64) -> PathBuf {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    Ok(base.join(format!("{version_name}-{summary_id}-{timestamp}.md")))
+    let stem = sanitize_file_component(version_name);
+    base.join(format!("{stem}-{summary_id}-{timestamp}.md"))
+}
+
+/// Turns an arbitrary version name into a safe single path component.
+fn sanitize_file_component(value: &str) -> String {
+    let mut out = String::with_capacity(value.len().min(MAX_EXPORT_STEM_LEN));
+    let mut last_separator = false;
+    for ch in value.chars() {
+        if out.len() >= MAX_EXPORT_STEM_LEN {
+            break;
+        }
+        let mapped = if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            ch
+        } else {
+            '-'
+        };
+        if mapped == '-' {
+            if last_separator {
+                continue;
+            }
+            last_separator = true;
+        } else {
+            last_separator = false;
+        }
+        out.push(mapped);
+    }
+    let trimmed = out.trim_matches(|c| c == '-' || c == '_');
+    if trimmed.is_empty() {
+        "version".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Rejects `target` when its parent resolves outside the canonical `base`.
+fn ensure_within_dir(base: &Path, target: &Path) -> Result<(), AppError> {
+    let parent = target.parent().unwrap_or(base);
+    let parent = parent
+        .canonicalize()
+        .map_err(|e| AppError::Validation(format!("cannot resolve export path: {e}")))?;
+    if !parent.starts_with(base) {
+        return Err(AppError::Validation(
+            "export path escapes the exports directory".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn render_markdown(
@@ -186,13 +251,56 @@ mod tests {
     }
 
     #[test]
-    fn default_export_path_uses_data_dir() {
-        let path = default_export_path("v1.0.0", 42).unwrap();
-        let base = dirs::data_dir().unwrap().join("pmp").join("exports");
+    fn export_path_stays_inside_exports_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        let path = export_path(&base, "v1.0.0", 42);
         assert_eq!(path.parent().unwrap(), base);
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        assert!(name.starts_with("v1.0.0-42-"), "{name}");
+        assert!(name.starts_with("v1-0-0-42-"), "{name}");
         assert!(name.ends_with(".md"), "{name}");
+    }
+
+    #[test]
+    fn sanitize_file_component_neutralizes_traversal_and_separators() {
+        assert_eq!(sanitize_file_component("../../.config/x"), "config-x");
+        assert_eq!(sanitize_file_component("..\\..\\windows"), "windows");
+        assert_eq!(sanitize_file_component("v1.0.0"), "v1-0-0");
+        assert_eq!(sanitize_file_component("/"), "version");
+        assert_eq!(sanitize_file_component("  "), "version");
+    }
+
+    #[test]
+    fn ensure_within_dir_rejects_paths_outside_the_exports_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        let outside = dir.path().parent().unwrap().join("outside.md");
+        let err = ensure_within_dir(&base, &outside).unwrap_err();
+        assert!(matches!(err, AppError::Validation(message) if message.contains("escapes")));
+        assert!(ensure_within_dir(&base, &base.join("inside.md")).is_ok());
+    }
+
+    #[test]
+    fn export_with_malicious_version_name_stays_inside_exports_dir() {
+        let repo = StubRepository::default();
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo
+            .create_version(pid, "../../../.config/evil", "")
+            .unwrap()
+            .id
+            .unwrap();
+        repo.create_task(pid, v, "A", "", Status::Done, Priority::High)
+            .unwrap();
+        let summary = compacted(&repo, v);
+        let dir = tempfile::tempdir().unwrap();
+        let path =
+            export_version_summary_markdown_to(&repo, summary.id.unwrap(), dir.path()).unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        assert_eq!(path.parent().unwrap(), base);
+        assert!(path.exists());
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(!name.contains(".."), "{name}");
+        assert!(!name.contains('/'), "{name}");
     }
 
     #[test]

@@ -3,9 +3,8 @@
 use std::sync::Mutex;
 
 use crate::db::repository::{
-    DependencyRepository, NoteRepository, ProjectRepository, SummaryRepository,
-    TaskRepository, VersionRepository, check_dependency_set, check_done_transition,
-    check_task_move, unique_ids,
+    DependencyRepository, NoteRepository, ProjectRepository, SummaryRepository, TaskRepository,
+    VersionRepository, check_dependency_set, check_done_transition, check_task_move, unique_ids,
 };
 use crate::domain::error::AppError;
 use crate::domain::project::Project;

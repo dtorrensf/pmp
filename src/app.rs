@@ -425,7 +425,6 @@ impl App {
                 match crate::mcp::export::export_version_summary_markdown(
                     self.repo.as_ref(),
                     summary_id,
-                    None,
                 ) {
                     Ok(path) => {
                         self.error = None;
@@ -564,8 +563,8 @@ mod tests {
     use crossterm::event::KeyCode;
 
     use crate::db::repository::{
-        DependencyRepository, NoteRepository, ProjectRepository, SummaryRepository,
-        TaskRepository, VersionRepository,
+        DependencyRepository, NoteRepository, ProjectRepository, SummaryRepository, TaskRepository,
+        VersionRepository,
     };
     use crate::db::stub::StubRepository;
     use crate::domain::task::{Priority, Status};

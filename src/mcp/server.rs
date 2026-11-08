@@ -228,8 +228,6 @@ pub struct DeleteVersionSummaryParams {
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct ExportVersionSummaryParams {
     pub summary_id: i64,
-    /// Optional destination path. When omitted, defaults to the data dir exports folder.
-    pub path: Option<String>,
 }
 
 #[tool_router]
@@ -879,16 +877,15 @@ impl PmpServer {
 
     #[tool(
         name = "export_version_summary",
-        description = "Export a version summary to a self-contained Markdown file with Mermaid charts (status pie, priority pie, dependency flowchart) and a task table. Use to share or render a compacted version outside the app. Returns the written path."
+        description = "Export a version summary to a self-contained Markdown file with Mermaid charts (status pie, priority pie, dependency flowchart) and a task table. The file is always written inside the app's exports folder; the tool takes no destination path. Use to share or render a compacted version outside the app. Returns the written path."
     )]
     async fn export_version_summary(
         &self,
         Parameters(params): Parameters<ExportVersionSummaryParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let summary_id = params.summary_id;
-        let path = params.path;
         let result = execute_repository(self.repo.clone(), move |repo| {
-            crate::mcp::export::export_version_summary_markdown(repo.as_ref(), summary_id, path)
+            crate::mcp::export::export_version_summary_markdown(repo.as_ref(), summary_id)
         })
         .await?;
         tool_result(
@@ -1061,8 +1058,8 @@ mod tests {
 
     use super::PriorityParam;
     use crate::db::repository::{
-        DependencyRepository, NoteRepository, ProjectRepository, SummaryRepository,
-        TaskRepository, VersionRepository,
+        DependencyRepository, NoteRepository, ProjectRepository, SummaryRepository, TaskRepository,
+        VersionRepository,
     };
     use crate::db::stub::StubRepository;
     use crate::domain::error::AppError;
@@ -2810,25 +2807,23 @@ mod tests {
         let summaries = repo.list_version_summaries(vid).unwrap();
         let summary_id = summaries[0].id.unwrap();
 
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("export.md");
         let result = server
-            .export_version_summary(Parameters(ExportVersionSummaryParams {
-                summary_id,
-                path: Some(target.to_string_lossy().into_owned()),
-            }))
+            .export_version_summary(Parameters(ExportVersionSummaryParams { summary_id }))
             .await
             .unwrap();
         let value: serde_json::Value = serde_json::from_str(&tool_text(result)).unwrap();
-        assert_eq!(value["path"], target.to_string_lossy().as_ref());
+        let written = std::path::PathBuf::from(value["path"].as_str().unwrap());
+        let exports = dirs::data_dir().unwrap().join("pmp").join("exports");
+        assert!(written.starts_with(&exports), "{}", written.display());
 
-        let markdown = std::fs::read_to_string(&target).unwrap();
+        let markdown = std::fs::read_to_string(&written).unwrap();
         assert!(markdown.contains("Prose summary"));
         assert!(markdown.contains("```mermaid"));
         assert!(markdown.contains("pie title Tasks by status"));
         assert!(markdown.contains("pie title Tasks by priority"));
         assert!(markdown.contains("flowchart LR"));
         assert!(markdown.contains("done note"));
+        std::fs::remove_file(written).unwrap();
     }
 
     #[tokio::test]
