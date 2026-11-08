@@ -19,6 +19,7 @@ use tokio::task;
 use crate::db::repository::Repository;
 use crate::domain::error::AppError;
 use crate::domain::task::{Priority, Status};
+use crate::domain::validation::validate_name;
 use crate::domain::version::VersionStatus;
 use crate::mcp::task_description::{compose_description, split_description};
 
@@ -103,7 +104,7 @@ pub struct CreateVersionParams {
     pub name: String,
     pub description: Option<String>,
     /// `open` (default) or `released`.
-    pub status: Option<String>,
+    pub status: Option<VersionStatus>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -114,7 +115,7 @@ pub struct UpdateVersionParams {
     /// New description. When omitted, the current description is kept.
     pub description: Option<String>,
     /// New status: `open` or `released`. When omitted, the current status is kept.
-    pub status: Option<String>,
+    pub status: Option<VersionStatus>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -214,6 +215,13 @@ pub struct ReadVersionSummaryParams {
 
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct SummaryIdParams {
+    pub summary_id: i64,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct DeleteVersionSummaryParams {
+    /// The version the summary belongs to; a mismatch is reported as not found.
+    pub version_id: i64,
     pub summary_id: i64,
 }
 
@@ -376,11 +384,7 @@ impl PmpServer {
         Parameters(params): Parameters<CreateProjectParams>,
     ) -> Result<CallToolResult, ErrorData> {
         run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
-            if params.name.trim().is_empty() {
-                return Err(AppError::Validation(
-                    "project name cannot be empty".to_string(),
-                ));
-            }
+            validate_name("project", &params.name)?;
             let description = params.description.unwrap_or_default();
             repo.create_project(&params.name, &description)
         })
@@ -396,11 +400,7 @@ impl PmpServer {
         Parameters(params): Parameters<UpdateProjectParams>,
     ) -> Result<CallToolResult, ErrorData> {
         run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
-            if params.name.trim().is_empty() {
-                return Err(AppError::Validation(
-                    "project name cannot be empty".to_string(),
-                ));
-            }
+            validate_name("project", &params.name)?;
             let current = repo.get_project(params.project_id)?;
             let description = params.description.unwrap_or(current.description);
             repo.update_project(params.project_id, &params.name, &description)
@@ -432,10 +432,8 @@ impl PmpServer {
         Parameters(params): Parameters<CreateVersionParams>,
     ) -> Result<CallToolResult, ErrorData> {
         run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
-            let status = match params.status.as_deref() {
-                Some(value) => VersionStatus::try_from_str(value)?,
-                None => VersionStatus::Open,
-            };
+            validate_name("version", &params.name)?;
+            let status = params.status.unwrap_or(VersionStatus::Open);
             repo.get_project(params.project_id)?;
             let description = params.description.unwrap_or_default();
             let version = repo.create_version(params.project_id, &params.name, &description)?;
@@ -458,17 +456,10 @@ impl PmpServer {
         Parameters(params): Parameters<UpdateVersionParams>,
     ) -> Result<CallToolResult, ErrorData> {
         run_tool(self.repo.clone(), VERSION_NOT_FOUND, move |repo| {
-            if params.name.trim().is_empty() {
-                return Err(AppError::Validation(
-                    "version name cannot be empty".to_string(),
-                ));
-            }
+            validate_name("version", &params.name)?;
             let current = repo.get_version(params.version_id)?;
             let description = params.description.unwrap_or(current.description);
-            let status = match params.status.as_deref() {
-                Some(value) => VersionStatus::try_from_str(value)?,
-                None => current.status,
-            };
+            let status = params.status.unwrap_or(current.status);
             repo.update_version(params.version_id, &params.name, &description, status)
         })
         .await
@@ -513,12 +504,8 @@ impl PmpServer {
         Parameters(params): Parameters<UpdateTaskParams>,
     ) -> Result<CallToolResult, ErrorData> {
         run_tool(self.repo.clone(), TASK_NOT_FOUND, move |repo| {
-            if let Some(name) = &params.name
-                && name.trim().is_empty()
-            {
-                return Err(AppError::Validation(
-                    "task name cannot be empty".to_string(),
-                ));
+            if let Some(name) = &params.name {
+                validate_name("task", name)?;
             }
             let current = repo.get_task(params.task_id)?;
             let name = params.name.clone().unwrap_or_else(|| current.name.clone());
@@ -564,11 +551,7 @@ impl PmpServer {
         Parameters(params): Parameters<CreateTaskParams>,
     ) -> Result<CallToolResult, ErrorData> {
         run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
-            if params.name.trim().is_empty() {
-                return Err(AppError::Validation(
-                    "task name cannot be empty".to_string(),
-                ));
-            }
+            validate_name("task", &params.name)?;
             repo.get_project(params.project_id)?;
             let description =
                 compose_description(&params.context, &params.requirements, &params.benefits);
@@ -884,21 +867,23 @@ impl PmpServer {
 
     #[tool(
         name = "delete_version_summary",
-        description = "Delete a version summary by its id. Use to remove a compaction artifact; tasks already deleted during compaction are not restored."
+        description = "Delete a version summary by its id, restricted to the given version. Use to remove a compaction artifact; tasks already deleted during compaction are not restored."
     )]
     async fn delete_version_summary(
         &self,
-        Parameters(params): Parameters<SummaryIdParams>,
+        Parameters(params): Parameters<DeleteVersionSummaryParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let version_id = params.version_id;
         let summary_id = params.summary_id;
-        let result = execute_repository(self.repo.clone(), move |repo| {
-            repo.delete_version_summary(summary_id)
+        run_tool(self.repo.clone(), SUMMARY_NOT_FOUND, move |repo| {
+            let summary = repo.get_version_summary(summary_id)?;
+            if summary.version_id != version_id {
+                return Err(AppError::NotFound);
+            }
+            repo.delete_version_summary(summary_id)?;
+            Ok(serde_json::json!({ "summary_id": summary_id }))
         })
-        .await?;
-        tool_result(
-            result.map(|()| serde_json::json!({ "summary_id": summary_id })),
-            SUMMARY_NOT_FOUND,
-        )
+        .await
     }
 
     #[tool(
@@ -1093,9 +1078,9 @@ mod tests {
 
     use super::{
         AddTaskNoteParams, CompactVersionParams, CreateProjectParams, CreateTaskParams,
-        CreateVersionParams, ExportVersionSummaryParams, ListTasksParams, ListVersionsParams,
-        MoveTaskParams, NoteIdParams, PmpServer, ReadVersionSummaryParams,
-        SetTaskDependenciesParams, SummaryIdParams, TaskDependencyParams, TaskIdParams,
+        CreateVersionParams, DeleteVersionSummaryParams, ExportVersionSummaryParams,
+        ListTasksParams, ListVersionsParams, MoveTaskParams, NoteIdParams, PmpServer,
+        ReadVersionSummaryParams, SetTaskDependenciesParams, TaskDependencyParams, TaskIdParams,
         UpdateProjectParams, UpdateTaskParams, UpdateTaskPriorityParams, UpdateTaskStatusParams,
         UpdateVersionParams, VersionIdParams, app_error_to_mcp,
     };
@@ -2568,11 +2553,60 @@ mod tests {
         assert_eq!(summary.summary, "Summary");
 
         let deleted = server
-            .delete_version_summary(Parameters(SummaryIdParams { summary_id: id }))
+            .delete_version_summary(Parameters(DeleteVersionSummaryParams {
+                version_id: vid,
+                summary_id: id,
+            }))
             .await
             .unwrap();
         assert_eq!(deleted.is_error, Some(false));
         assert!(repo.get_version_summary(id).is_err());
+    }
+
+    #[tokio::test]
+    async fn delete_version_summary_rejects_mismatched_version() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let vid = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        repo.create_task(pid, vid, "Done", "", Status::Done, Priority::Low)
+            .unwrap();
+        server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "Summary".to_string(),
+                mark_released: None,
+            }))
+            .await
+            .unwrap();
+        let id = repo.list_version_summaries(vid).unwrap()[0].id.unwrap();
+
+        let result = server
+            .delete_version_summary(Parameters(DeleteVersionSummaryParams {
+                version_id: 999_999,
+                summary_id: id,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(tool_text(result).contains("summary not found"));
+        assert!(repo.get_version_summary(id).is_ok(), "summary must survive");
+    }
+
+    #[tokio::test]
+    async fn create_version_applies_the_shared_name_rule() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let blank = server
+            .create_version(Parameters(CreateVersionParams {
+                project_id: pid,
+                name: "   ".to_string(),
+                description: None,
+                status: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(blank.is_error, Some(true));
+        assert!(tool_text(blank).contains("version name cannot be empty"));
     }
 
     #[tokio::test]
@@ -3222,7 +3256,7 @@ mod tests {
                 project_id: pid,
                 name: "v0.2.0".to_string(),
                 description: None,
-                status: Some("released".to_string()),
+                status: Some(VersionStatus::Released),
             }))
             .await
             .unwrap();
@@ -3234,11 +3268,11 @@ mod tests {
     async fn create_version_rejects_empty_duplicate_and_invalid_status() {
         let (server, repo) = server();
         let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
-        let params = |name: &str, status: Option<&str>| CreateVersionParams {
+        let params = |name: &str, status: Option<VersionStatus>| CreateVersionParams {
             project_id: pid,
             name: name.to_string(),
             description: None,
-            status: status.map(str::to_string),
+            status,
         };
         let empty = server
             .create_version(Parameters(params("  ", None)))
@@ -3258,12 +3292,13 @@ mod tests {
         assert_eq!(duplicate.is_error, Some(true));
         assert!(tool_text(duplicate).contains("version already exists"));
 
-        let invalid = server
-            .create_version(Parameters(params("v0.3.0", Some("closed"))))
-            .await
-            .unwrap();
-        assert_eq!(invalid.is_error, Some(true));
-        assert!(tool_text(invalid).contains("invalid version status"));
+        // Unknown statuses are rejected by the schema, before the tool runs.
+        let invalid = serde_json::from_value::<CreateVersionParams>(serde_json::json!({
+            "project_id": pid,
+            "name": "v0.3.0",
+            "status": "closed",
+        }));
+        assert!(invalid.is_err());
     }
 
     #[tokio::test]
@@ -3298,7 +3333,7 @@ mod tests {
                     version_id,
                     name: "v0.2.0".to_string(),
                     description: Some("changed".to_string()),
-                    status: Some("released".to_string()),
+                    status: Some(VersionStatus::Released),
                 }))
                 .await
                 .unwrap(),
@@ -3351,17 +3386,12 @@ mod tests {
         assert_eq!(unknown.is_error, Some(true));
         assert!(tool_text(unknown).contains("version not found"));
 
-        let invalid = server
-            .update_version(Parameters(UpdateVersionParams {
-                version_id,
-                name: "v0.1.0".to_string(),
-                description: None,
-                status: Some("closed".to_string()),
-            }))
-            .await
-            .unwrap();
-        assert_eq!(invalid.is_error, Some(true));
-        assert!(tool_text(invalid).contains("invalid version status"));
+        let invalid = serde_json::from_value::<UpdateVersionParams>(serde_json::json!({
+            "version_id": version_id,
+            "name": "v0.1.0",
+            "status": "closed",
+        }));
+        assert!(invalid.is_err());
     }
 
     #[tokio::test]

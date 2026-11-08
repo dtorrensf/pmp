@@ -64,16 +64,6 @@ pub const DEFAULT_VERSION_NAME: &str = "v0";
 /// Name suggested when a project has no valid semver version yet.
 pub const FIRST_VERSION_NAME: &str = "v0.1.0";
 
-/// Rejects names that are empty or only whitespace.
-pub fn validate_version_name(name: &str) -> Result<(), AppError> {
-    if name.trim().is_empty() {
-        return Err(AppError::Validation(
-            "version name cannot be empty".to_string(),
-        ));
-    }
-    Ok(())
-}
-
 /// Suggests the next version name: the highest valid semver name among
 /// `existing` with its minor bumped (`v1.2.3` -> `v1.3.0`). Names that are not
 /// semver (such as the legacy `v0`) are ignored; with none valid, returns
@@ -212,19 +202,6 @@ mod tests {
     fn version_status_style_returns_colored_style() {
         assert_eq!(VersionStatus::Open.style().fg, Some(Color::Blue));
         assert_eq!(VersionStatus::Released.style().fg, Some(Color::Green));
-    }
-
-    #[test]
-    fn validate_version_name_rejects_blank() {
-        assert!(matches!(
-            validate_version_name(""),
-            Err(AppError::Validation(_))
-        ));
-        assert!(matches!(
-            validate_version_name("   "),
-            Err(AppError::Validation(_))
-        ));
-        assert!(validate_version_name("v1.0.0").is_ok());
     }
 
     #[test]

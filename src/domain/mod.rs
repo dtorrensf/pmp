@@ -4,5 +4,6 @@ pub mod error;
 pub mod project;
 pub mod snapshot;
 pub mod task;
+pub mod validation;
 pub mod version;
 pub mod version_summary;

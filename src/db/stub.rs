@@ -6,6 +6,7 @@ use crate::db::repository::{Repository, check_dependency_set, check_task_move, u
 use crate::domain::error::AppError;
 use crate::domain::project::Project;
 use crate::domain::task::{Priority, Status, Task, TaskDependency, TaskNote};
+use crate::domain::validation;
 use crate::domain::version::{self, Version, VersionStatus};
 use crate::domain::version_summary::VersionSummary;
 
@@ -154,7 +155,7 @@ impl Repository for StubRepository {
         name: &str,
         description: &str,
     ) -> Result<Version, AppError> {
-        version::validate_version_name(name)?;
+        validation::validate_name("version", name)?;
         self.get_project(project_id)?;
         let versions = self.versions.lock().unwrap();
         if versions
@@ -195,7 +196,7 @@ impl Repository for StubRepository {
         description: &str,
         status: VersionStatus,
     ) -> Result<Version, AppError> {
-        version::validate_version_name(name)?;
+        validation::validate_name("version", name)?;
         let mut versions = self.versions.lock().unwrap();
         let project_id = versions
             .iter()
