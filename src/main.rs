@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use std::sync::Arc;
 
+use anyhow::Context;
+
 use pmp::app::App;
 use pmp::db::sqlite::SqliteRepository;
 
@@ -28,8 +30,13 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn open_repo() -> anyhow::Result<Arc<SqliteRepository>> {
-    let data_dir = dirs::data_dir().unwrap_or_else(|| std::env::current_dir().expect("cwd"));
+    let data_dir = match dirs::data_dir() {
+        Some(dir) => dir,
+        None => std::env::current_dir().context("locate data directory")?,
+    };
     let db_path = data_dir.join("pmp").join("pmp.db");
-    std::fs::create_dir_all(db_path.parent().unwrap())?;
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     Ok(Arc::new(SqliteRepository::open(&db_path)?))
 }

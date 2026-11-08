@@ -1,6 +1,6 @@
 // Copyright (C) 2026 Diego Torréns Farias
 // SPDX-License-Identifier: AGPL-3.0-or-later
-use std::io;
+use std::io::{self, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -45,34 +45,64 @@ fn auto_refresh_ticks(interval: Duration) -> usize {
     interval.as_millis().div_ceil(EVENT_TIMEOUT.as_millis()) as usize
 }
 
+/// Restores the terminal state that the TUI changes. Errors are deliberately
+/// ignored: this also runs from `Drop` and from the panic hook, where there is
+/// nowhere useful to report them.
+fn restore_terminal() {
+    let mut stdout = io::stdout();
+    restore_terminal_on(&mut stdout);
+}
+
+fn restore_terminal_on(out: &mut impl Write) {
+    let _ = disable_raw_mode();
+    let _ = out.execute(LeaveAlternateScreen);
+    let _ = out.execute(cursor::Show);
+}
+
+/// Installs the terminal changes on construction and undoes them on drop, so a
+/// panic or an early error can never leave the user in raw mode with an
+/// alternate screen and a hidden cursor.
+struct TerminalGuard;
+
+impl TerminalGuard {
+    fn install() -> anyhow::Result<Self> {
+        enable_raw_mode().context("enable raw mode")?;
+        let mut stdout = io::stdout();
+        stdout
+            .execute(EnterAlternateScreen)
+            .context("enter alternate screen")?;
+        stdout.execute(cursor::Hide).context("hide cursor")?;
+        Ok(Self)
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        restore_terminal();
+    }
+}
+
+/// Restores the terminal before delegating to the previously installed hook,
+/// so a panic still prints its message on a usable terminal.
+fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_terminal();
+        previous(info);
+    }));
+}
+
 pub fn run(mut app: App) -> anyhow::Result<()> {
     let _cancel_update_check = CancelUpdateCheckOnDrop(app.update_check_cancel_handle());
-    enable_raw_mode().context("enable raw mode")?;
-    let mut stdout = io::stdout();
-    stdout
-        .execute(EnterAlternateScreen)
-        .context("enter alternate screen")?;
-    stdout.execute(cursor::Hide).context("hide cursor")?;
+    install_panic_hook();
+    let _terminal_guard = TerminalGuard::install()?;
 
-    let backend = CrosstermBackend::new(stdout);
+    let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend).context("create terminal")?;
     let terminate = setup_signal_flag().context("setup signal flag")?;
     let mut events = CrosstermEvents;
 
-    let result = run_loop(&mut app, &mut terminal, &mut events, &terminate);
-
-    disable_raw_mode().context("disable raw mode")?;
-    terminal
-        .backend_mut()
-        .execute(LeaveAlternateScreen)
-        .context("leave alternate screen")?;
-    terminal
-        .backend_mut()
-        .execute(cursor::Show)
-        .context("show cursor")?;
-    terminal.show_cursor().context("show terminal cursor")?;
-
-    result
+    run_loop(&mut app, &mut terminal, &mut events, &terminate)
 }
 
 fn setup_signal_flag() -> anyhow::Result<Arc<AtomicBool>> {
@@ -257,6 +287,18 @@ mod tests {
     use crate::screens::{Action, Screen};
 
     use super::*;
+
+    #[test]
+    fn restore_terminal_leaves_alternate_screen_and_shows_cursor() {
+        let mut out = Vec::new();
+        restore_terminal_on(&mut out);
+        let text = String::from_utf8_lossy(&out);
+        assert!(
+            text.contains("\x1b[?1049l"),
+            "missing LeaveAlternateScreen: {text:?}"
+        );
+        assert!(text.contains("\x1b[?25h"), "missing Show cursor: {text:?}");
+    }
 
     fn key_event(code: KeyCode) -> Event {
         Event::Key(KeyEvent {
