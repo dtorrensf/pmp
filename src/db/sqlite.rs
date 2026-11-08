@@ -76,6 +76,8 @@ impl ProjectRepository for SqliteRepository {
     }
 
     fn create_project(&self, name: &str, description: &str) -> Result<Project, AppError> {
+        validation::validate_name("project", name)?;
+        validation::validate_text("project", "description", description)?;
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO projects (name, description) VALUES (?1, ?2)",
@@ -92,6 +94,8 @@ impl ProjectRepository for SqliteRepository {
     }
 
     fn update_project(&self, id: i64, name: &str, description: &str) -> Result<Project, AppError> {
+        validation::validate_name("project", name)?;
+        validation::validate_text("project", "description", description)?;
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "UPDATE projects SET name = ?1, description = ?2 WHERE id = ?3",
@@ -144,6 +148,7 @@ impl VersionRepository for SqliteRepository {
         description: &str,
     ) -> Result<Version, AppError> {
         validation::validate_name("version", name)?;
+        validation::validate_text("version", "description", description)?;
         self.get_project(project_id)?;
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
@@ -177,6 +182,7 @@ impl VersionRepository for SqliteRepository {
         status: VersionStatus,
     ) -> Result<Version, AppError> {
         validation::validate_name("version", name)?;
+        validation::validate_text("version", "description", description)?;
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let updated = conn
             .execute(
@@ -232,10 +238,12 @@ impl TaskRepository for SqliteRepository {
         status: Status,
         priority: Priority,
     ) -> Result<Task, AppError> {
+        validation::validate_name("task", name)?;
+        validation::validate_text("task", "description", description)?;
         let version_project: Option<i64> = self
             .conn
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .query_row(
                 "SELECT project_id FROM versions WHERE id = ?1",
                 [version_id],
@@ -286,6 +294,8 @@ impl TaskRepository for SqliteRepository {
         status: Status,
         priority: Priority,
     ) -> Result<Task, AppError> {
+        validation::validate_name("task", name)?;
+        validation::validate_text("task", "description", description)?;
         let current = self.get_task(id)?;
         check_done_transition(current.status, status, || {
             self.has_incomplete_dependencies(id)
@@ -409,6 +419,7 @@ impl DependencyRepository for SqliteRepository {
     }
 
     fn set_dependencies(&self, task_id: i64, depends_on_ids: &[i64]) -> Result<(), AppError> {
+        validation::validate_dependency_count(depends_on_ids.len())?;
         let task = self.get_task(task_id)?;
         let unique = unique_ids(depends_on_ids);
         for &dep in &unique {
@@ -555,6 +566,7 @@ impl SummaryRepository for SqliteRepository {
         summary: &str,
         snapshot_json: &str,
     ) -> Result<VersionSummary, AppError> {
+        validation::validate_text("version summary", "summary", summary)?;
         self.get_version(version_id)?;
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
@@ -583,6 +595,7 @@ impl SummaryRepository for SqliteRepository {
         summary: &str,
         snapshot_json: &str,
     ) -> Result<VersionSummary, AppError> {
+        validation::validate_text("version summary", "summary", summary)?;
         self.get_version(version_id)?;
         let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         // Single transaction: dropping it without commit (on any error) rolls
@@ -752,7 +765,7 @@ mod tests {
         // Force the second write of the transaction to fail.
         repo.conn
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .execute_batch(
                 "CREATE TRIGGER fail_summary_insert BEFORE INSERT ON version_summaries
                  BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
@@ -776,7 +789,7 @@ mod tests {
         let journal_mode: String = repo
             .conn
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .query_row("PRAGMA journal_mode;", [], |row| row.get(0))
             .unwrap();
         assert_eq!(journal_mode, "wal");
@@ -784,7 +797,7 @@ mod tests {
         let foreign_keys: i32 = repo
             .conn
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .query_row("PRAGMA foreign_keys;", [], |row| row.get(0))
             .unwrap();
         assert_eq!(foreign_keys, 1);
@@ -796,7 +809,7 @@ mod tests {
         let count: i64 = repo
             .conn
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='projects';",
                 [],
@@ -836,7 +849,7 @@ mod tests {
         let version_id: i64 = repo
             .conn
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .query_row(
                 "SELECT id FROM versions WHERE project_id = ?1 AND name = 'v0'",
                 [project_id],
@@ -865,7 +878,7 @@ mod tests {
         let count: i64 = repo
             .conn
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='task_notes';",
                 [],
@@ -1229,7 +1242,7 @@ mod tests {
 
         repo.conn
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .execute(
                 "UPDATE tasks SET created_at = ?1 WHERE id = ?2",
                 params!["2026-01-01 00:00:00", high_old.id.unwrap()],
@@ -1237,7 +1250,7 @@ mod tests {
             .unwrap();
         repo.conn
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .execute(
                 "UPDATE tasks SET created_at = ?1 WHERE id = ?2",
                 params!["2026-01-02 00:00:00", high_new.id.unwrap()],

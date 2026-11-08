@@ -5,6 +5,7 @@ use serde::de;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::domain::error::AppError;
+use crate::domain::validation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -243,6 +244,7 @@ impl TaskNote {
                 "note content cannot be empty".to_string(),
             ));
         }
+        validation::validate_text("note", "content", content)?;
         Ok(TaskNote {
             id: None,
             task_id,

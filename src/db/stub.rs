@@ -49,7 +49,7 @@ impl StubRepository {
         let belongs = self
             .versions
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .any(|v| v.id == Some(version_id) && v.project_id == project_id);
         if belongs {
@@ -87,6 +87,8 @@ impl ProjectRepository for StubRepository {
     }
 
     fn create_project(&self, name: &str, description: &str) -> Result<Project, AppError> {
+        validation::validate_name("project", name)?;
+        validation::validate_text("project", "description", description)?;
         let project = Project {
             id: Some(self.next_id()),
             name: name.to_string(),
@@ -112,6 +114,8 @@ impl ProjectRepository for StubRepository {
     }
 
     fn update_project(&self, id: i64, name: &str, description: &str) -> Result<Project, AppError> {
+        validation::validate_name("project", name)?;
+        validation::validate_text("project", "description", description)?;
         let mut projects = self.projects.lock().unwrap_or_else(|e| e.into_inner());
         let project = projects
             .iter_mut()
@@ -125,7 +129,7 @@ impl ProjectRepository for StubRepository {
     fn get_project(&self, id: i64) -> Result<Project, AppError> {
         self.projects
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .find(|p| p.id == Some(id))
             .cloned()
@@ -167,7 +171,7 @@ impl VersionRepository for StubRepository {
         let mut versions: Vec<Version> = self
             .versions
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .filter(|v| v.project_id == project_id)
             .cloned()
@@ -187,6 +191,7 @@ impl VersionRepository for StubRepository {
         description: &str,
     ) -> Result<Version, AppError> {
         validation::validate_name("version", name)?;
+        validation::validate_text("version", "description", description)?;
         self.get_project(project_id)?;
         let versions = self.versions.lock().unwrap_or_else(|e| e.into_inner());
         if versions
@@ -216,7 +221,7 @@ impl VersionRepository for StubRepository {
     fn get_version(&self, id: i64) -> Result<Version, AppError> {
         self.versions
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .find(|v| v.id == Some(id))
             .cloned()
@@ -231,6 +236,7 @@ impl VersionRepository for StubRepository {
         status: VersionStatus,
     ) -> Result<Version, AppError> {
         validation::validate_name("version", name)?;
+        validation::validate_text("version", "description", description)?;
         let mut versions = self.versions.lock().unwrap_or_else(|e| e.into_inner());
         let project_id = versions
             .iter()
@@ -259,7 +265,7 @@ impl VersionRepository for StubRepository {
         let task_ids: Vec<i64> = self
             .tasks
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .filter(|t| t.version_id == id)
             .filter_map(|t| t.id)
@@ -280,7 +286,7 @@ impl TaskRepository for StubRepository {
         let mut tasks: Vec<Task> = self
             .tasks
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .filter(|t| t.project_id == project_id)
             .cloned()
@@ -293,7 +299,7 @@ impl TaskRepository for StubRepository {
         let mut tasks: Vec<Task> = self
             .tasks
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .filter(|t| t.version_id == version_id)
             .cloned()
@@ -311,6 +317,8 @@ impl TaskRepository for StubRepository {
         status: Status,
         priority: Priority,
     ) -> Result<Task, AppError> {
+        validation::validate_name("task", name)?;
+        validation::validate_text("task", "description", description)?;
         self.ensure_version_in_project(version_id, project_id)?;
         let task = Task {
             id: Some(self.next_id()),
@@ -333,7 +341,7 @@ impl TaskRepository for StubRepository {
     fn get_task(&self, id: i64) -> Result<Task, AppError> {
         self.tasks
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .find(|t| t.id == Some(id))
             .cloned()
@@ -348,6 +356,8 @@ impl TaskRepository for StubRepository {
         status: Status,
         priority: Priority,
     ) -> Result<Task, AppError> {
+        validation::validate_name("task", name)?;
+        validation::validate_text("task", "description", description)?;
         let current = self.get_task(id)?;
         check_done_transition(current.status, status, || {
             self.has_incomplete_dependencies(id)
@@ -433,7 +443,7 @@ impl TaskRepository for StubRepository {
         let task_ids: Vec<i64> = self
             .tasks
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .filter(|t| t.version_id == version_id && t.status == Status::Done)
             .filter_map(|t| t.id)
@@ -471,6 +481,7 @@ impl DependencyRepository for StubRepository {
     }
 
     fn set_dependencies(&self, task_id: i64, depends_on_ids: &[i64]) -> Result<(), AppError> {
+        validation::validate_dependency_count(depends_on_ids.len())?;
         let task = self.get_task(task_id)?;
         let unique = unique_ids(depends_on_ids);
         for &dep in &unique {
@@ -504,7 +515,7 @@ impl DependencyRepository for StubRepository {
     fn remove_dependency(&self, task_id: i64, depends_on_id: i64) -> Result<(), AppError> {
         self.dependencies
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .retain(|d| !(d.task_id == task_id && d.depends_on_id == depends_on_id));
         Ok(())
     }
@@ -513,7 +524,7 @@ impl DependencyRepository for StubRepository {
         let mut dependencies: Vec<i64> = self
             .dependencies
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .filter(|d| d.task_id == task_id)
             .map(|d| d.depends_on_id)
@@ -538,7 +549,7 @@ impl DependencyRepository for StubRepository {
         let mut dependents: Vec<i64> = self
             .dependencies
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .filter(|d| d.depends_on_id == task_id)
             .map(|d| d.task_id)
@@ -578,7 +589,7 @@ impl NoteRepository for StubRepository {
         let mut notes: Vec<TaskNote> = self
             .task_notes
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .filter(|n| n.task_id == task_id)
             .cloned()
@@ -620,7 +631,7 @@ impl SummaryRepository for StubRepository {
         let mut summaries: Vec<VersionSummary> = self
             .version_summaries
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .filter(|s| s.version_id == version_id)
             .cloned()
@@ -636,7 +647,7 @@ impl SummaryRepository for StubRepository {
     fn get_version_summary(&self, id: i64) -> Result<VersionSummary, AppError> {
         self.version_summaries
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .find(|s| s.id == Some(id))
             .cloned()
@@ -649,6 +660,7 @@ impl SummaryRepository for StubRepository {
         summary: &str,
         snapshot_json: &str,
     ) -> Result<VersionSummary, AppError> {
+        validation::validate_text("version summary", "summary", summary)?;
         self.get_version(version_id)?;
         let mut summaries = self
             .version_summaries
@@ -690,10 +702,11 @@ impl SummaryRepository for StubRepository {
         summary: &str,
         snapshot_json: &str,
     ) -> Result<VersionSummary, AppError> {
+        validation::validate_text("version summary", "summary", summary)?;
         self.get_version(version_id)?;
         self.version_summaries
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .retain(|s| s.version_id != version_id);
         let created = self.create_version_summary(version_id, summary, snapshot_json)?;
         self.delete_done_tasks_by_version(version_id)?;
@@ -846,7 +859,7 @@ mod tests {
     fn poisoned_mutex_is_recovered_instead_of_panicking() {
         let repo = StubRepository::default();
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = repo.projects.lock().unwrap();
+            let _guard = repo.projects.lock().unwrap_or_else(|e| e.into_inner());
             panic!("poison the projects mutex");
         }));
         assert!(repo.list_projects().is_ok());

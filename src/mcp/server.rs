@@ -20,7 +20,7 @@ use tokio::task;
 use crate::db::repository::{Repository, RepositoryPolicy};
 use crate::domain::error::AppError;
 use crate::domain::task::{Priority, Status};
-use crate::domain::validation::validate_name;
+use crate::domain::validation::{validate_name, validate_text};
 use crate::domain::version::VersionStatus;
 use crate::mcp::task_description::{compose_description, split_description};
 
@@ -391,6 +391,7 @@ impl PmpServer {
         run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
             validate_name("project", &params.name)?;
             let description = params.description.unwrap_or_default();
+            validate_text("project", "description", &description)?;
             repo.create_project(&params.name, &description)
         })
         .await
@@ -408,6 +409,7 @@ impl PmpServer {
             validate_name("project", &params.name)?;
             let current = repo.get_project(params.project_id)?;
             let description = params.description.unwrap_or(current.description);
+            validate_text("project", "description", &description)?;
             repo.update_project(params.project_id, &params.name, &description)
         })
         .await
@@ -441,6 +443,7 @@ impl PmpServer {
             let status = params.status.unwrap_or(VersionStatus::Open);
             repo.get_project(params.project_id)?;
             let description = params.description.unwrap_or_default();
+            validate_text("version", "description", &description)?;
             let version = repo.create_version(params.project_id, &params.name, &description)?;
             match version.id {
                 Some(id) if status != VersionStatus::Open => {
@@ -464,6 +467,7 @@ impl PmpServer {
             validate_name("version", &params.name)?;
             let current = repo.get_version(params.version_id)?;
             let description = params.description.unwrap_or(current.description);
+            validate_text("version", "description", &description)?;
             let status = params.status.unwrap_or(current.status);
             repo.update_version(params.version_id, &params.name, &description, status)
         })
@@ -522,19 +526,24 @@ impl PmpServer {
             } else {
                 let mut sections = split_description(&current.description);
                 if let Some(context) = params.context {
+                    validate_text("task", "context", &context)?;
                     sections.context = context;
                 }
                 if let Some(requirements) = params.requirements {
+                    validate_text("task", "requirements", &requirements)?;
                     sections.requirements = requirements;
                 }
                 if let Some(benefits) = params.benefits {
+                    validate_text("task", "benefits", &benefits)?;
                     sections.benefits = benefits;
                 }
-                compose_description(
+                let description = compose_description(
                     &sections.context,
                     &sections.requirements,
                     &sections.benefits,
-                )
+                );
+                validate_text("task", "description", &description)?;
+                description
             };
             repo.update_task(
                 params.task_id,
@@ -557,9 +566,13 @@ impl PmpServer {
     ) -> Result<CallToolResult, ErrorData> {
         run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
             validate_name("task", &params.name)?;
+            validate_text("task", "context", &params.context)?;
+            validate_text("task", "requirements", &params.requirements)?;
+            validate_text("task", "benefits", &params.benefits)?;
             repo.get_project(params.project_id)?;
             let description =
                 compose_description(&params.context, &params.requirements, &params.benefits);
+            validate_text("task", "description", &description)?;
             repo.create_task(
                 params.project_id,
                 params.version_id,
@@ -745,6 +758,7 @@ impl PmpServer {
         let content = params.content;
         run_tool(self.repo.clone(), TASK_NOT_FOUND, move |repo| {
             repo.get_task(task_id)?;
+            validate_text("note", "content", &content)?;
             repo.add_task_note(task_id, &content)
         })
         .await
@@ -799,6 +813,7 @@ impl PmpServer {
         let summary = params.summary;
         let mark_released = params.mark_released.unwrap_or(true);
         run_tool(self.repo.clone(), VERSION_NOT_FOUND, move |repo| {
+            validate_text("version summary", "summary", &summary)?;
             repo.can_compact(version_id)?;
             let snapshot = repo.build_compact_snapshot(version_id)?;
             // Replaces the previous summary, stores the new one and deletes the
@@ -1098,6 +1113,7 @@ mod tests {
     use crate::domain::error::AppError;
     use crate::domain::project::Project;
     use crate::domain::task::{Priority, Status, Task, TaskNote};
+    use crate::domain::validation::MAX_TEXT_LEN;
     use crate::domain::version::{Version, VersionStatus};
     use crate::domain::version_summary::VersionSummary;
 
@@ -2220,6 +2236,29 @@ mod tests {
         assert_eq!(result.is_error, Some(true));
         let message = tool_text(result);
         assert!(message.contains("task name cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn create_task_rejects_oversized_arguments() {
+        let (server, repo) = server();
+        let project = repo.create_project("Alpha", "").unwrap();
+        let pid = project.id.unwrap();
+
+        let result = server
+            .create_task(Parameters(CreateTaskParams {
+                project_id: pid,
+                version_id: repo.default_version_id(pid).unwrap(),
+                name: "Task".to_string(),
+                context: "a".repeat(MAX_TEXT_LEN + 1),
+                requirements: "".to_string(),
+                benefits: "".to_string(),
+                priority: PriorityParam::Medium,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let message = tool_text(result);
+        assert!(message.contains("cannot exceed"), "{message}");
     }
 
     #[tokio::test]

@@ -12,6 +12,7 @@ use crate::db::sqlite::SqliteRepository;
 use crate::db::stub::StubRepository;
 use crate::domain::error::AppError;
 use crate::domain::task::{Priority, Status};
+use crate::domain::validation::{MAX_NAME_LEN, MAX_TEXT_LEN};
 use crate::domain::version::VersionStatus;
 
 fn sqlite_repo() -> (tempfile::TempDir, SqliteRepository) {
@@ -79,6 +80,53 @@ fn add_task_note_accepts_valid_content() {
         assert_eq!(note.task_id, task_id, "{name}");
         assert_eq!(note.content, "valid note", "{name}");
         assert!(note.id.is_some(), "{name}");
+    });
+}
+
+#[test]
+fn create_project_rejects_oversized_name() {
+    for_each_repo(|name, repo| {
+        let long = "a".repeat(MAX_NAME_LEN + 1);
+        let result = repo.create_project(&long, "");
+        assert!(
+            matches!(result, Err(AppError::Validation(_))),
+            "{name}: expected Validation error for an oversized project name, got {result:?}"
+        );
+    });
+}
+
+#[test]
+fn create_task_rejects_oversized_description() {
+    for_each_repo(|name, repo| {
+        let project = repo.create_project("P", "").unwrap();
+        let project_id = project.id.unwrap();
+        let version_id = repo.default_version_id(project_id).unwrap();
+        let long = "a".repeat(MAX_TEXT_LEN + 1);
+        let result = repo.create_task(
+            project_id,
+            version_id,
+            "T",
+            &long,
+            Status::Todo,
+            Priority::Medium,
+        );
+        assert!(
+            matches!(result, Err(AppError::Validation(_))),
+            "{name}: expected Validation error for an oversized task description, got {result:?}"
+        );
+    });
+}
+
+#[test]
+fn add_task_note_rejects_oversized_content() {
+    for_each_repo(|name, repo| {
+        let task_id = create_task(repo);
+        let long = "a".repeat(MAX_TEXT_LEN + 1);
+        let result = repo.add_task_note(task_id, &long);
+        assert!(
+            matches!(result, Err(AppError::Validation(_))),
+            "{name}: expected Validation error for an oversized note, got {result:?}"
+        );
     });
 }
 
