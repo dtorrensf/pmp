@@ -115,7 +115,9 @@ fn render_markdown(
         }
         out.push_str("```\n\n");
     } else {
-        out.push_str("> Dependency flowchart omitted: more than 20 tasks.\n\n");
+        out.push_str(&format!(
+            "> Dependency flowchart omitted: more than {MAX_FLOWCHART_TASKS} tasks.\n\n"
+        ));
     }
 
     out.push_str("## Tasks\n\n");

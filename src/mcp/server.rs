@@ -22,6 +22,28 @@ use crate::domain::task::{Priority, Status};
 use crate::domain::version::VersionStatus;
 use crate::mcp::task_description::{compose_description, split_description};
 
+/// Tool-error texts for missing records.
+const PROJECT_NOT_FOUND: &str = "project not found";
+const VERSION_NOT_FOUND: &str = "version not found";
+const TASK_NOT_FOUND: &str = "task not found";
+const TASK_OR_VERSION_NOT_FOUND: &str = "task or version not found";
+const NOTE_NOT_FOUND: &str = "note not found";
+const SUMMARY_NOT_FOUND: &str = "summary not found";
+const RESOURCE_NOT_FOUND_MESSAGE: &str = "resource not found";
+
+/// Resource URIs. Each template is listed to clients and parsed by
+/// `read_resource`; the test `every_listed_template_is_readable` keeps them in sync.
+const PROJECTS_URI: &str = "pmp://projects";
+const PROJECTS_PREFIX: &str = "pmp://projects/";
+const VERSIONS_PREFIX: &str = "pmp://versions/";
+const SUMMARIES_PREFIX: &str = "pmp://summaries/";
+const PROJECT_TEMPLATE: &str = "pmp://projects/{id}";
+const PROJECT_TASKS_TEMPLATE: &str = "pmp://projects/{id}/tasks";
+const PROJECT_VERSIONS_TEMPLATE: &str = "pmp://projects/{id}/versions";
+const VERSION_TASKS_TEMPLATE: &str = "pmp://versions/{id}/tasks";
+const VERSION_SUMMARIES_TEMPLATE: &str = "pmp://versions/{id}/summaries";
+const SUMMARY_TEMPLATE: &str = "pmp://summaries/{id}";
+
 pub struct PmpServer {
     repo: Arc<dyn Repository>,
 }
@@ -209,7 +231,7 @@ impl PmpServer {
     }
 
     pub async fn list_resources(&self) -> Result<ListResourcesResult, ErrorData> {
-        let resource = Resource::new("pmp://projects", "projects")
+        let resource = Resource::new(PROJECTS_URI, "projects")
             .with_description(
                 "All user projects. Read this to see what projects the user is working on.",
             )
@@ -219,22 +241,22 @@ impl PmpServer {
 
     pub async fn list_resource_templates(&self) -> Result<ListResourceTemplatesResult, ErrorData> {
         let templates = vec![
-            ResourceTemplate::new("pmp://projects/{id}", "project")
+            ResourceTemplate::new(PROJECT_TEMPLATE, "project")
                 .with_description("A single project by id. Use to get details about a specific project.")
                 .with_mime_type("application/json"),
-            ResourceTemplate::new("pmp://projects/{id}/tasks", "project_tasks")
+            ResourceTemplate::new(PROJECT_TASKS_TEMPLATE, "project_tasks")
                 .with_description("Tasks for a project across all its versions. Use to see all tasks and their status for a specific project.")
                 .with_mime_type("application/json"),
-            ResourceTemplate::new("pmp://projects/{id}/versions", "project_versions")
+            ResourceTemplate::new(PROJECT_VERSIONS_TEMPLATE, "project_versions")
                 .with_description("Versions of a project, open ones first. Use to see the release lines of a project and their status.")
                 .with_mime_type("application/json"),
-            ResourceTemplate::new("pmp://versions/{id}/tasks", "version_tasks")
+            ResourceTemplate::new(VERSION_TASKS_TEMPLATE, "version_tasks")
                 .with_description("Tasks of one version. Use to see the work scheduled for a specific release.")
                 .with_mime_type("application/json"),
-            ResourceTemplate::new("pmp://versions/{id}/summaries", "version_summaries")
+            ResourceTemplate::new(VERSION_SUMMARIES_TEMPLATE, "version_summaries")
                 .with_description("Summaries of a version after compaction. Use to review what was frozen.")
                 .with_mime_type("application/json"),
-            ResourceTemplate::new("pmp://summaries/{id}", "version_summary")
+            ResourceTemplate::new(SUMMARY_TEMPLATE, "version_summary")
                 .with_description("A single version summary by id, including its frozen snapshot.")
                 .with_mime_type("application/json"),
         ];
@@ -245,9 +267,9 @@ impl PmpServer {
         let repo = self.repo.clone();
 
         match uri {
-            "pmp://projects" => read_json_resource(repo, uri, |repo| repo.list_projects()).await,
-            uri if uri.starts_with("pmp://versions/") => {
-                let tail = &uri["pmp://versions/".len()..];
+            PROJECTS_URI => read_json_resource(repo, uri, |repo| repo.list_projects()).await,
+            uri if uri.starts_with(VERSIONS_PREFIX) => {
+                let tail = &uri[VERSIONS_PREFIX.len()..];
                 if let Some(prefix) = tail.strip_suffix("/summaries") {
                     let id = prefix
                         .parse::<i64>()
@@ -262,14 +284,14 @@ impl PmpServer {
                     read_json_resource(repo, uri, move |repo| repo.list_tasks_by_version(id)).await
                 }
             }
-            uri if uri.starts_with("pmp://summaries/") => {
-                let id = uri["pmp://summaries/".len()..]
+            uri if uri.starts_with(SUMMARIES_PREFIX) => {
+                let id = uri[SUMMARIES_PREFIX.len()..]
                     .parse::<i64>()
                     .map_err(|_| ErrorData::invalid_params("invalid summary id", None))?;
                 read_json_resource(repo, uri, move |repo| repo.get_version_summary(id)).await
             }
-            uri if uri.starts_with("pmp://projects/") => {
-                let tail = &uri["pmp://projects/".len()..];
+            uri if uri.starts_with(PROJECTS_PREFIX) => {
+                let tail = &uri[PROJECTS_PREFIX.len()..];
                 if let Some(prefix) = tail.strip_suffix("/versions") {
                     let id = prefix
                         .parse::<i64>()
@@ -331,7 +353,7 @@ impl PmpServer {
                 })
                 .collect::<Vec<_>>()
         });
-        tool_result(result, "project not found")
+        tool_result(result, PROJECT_NOT_FOUND)
     }
 
     #[tool(
@@ -339,8 +361,10 @@ impl PmpServer {
         description = "List all projects of the user. Use to discover project ids before listing versions or tasks, or when the user asks what projects they have."
     )]
     async fn list_projects(&self) -> Result<CallToolResult, ErrorData> {
-        let result = execute_repository(self.repo.clone(), |repo| repo.list_projects()).await?;
-        tool_result(result, "project not found")
+        run_tool(self.repo.clone(), PROJECT_NOT_FOUND, |repo| {
+            repo.list_projects()
+        })
+        .await
     }
 
     #[tool(
@@ -351,7 +375,7 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<CreateProjectParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
             if params.name.trim().is_empty() {
                 return Err(AppError::Validation(
                     "project name cannot be empty".to_string(),
@@ -360,8 +384,7 @@ impl PmpServer {
             let description = params.description.unwrap_or_default();
             repo.create_project(&params.name, &description)
         })
-        .await?;
-        tool_result(result, "project not found")
+        .await
     }
 
     #[tool(
@@ -372,7 +395,7 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<UpdateProjectParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
             if params.name.trim().is_empty() {
                 return Err(AppError::Validation(
                     "project name cannot be empty".to_string(),
@@ -382,8 +405,7 @@ impl PmpServer {
             let description = params.description.unwrap_or(current.description);
             repo.update_project(params.project_id, &params.name, &description)
         })
-        .await?;
-        tool_result(result, "project not found")
+        .await
     }
 
     #[tool(
@@ -394,12 +416,11 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<ListVersionsParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
             repo.get_project(params.project_id)?;
             repo.list_versions_by_project(params.project_id)
         })
-        .await?;
-        tool_result(result, "project not found")
+        .await
     }
 
     #[tool(
@@ -410,7 +431,7 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<CreateVersionParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
             let status = match params.status.as_deref() {
                 Some(value) => VersionStatus::try_from_str(value)?,
                 None => VersionStatus::Open,
@@ -425,8 +446,7 @@ impl PmpServer {
                 _ => Ok(version),
             }
         })
-        .await?;
-        tool_result(result, "project not found")
+        .await
     }
 
     #[tool(
@@ -437,7 +457,7 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<UpdateVersionParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        run_tool(self.repo.clone(), VERSION_NOT_FOUND, move |repo| {
             if params.name.trim().is_empty() {
                 return Err(AppError::Validation(
                     "version name cannot be empty".to_string(),
@@ -451,8 +471,7 @@ impl PmpServer {
             };
             repo.update_version(params.version_id, &params.name, &description, status)
         })
-        .await?;
-        tool_result(result, "version not found")
+        .await
     }
 
     #[tool(
@@ -463,11 +482,10 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<MoveTaskParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        run_tool(self.repo.clone(), TASK_OR_VERSION_NOT_FOUND, move |repo| {
             repo.move_task(params.task_id, params.version_id)
         })
-        .await?;
-        tool_result(result, "task or version not found")
+        .await
     }
 
     #[tool(
@@ -480,11 +498,10 @@ impl PmpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let task_id = params.task_id;
         let priority = params.priority;
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        run_tool(self.repo.clone(), TASK_NOT_FOUND, move |repo| {
             repo.update_task_priority(task_id, priority.into())
         })
-        .await?;
-        tool_result(result, "task not found")
+        .await
     }
 
     #[tool(
@@ -495,7 +512,7 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<UpdateTaskParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        run_tool(self.repo.clone(), TASK_NOT_FOUND, move |repo| {
             if let Some(name) = &params.name
                 && name.trim().is_empty()
             {
@@ -535,8 +552,7 @@ impl PmpServer {
                 current.priority,
             )
         })
-        .await?;
-        tool_result(result, "task not found")
+        .await
     }
 
     #[tool(
@@ -547,7 +563,7 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<CreateTaskParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
             if params.name.trim().is_empty() {
                 return Err(AppError::Validation(
                     "task name cannot be empty".to_string(),
@@ -565,8 +581,7 @@ impl PmpServer {
                 params.priority.into(),
             )
         })
-        .await?;
-        tool_result(result, "project not found")
+        .await
     }
 
     #[tool(
@@ -579,7 +594,7 @@ impl PmpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let task_id = params.task_id;
         let new_status = params.status;
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        run_tool(self.repo.clone(), TASK_NOT_FOUND, move |repo| {
             let task = repo.get_task(task_id)?;
             if new_status == Status::Done
                 && task.status != Status::Done
@@ -591,8 +606,7 @@ impl PmpServer {
             }
             repo.update_task_status(task_id, new_status)
         })
-        .await?;
-        tool_result(result, "task not found")
+        .await
     }
 
     #[tool(
@@ -616,7 +630,7 @@ impl PmpServer {
                     "depends_on_ids": depends_on_ids,
                 })
             }),
-            "task not found",
+            TASK_NOT_FOUND,
         )
     }
 
@@ -641,7 +655,7 @@ impl PmpServer {
                     "task_ids": task_ids,
                 })
             }),
-            "task not found",
+            TASK_NOT_FOUND,
         )
     }
 
@@ -668,7 +682,7 @@ impl PmpServer {
                     "depends_on_id": depends_on_id,
                 })
             }),
-            "task not found",
+            TASK_NOT_FOUND,
         )
     }
 
@@ -693,7 +707,7 @@ impl PmpServer {
                     "depends_on_ids": ids,
                 })
             }),
-            "task not found",
+            TASK_NOT_FOUND,
         )
     }
 
@@ -720,7 +734,7 @@ impl PmpServer {
                     "depends_on_id": depends_on_id,
                 })
             }),
-            "task not found",
+            TASK_NOT_FOUND,
         )
     }
 
@@ -733,12 +747,11 @@ impl PmpServer {
         Parameters(params): Parameters<TaskIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let task_id = params.task_id;
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        run_tool(self.repo.clone(), TASK_NOT_FOUND, move |repo| {
             repo.get_task(task_id)?;
             repo.list_task_notes(task_id)
         })
-        .await?;
-        tool_result(result, "task not found")
+        .await
     }
 
     #[tool(
@@ -751,12 +764,11 @@ impl PmpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let task_id = params.task_id;
         let content = params.content;
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        run_tool(self.repo.clone(), TASK_NOT_FOUND, move |repo| {
             repo.get_task(task_id)?;
             repo.add_task_note(task_id, &content)
         })
-        .await?;
-        tool_result(result, "task not found")
+        .await
     }
 
     #[tool(
@@ -774,7 +786,7 @@ impl PmpServer {
         .await?;
         tool_result(
             result.map(|()| serde_json::json!({ "note_id": note_id })),
-            "note not found",
+            NOTE_NOT_FOUND,
         )
     }
 
@@ -787,14 +799,13 @@ impl PmpServer {
         Parameters(params): Parameters<VersionIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let version_id = params.version_id;
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        run_tool(self.repo.clone(), VERSION_NOT_FOUND, move |repo| {
             repo.get_version(version_id)?;
             let snapshot = repo.build_compact_snapshot(version_id)?;
             serde_json::from_str::<serde_json::Value>(&snapshot)
                 .map_err(|e| AppError::Validation(format!("snapshot parse error: {e}")))
         })
-        .await?;
-        tool_result(result, "version not found")
+        .await
     }
 
     #[tool(
@@ -808,7 +819,7 @@ impl PmpServer {
         let version_id = params.version_id;
         let summary = params.summary;
         let mark_released = params.mark_released.unwrap_or(true);
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        run_tool(self.repo.clone(), VERSION_NOT_FOUND, move |repo| {
             repo.can_compact(version_id)?;
             let snapshot = repo.build_compact_snapshot(version_id)?;
             // Replaces the previous summary, stores the new one and deletes the
@@ -832,8 +843,7 @@ impl PmpServer {
             }
             Ok(created)
         })
-        .await?;
-        tool_result(result, "version not found")
+        .await
     }
 
     #[tool(
@@ -845,12 +855,11 @@ impl PmpServer {
         Parameters(params): Parameters<VersionIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let version_id = params.version_id;
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        run_tool(self.repo.clone(), VERSION_NOT_FOUND, move |repo| {
             repo.get_version(version_id)?;
             repo.list_version_summaries(version_id)
         })
-        .await?;
-        tool_result(result, "version not found")
+        .await
     }
 
     #[tool(
@@ -863,15 +872,14 @@ impl PmpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let version_id = params.version_id;
         let summary_id = params.summary_id;
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        run_tool(self.repo.clone(), SUMMARY_NOT_FOUND, move |repo| {
             let summary = repo.get_version_summary(summary_id)?;
             if summary.version_id != version_id {
                 return Err(AppError::NotFound);
             }
             Ok(summary)
         })
-        .await?;
-        tool_result(result, "summary not found")
+        .await
     }
 
     #[tool(
@@ -889,7 +897,7 @@ impl PmpServer {
         .await?;
         tool_result(
             result.map(|()| serde_json::json!({ "summary_id": summary_id })),
-            "summary not found",
+            SUMMARY_NOT_FOUND,
         )
     }
 
@@ -909,7 +917,7 @@ impl PmpServer {
         .await?;
         tool_result(
             result.map(|path| serde_json::json!({ "path": path.to_string_lossy() })),
-            "summary not found",
+            SUMMARY_NOT_FOUND,
         )
     }
 }
@@ -979,6 +987,21 @@ fn tool_result<T: Serialize>(
     }
 }
 
+/// Runs a repository operation for a tool and maps the outcome to a tool
+/// result, using `not_found` as the text for a missing record.
+async fn run_tool<T, F>(
+    repo: Arc<dyn Repository>,
+    not_found: &str,
+    operation: F,
+) -> Result<CallToolResult, ErrorData>
+where
+    T: Serialize + Send + 'static,
+    F: FnOnce(Arc<dyn Repository>) -> Result<T, AppError> + Send + 'static,
+{
+    let result = execute_repository(repo, operation).await?;
+    tool_result(result, not_found)
+}
+
 #[tool_handler]
 impl ServerHandler for PmpServer {
     async fn list_resources(
@@ -1041,7 +1064,7 @@ fn app_error_to_mcp(err: AppError) -> ErrorData {
     match err {
         AppError::NotFound => ErrorData::new(
             ErrorCode::RESOURCE_NOT_FOUND,
-            "resource not found".to_string(),
+            RESOURCE_NOT_FOUND_MESSAGE.to_string(),
             None::<serde_json::Value>,
         ),
         AppError::DbError(source) => internal_error(source),
@@ -1315,6 +1338,27 @@ mod tests {
                 .map(|t| (&t.uri_template, &t.name))
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[tokio::test]
+    async fn every_listed_template_is_readable() {
+        let (server, _) = server();
+        let templates = server
+            .list_resource_templates()
+            .await
+            .unwrap()
+            .resource_templates;
+        assert!(!templates.is_empty());
+        for template in templates {
+            let uri = template.uri_template.replace("{id}", "1");
+            if let Err(err) = server.read_resource(&uri).await {
+                assert_ne!(
+                    err.message, "unsupported resource uri",
+                    "template {} is listed but not readable",
+                    template.uri_template
+                );
+            }
+        }
     }
 
     #[tokio::test]

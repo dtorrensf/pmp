@@ -40,9 +40,6 @@ pub trait Component {
     fn handle_event(&mut self, _event: &Event) -> Option<Action> {
         None
     }
-    fn update(&mut self, _action: Action) -> Option<Action> {
-        None
-    }
     fn render(&self, frame: &mut Frame, area: Rect);
     fn keybindings(&self) -> &'static [(KeyEvent, &'static str)] {
         &[]
