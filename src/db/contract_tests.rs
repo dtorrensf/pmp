@@ -7,7 +7,7 @@
 //! (Liskov Substitution Principle). Add new behavioral guarantees here
 //! whenever the trait contract grows.
 
-use crate::db::repository::{Repository, RepositoryPolicy};
+use crate::db::repository::{Repository, RepositoryPolicy, TaskFilter};
 use crate::db::sqlite::SqliteRepository;
 use crate::db::stub::StubRepository;
 use crate::domain::error::AppError;
@@ -126,6 +126,59 @@ fn add_task_note_rejects_oversized_content() {
         assert!(
             matches!(result, Err(AppError::Validation(_))),
             "{name}: expected Validation error for an oversized note, got {result:?}"
+        );
+    });
+}
+
+#[test]
+fn list_tasks_page_filters_in_storage_and_paginates() {
+    for_each_repo(|name, repo| {
+        let project = repo.create_project("P", "").unwrap();
+        let project_id = project.id.unwrap();
+        let version_id = repo.default_version_id(project_id).unwrap();
+        for (task_name, status, priority) in [
+            ("todo-low", Status::Todo, Priority::Low),
+            ("todo-high", Status::Todo, Priority::High),
+            ("done-low", Status::Done, Priority::Low),
+            ("progress", Status::InProgress, Priority::Medium),
+        ] {
+            repo.create_task(project_id, version_id, task_name, "", status, priority)
+                .unwrap();
+        }
+
+        let todo = TaskFilter {
+            project_id,
+            version_id: Some(version_id),
+            status: Some(Status::Todo),
+            priority: None,
+        };
+        assert_eq!(repo.count_tasks(&todo).unwrap(), 2, "{name}");
+        assert_eq!(
+            repo.list_tasks_page(&todo, 10, 0).unwrap().len(),
+            2,
+            "{name}"
+        );
+
+        let high = TaskFilter {
+            priority: Some(Priority::High),
+            ..todo
+        };
+        assert_eq!(repo.count_tasks(&high).unwrap(), 1, "{name}");
+        let page = repo.list_tasks_page(&high, 10, 0).unwrap();
+        assert_eq!(page[0].name, "todo-high", "{name}");
+
+        let second = repo.list_tasks_page(&todo, 1, 1).unwrap();
+        assert_eq!(second.len(), 1, "{name}");
+
+        let done = TaskFilter {
+            status: Some(Status::Done),
+            ..todo
+        };
+        assert_eq!(repo.count_tasks(&done).unwrap(), 1, "{name}");
+        assert_eq!(
+            repo.list_tasks_page(&done, 10, 1).unwrap().len(),
+            0,
+            "{name}"
         );
     });
 }

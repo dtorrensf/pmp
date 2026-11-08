@@ -9,6 +9,36 @@ use crate::domain::task::{Priority, Status, Task, TaskNote};
 use crate::domain::version::{Version, VersionStatus};
 use crate::domain::version_summary::VersionSummary;
 
+/// Maximum number of rows returned by an unpaginated list query. Callers that
+/// legitimately need more must page explicitly; failing loudly is safer than
+/// silently truncating a compaction snapshot.
+pub const MAX_LIST_ROWS: usize = 10_000;
+
+/// Upper bound used in SQL so a list query never loads more than one row past
+/// [`MAX_LIST_ROWS`], which is enough to report the overflow.
+pub(crate) const LIST_LIMIT: usize = MAX_LIST_ROWS + 1;
+
+/// Filter for a paginated task listing. All fields except `project_id` are
+/// optional, and every provided field is applied in SQL by the SQLite backend.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TaskFilter {
+    pub project_id: i64,
+    pub version_id: Option<i64>,
+    pub status: Option<Status>,
+    pub priority: Option<Priority>,
+}
+
+/// Rejects a list that exceeded [`MAX_LIST_ROWS`] instead of returning a
+/// partial result.
+pub(crate) fn check_list_size<T>(rows: Vec<T>) -> Result<Vec<T>, AppError> {
+    if rows.len() > MAX_LIST_ROWS {
+        return Err(AppError::Validation(format!(
+            "too many rows to list (limit {MAX_LIST_ROWS}); narrow the query"
+        )));
+    }
+    Ok(rows)
+}
+
 /// Project persistence: projects and their deletion.
 pub trait ProjectRepository {
     fn list_projects(&self) -> Result<Vec<Project>, AppError>;
@@ -51,6 +81,47 @@ pub trait TaskRepository {
     fn list_tasks_by_project(&self, project_id: i64) -> Result<Vec<Task>, AppError>;
 
     fn list_tasks_by_version(&self, version_id: i64) -> Result<Vec<Task>, AppError>;
+
+    /// Paginated, SQL-filtered task listing used by the MCP server. The default
+    /// implementation filters in memory so every backend gets the same
+    /// behaviour; SQLite overrides it with `WHERE` and `LIMIT/OFFSET`.
+    fn list_tasks_page(
+        &self,
+        filter: &TaskFilter,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<Task>, AppError> {
+        let mut tasks = match filter.version_id {
+            Some(version_id) => self.list_tasks_by_version(version_id)?,
+            None => self.list_tasks_by_project(filter.project_id)?,
+        };
+        tasks.retain(|task| {
+            filter.status.is_none_or(|status| task.status == status)
+                && filter
+                    .priority
+                    .is_none_or(|priority| task.priority == priority)
+        });
+        Ok(tasks
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .collect())
+    }
+
+    /// Total number of tasks matching `filter`, for pagination metadata.
+    fn count_tasks(&self, filter: &TaskFilter) -> Result<u64, AppError> {
+        let mut tasks = match filter.version_id {
+            Some(version_id) => self.list_tasks_by_version(version_id)?,
+            None => self.list_tasks_by_project(filter.project_id)?,
+        };
+        tasks.retain(|task| {
+            filter.status.is_none_or(|status| task.status == status)
+                && filter
+                    .priority
+                    .is_none_or(|priority| task.priority == priority)
+        });
+        Ok(tasks.len() as u64)
+    }
 
     fn create_task(
         &self,
@@ -262,39 +333,6 @@ pub(crate) fn unique_ids(ids: &[i64]) -> Vec<i64> {
     ids.iter().copied().filter(|id| seen.insert(*id)).collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use super::{Repository, check_done_transition};
-    use crate::domain::error::AppError;
-    use crate::domain::task::Status;
-
-    #[test]
-    fn repository_trait_is_object_safe() {
-        let _: Option<Arc<dyn Repository>> = None;
-    }
-
-    #[test]
-    fn done_transition_rule_covers_every_case() {
-        let blocked = || Ok(true);
-        let clear = || Ok(false);
-        // Entering Done with incomplete dependencies is rejected.
-        assert!(matches!(
-            check_done_transition(Status::Todo, Status::Done, blocked),
-            Err(AppError::Validation(_))
-        ));
-        // Entering Done without incomplete dependencies is allowed.
-        assert!(check_done_transition(Status::Todo, Status::Done, clear).is_ok());
-        // Done to Done is a no-op and is allowed even when blocked.
-        assert!(check_done_transition(Status::Done, Status::Done, blocked).is_ok());
-        // Leaving Done or moving between open states never consults dependencies.
-        let fail = || -> Result<bool, AppError> { panic!("dependencies must not be checked") };
-        assert!(check_done_transition(Status::Done, Status::Todo, fail).is_ok());
-        assert!(check_done_transition(Status::Todo, Status::InProgress, fail).is_ok());
-    }
-}
-
 /// Lets the domain policy read through any repository, so the rules run
 /// against the same data the persistence port exposes.
 impl<T: Repository + ?Sized> VersionQueries for T {
@@ -353,5 +391,38 @@ impl<T: Repository + ?Sized> RepositoryPolicy for T {
 
     fn build_compact_snapshot(&self, version_id: i64) -> Result<String, AppError> {
         CompactService::new(self).build_snapshot(version_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::{Repository, check_done_transition};
+    use crate::domain::error::AppError;
+    use crate::domain::task::Status;
+
+    #[test]
+    fn repository_trait_is_object_safe() {
+        let _: Option<Arc<dyn Repository>> = None;
+    }
+
+    #[test]
+    fn done_transition_rule_covers_every_case() {
+        let blocked = || Ok(true);
+        let clear = || Ok(false);
+        // Entering Done with incomplete dependencies is rejected.
+        assert!(matches!(
+            check_done_transition(Status::Todo, Status::Done, blocked),
+            Err(AppError::Validation(_))
+        ));
+        // Entering Done without incomplete dependencies is allowed.
+        assert!(check_done_transition(Status::Todo, Status::Done, clear).is_ok());
+        // Done to Done is a no-op and is allowed even when blocked.
+        assert!(check_done_transition(Status::Done, Status::Done, blocked).is_ok());
+        // Leaving Done or moving between open states never consults dependencies.
+        let fail = || -> Result<bool, AppError> { panic!("dependencies must not be checked") };
+        assert!(check_done_transition(Status::Done, Status::Todo, fail).is_ok());
+        assert!(check_done_transition(Status::Todo, Status::InProgress, fail).is_ok());
     }
 }

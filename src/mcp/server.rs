@@ -17,7 +17,7 @@ use rmcp::{tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
 use tokio::task;
 
-use crate::db::repository::{Repository, RepositoryPolicy};
+use crate::db::repository::{Repository, RepositoryPolicy, TaskFilter};
 use crate::domain::error::AppError;
 use crate::domain::task::{Priority, Status};
 use crate::domain::validation::{validate_name, validate_text};
@@ -52,6 +52,18 @@ const SUMMARY_TEMPLATE: &str = "pmp://summaries/{id}";
 const DEFAULT_REPOSITORY_TIMEOUT: Duration = Duration::from_secs(30);
 const REPOSITORY_TIMEOUT_ENV: &str = "PMP_MCP_TIMEOUT_SECS";
 
+/// Default and maximum page size for `list_tasks`.
+const DEFAULT_TASK_PAGE_SIZE: u32 = 100;
+const MAX_TASK_PAGE_SIZE: u32 = 500;
+
+/// Upper bound for one serialized tool or resource response. Pagination keeps
+/// normal pages below this; the cap protects the client context window when a
+/// single record (a summary snapshot, a note) is still large.
+const MAX_RESPONSE_BYTES: usize = 1_000_000;
+
+/// Items per page when listing resources or resource templates.
+const RESOURCE_PAGE_SIZE: usize = 50;
+
 pub struct PmpServer {
     repo: Arc<dyn Repository>,
 }
@@ -84,6 +96,19 @@ pub struct ListTasksParams {
     pub version_id: Option<i64>,
     pub status: Option<Status>,
     pub priority: Option<PriorityParam>,
+    /// Maximum tasks to return. Defaults to 100; capped at 500.
+    pub limit: Option<u32>,
+    /// Number of matching tasks to skip. Defaults to 0.
+    pub offset: Option<u32>,
+}
+
+#[derive(Serialize)]
+struct TaskPage {
+    tasks: Vec<crate::domain::task::Task>,
+    total: u64,
+    limit: u32,
+    offset: u32,
+    has_more: bool,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -243,16 +268,25 @@ impl PmpServer {
         Self { repo }
     }
 
-    pub async fn list_resources(&self) -> Result<ListResourcesResult, ErrorData> {
+    pub async fn list_resources_page(
+        &self,
+        cursor: Option<&str>,
+    ) -> Result<ListResourcesResult, ErrorData> {
         let resource = Resource::new(PROJECTS_URI, "projects")
             .with_description(
                 "All user projects. Read this to see what projects the user is working on.",
             )
             .with_mime_type("application/json");
-        Ok(ListResourcesResult::with_all_items(vec![resource]))
+        let (resources, next_cursor) = paginate_page(vec![resource], cursor, RESOURCE_PAGE_SIZE)?;
+        let mut result = ListResourcesResult::with_all_items(resources);
+        result.next_cursor = next_cursor;
+        Ok(result)
     }
 
-    pub async fn list_resource_templates(&self) -> Result<ListResourceTemplatesResult, ErrorData> {
+    pub async fn list_resource_templates_page(
+        &self,
+        cursor: Option<&str>,
+    ) -> Result<ListResourceTemplatesResult, ErrorData> {
         let templates = vec![
             ResourceTemplate::new(PROJECT_TEMPLATE, "project")
                 .with_description("A single project by id. Use to get details about a specific project.")
@@ -273,7 +307,10 @@ impl PmpServer {
                 .with_description("A single version summary by id, including its frozen snapshot.")
                 .with_mime_type("application/json"),
         ];
-        Ok(ListResourceTemplatesResult::with_all_items(templates))
+        let (templates, next_cursor) = paginate_page(templates, cursor, RESOURCE_PAGE_SIZE)?;
+        let mut result = ListResourceTemplatesResult::with_all_items(templates);
+        result.next_cursor = next_cursor;
+        Ok(result)
     }
 
     pub async fn read_resource(&self, uri: &str) -> Result<ReadResourceResult, ErrorData> {
@@ -329,7 +366,7 @@ impl PmpServer {
 
     #[tool(
         name = "list_tasks",
-        description = "List tasks for a project, optionally filtered by version_id (see list_versions), status (todo, in_progress, done) and priority (Low, Medium, High). Use when the user asks about their tasks, to-dos, pending work or progress, or to pick the next task to work on."
+        description = "List tasks for a project, optionally filtered by version_id (see list_versions), status (todo, in_progress, done) and priority (Low, Medium, High). Results are paginated: use limit (default 100, max 500) and offset, and check has_more/total to fetch the next page. Use when the user asks about their tasks, to-dos, pending work or progress, or to pick the next task to work on."
     )]
     async fn list_tasks(
         &self,
@@ -339,33 +376,41 @@ impl PmpServer {
         let version_id = params.version_id;
         let status = params.status;
         let priority = params.priority.map(Priority::from);
+        let limit = params
+            .limit
+            .unwrap_or(DEFAULT_TASK_PAGE_SIZE)
+            .clamp(1, MAX_TASK_PAGE_SIZE);
+        let offset = params.offset.unwrap_or(0);
+        let filter = TaskFilter {
+            project_id,
+            version_id,
+            status,
+            priority,
+        };
         let result = execute_repository(self.repo.clone(), move |repo| {
             repo.get_project(project_id)?;
-            match version_id {
-                Some(version_id) => {
-                    let version = repo.get_version(version_id).map_err(|_| {
-                        AppError::Validation("version does not belong to the project".to_string())
-                    })?;
-                    if version.project_id != project_id {
-                        return Err(AppError::Validation(
-                            "version does not belong to the project".to_string(),
-                        ));
-                    }
-                    repo.list_tasks_by_version(version_id)
+            if let Some(version_id) = version_id {
+                let version = repo.get_version(version_id).map_err(|_| {
+                    AppError::Validation("version does not belong to the project".to_string())
+                })?;
+                if version.project_id != project_id {
+                    return Err(AppError::Validation(
+                        "version does not belong to the project".to_string(),
+                    ));
                 }
-                None => repo.list_tasks_by_project(project_id),
             }
+            let tasks = repo.list_tasks_page(&filter, limit, offset)?;
+            let total = repo.count_tasks(&filter)?;
+            let has_more = (u64::from(offset) + tasks.len() as u64) < total;
+            Ok(TaskPage {
+                tasks,
+                total,
+                limit,
+                offset,
+                has_more,
+            })
         })
         .await?;
-        let result = result.map(|tasks| {
-            tasks
-                .into_iter()
-                .filter(|task| {
-                    status.is_none_or(|value| task.status == value)
-                        && priority.is_none_or(|value| task.priority == value)
-                })
-                .collect::<Vec<_>>()
-        });
         tool_result(result, PROJECT_NOT_FOUND)
     }
 
@@ -976,13 +1021,52 @@ where
         .await?
         .map_err(app_error_to_mcp)?;
     let text = serde_json::to_string_pretty(&value).map_err(internal_error)?;
+    if text.len() > MAX_RESPONSE_BYTES {
+        return Err(response_too_large());
+    }
     Ok(ReadResourceResult::new(vec![
         ResourceContents::text(text, uri).with_mime_type("application/json"),
     ]))
 }
 
 fn json_content<T: Serialize>(value: &T) -> Result<ContentBlock, ErrorData> {
+    let bytes = serde_json::to_vec(value).map_err(internal_error)?;
+    if bytes.len() > MAX_RESPONSE_BYTES {
+        return Err(response_too_large());
+    }
     ContentBlock::json(value).map_err(internal_error)
+}
+
+/// Error returned when one response would exceed [`MAX_RESPONSE_BYTES`].
+fn response_too_large() -> ErrorData {
+    ErrorData::invalid_params(
+        format!("response exceeds {MAX_RESPONSE_BYTES} bytes; narrow the query or use pagination"),
+        None::<serde_json::Value>,
+    )
+}
+
+/// Slices `items` using an offset cursor (`"0"`, `"50"`, ...). Returns the page
+/// and the cursor for the next page when one exists.
+fn paginate_page<T>(
+    items: Vec<T>,
+    cursor: Option<&str>,
+    page_size: usize,
+) -> Result<(Vec<T>, Option<String>), ErrorData> {
+    let mut items = items;
+    let start = match cursor {
+        Some(cursor) if !cursor.is_empty() => cursor
+            .parse::<usize>()
+            .map_err(|_| ErrorData::invalid_params("invalid cursor", None))?,
+        _ => 0,
+    };
+    if start > items.len() {
+        return Err(ErrorData::invalid_params("cursor is out of range", None));
+    }
+    let total = items.len();
+    let end = (start + page_size).min(total);
+    let page = items.drain(start..end).collect();
+    let next_cursor = (end < total).then(|| end.to_string());
+    Ok((page, next_cursor))
 }
 
 fn tool_success<T: Serialize>(value: &T) -> Result<CallToolResult, ErrorData> {
@@ -1027,18 +1111,20 @@ where
 impl ServerHandler for PmpServer {
     async fn list_resources(
         &self,
-        _request: Option<rmcp::model::PaginatedRequestParams>,
+        request: Option<rmcp::model::PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
-        self.list_resources().await
+        self.list_resources_page(request.as_ref().and_then(|r| r.cursor.as_deref()))
+            .await
     }
 
     async fn list_resource_templates(
         &self,
-        _request: Option<rmcp::model::PaginatedRequestParams>,
+        request: Option<rmcp::model::PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, ErrorData> {
-        self.list_resource_templates().await
+        self.list_resource_templates_page(request.as_ref().and_then(|r| r.cursor.as_deref()))
+            .await
     }
 
     async fn read_resource(
@@ -1120,10 +1206,11 @@ mod tests {
     use super::{
         AddTaskNoteParams, CompactVersionParams, CreateProjectParams, CreateTaskParams,
         CreateVersionParams, DeleteVersionSummaryParams, ExportVersionSummaryParams,
-        ListTasksParams, ListVersionsParams, MoveTaskParams, NoteIdParams, PmpServer,
-        ReadVersionSummaryParams, SetTaskDependenciesParams, TaskDependencyParams, TaskIdParams,
-        UpdateProjectParams, UpdateTaskParams, UpdateTaskPriorityParams, UpdateTaskStatusParams,
-        UpdateVersionParams, VersionIdParams, app_error_to_mcp,
+        ListTasksParams, ListVersionsParams, MAX_RESPONSE_BYTES, MoveTaskParams, NoteIdParams,
+        PmpServer, ReadVersionSummaryParams, SetTaskDependenciesParams, TaskDependencyParams,
+        TaskIdParams, UpdateProjectParams, UpdateTaskParams, UpdateTaskPriorityParams,
+        UpdateTaskStatusParams, UpdateVersionParams, VersionIdParams, app_error_to_mcp,
+        json_content, paginate_page,
     };
     use crate::mcp::task_description::compose_description;
 
@@ -1173,6 +1260,12 @@ mod tests {
             .next()
             .and_then(|c| c.as_text().map(|t| t.text.clone()))
             .expect("tool result should have text content")
+    }
+
+    /// Extracts the `tasks` array from a `list_tasks` page response.
+    fn page_tasks(text: &str) -> Vec<Task> {
+        let page: serde_json::Value = serde_json::from_str(text).unwrap();
+        serde_json::from_value(page["tasks"].clone()).unwrap()
     }
 
     struct FailingRepository;
@@ -1358,7 +1451,7 @@ mod tests {
     #[tokio::test]
     async fn list_resources_includes_projects() {
         let (server, _) = server();
-        let result = server.list_resources().await.unwrap();
+        let result = server.list_resources_page(None).await.unwrap();
         assert_eq!(result.resources.len(), 1);
         assert_eq!(result.resources[0].uri, "pmp://projects");
     }
@@ -1366,7 +1459,7 @@ mod tests {
     #[tokio::test]
     async fn list_resource_templates_include_project_and_tasks() {
         let (server, _) = server();
-        let result = server.list_resource_templates().await.unwrap();
+        let result = server.list_resource_templates_page(None).await.unwrap();
         insta::assert_json_snapshot!(
             result
                 .resource_templates
@@ -1380,7 +1473,7 @@ mod tests {
     async fn every_listed_template_is_readable() {
         let (server, _) = server();
         let templates = server
-            .list_resource_templates()
+            .list_resource_templates_page(None)
             .await
             .unwrap()
             .resource_templates;
@@ -1468,12 +1561,50 @@ mod tests {
                 version_id: None,
                 status: None,
                 priority: None,
+                limit: None,
+                offset: None,
             }))
             .await
             .unwrap();
         let text = tool_text(result);
-        let tasks: Vec<Task> = serde_json::from_str(&text).unwrap();
+        let tasks = page_tasks(&text);
         assert_eq!(tasks.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn list_tasks_paginates_with_limit_and_offset() {
+        let (server, _, pid) = seeded_server();
+        let first = server
+            .list_tasks(Parameters(ListTasksParams {
+                project_id: pid,
+                version_id: None,
+                status: None,
+                priority: None,
+                limit: Some(2),
+                offset: None,
+            }))
+            .await
+            .unwrap();
+        let page: serde_json::Value = serde_json::from_str(&tool_text(first)).unwrap();
+        assert_eq!(page["tasks"].as_array().unwrap().len(), 2);
+        assert_eq!(page["total"], 3);
+        assert_eq!(page["has_more"], true);
+
+        let second = server
+            .list_tasks(Parameters(ListTasksParams {
+                project_id: pid,
+                version_id: None,
+                status: None,
+                priority: None,
+                limit: Some(2),
+                offset: Some(2),
+            }))
+            .await
+            .unwrap();
+        let page: serde_json::Value = serde_json::from_str(&tool_text(second)).unwrap();
+        assert_eq!(page["tasks"].as_array().unwrap().len(), 1);
+        assert_eq!(page["total"], 3);
+        assert_eq!(page["has_more"], false);
     }
 
     #[tokio::test]
@@ -1485,11 +1616,13 @@ mod tests {
                 version_id: None,
                 status: Some(Status::Done),
                 priority: None,
+                limit: None,
+                offset: None,
             }))
             .await
             .unwrap();
         let text = tool_text(result);
-        let tasks: Vec<Task> = serde_json::from_str(&text).unwrap();
+        let tasks = page_tasks(&text);
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].status, Status::Done);
     }
@@ -1503,11 +1636,13 @@ mod tests {
                 version_id: None,
                 status: None,
                 priority: Some(PriorityParam::High),
+                limit: None,
+                offset: None,
             }))
             .await
             .unwrap();
         let text = tool_text(result);
-        let tasks: Vec<Task> = serde_json::from_str(&text).unwrap();
+        let tasks = page_tasks(&text);
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].priority, Priority::High);
     }
@@ -1521,14 +1656,51 @@ mod tests {
                 version_id: None,
                 status: Some(Status::Todo),
                 priority: Some(PriorityParam::Low),
+                limit: None,
+                offset: None,
             }))
             .await
             .unwrap();
         let text = tool_text(result);
-        let tasks: Vec<Task> = serde_json::from_str(&text).unwrap();
+        let tasks = page_tasks(&text);
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].status, Status::Todo);
         assert_eq!(tasks[0].priority, Priority::Low);
+    }
+
+    #[tokio::test]
+    async fn resource_lists_reject_invalid_cursor() {
+        let (server, _) = server();
+        let err = server
+            .list_resources_page(Some("not-a-number"))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        let err = server
+            .list_resource_templates_page(Some("999"))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn paginate_page_slices_and_reports_next_cursor() {
+        let (page, next) = paginate_page(vec![1, 2, 3, 4, 5], None, 2).unwrap();
+        assert_eq!(page, vec![1, 2]);
+        assert_eq!(next.as_deref(), Some("2"));
+        let (page, next) = paginate_page(vec![1, 2, 3, 4, 5], Some("2"), 2).unwrap();
+        assert_eq!(page, vec![3, 4]);
+        assert_eq!(next.as_deref(), Some("4"));
+        let (page, next) = paginate_page(vec![1, 2, 3, 4, 5], Some("4"), 2).unwrap();
+        assert_eq!(page, vec![5]);
+        assert!(next.is_none());
+    }
+
+    #[test]
+    fn json_content_rejects_oversized_responses() {
+        let big = "a".repeat(MAX_RESPONSE_BYTES + 1);
+        let err = json_content(&big).unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     }
 
     #[tokio::test]
@@ -1540,6 +1712,8 @@ mod tests {
                 version_id: None,
                 status: None,
                 priority: None,
+                limit: None,
+                offset: None,
             }))
             .await
             .unwrap();
@@ -1557,6 +1731,8 @@ mod tests {
                 version_id: None,
                 status: None,
                 priority: None,
+                limit: None,
+                offset: None,
             }))
             .await
             .unwrap_err();
@@ -1589,6 +1765,8 @@ mod tests {
                 version_id: None,
                 status: None,
                 priority: None,
+                limit: None,
+                offset: None,
             }))
             .await
             .unwrap_err();
@@ -2443,7 +2621,7 @@ mod tests {
         drop(running);
 
         let text = tool_text(result);
-        let tasks: Vec<Task> = serde_json::from_str(&text).unwrap();
+        let tasks = page_tasks(&text);
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].status, Status::Done);
     }
@@ -3038,7 +3216,7 @@ mod tests {
         let content = call_response["result"]["content"][0]["text"]
             .as_str()
             .expect("tool result should have text content");
-        let tasks: Vec<Task> = serde_json::from_str(content).unwrap();
+        let tasks = page_tasks(content);
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].status, Status::Done);
 
@@ -3252,10 +3430,12 @@ mod tests {
                 version_id: Some(v1),
                 status: None,
                 priority: None,
+                limit: None,
+                offset: None,
             }))
             .await
             .unwrap();
-        let tasks: Vec<Task> = serde_json::from_str(&tool_text(result)).unwrap();
+        let tasks = page_tasks(&tool_text(result));
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].name, "New");
     }
@@ -3271,6 +3451,8 @@ mod tests {
                 version_id: Some(repo.default_version_id(beta).unwrap()),
                 status: None,
                 priority: None,
+                limit: None,
+                offset: None,
             }))
             .await
             .unwrap();
@@ -3469,7 +3651,7 @@ mod tests {
     #[tokio::test]
     async fn resource_templates_include_versions_and_version_tasks() {
         let (server, _) = server();
-        let result = server.list_resource_templates().await.unwrap();
+        let result = server.list_resource_templates_page(None).await.unwrap();
         let uris: Vec<&str> = result
             .resource_templates
             .iter()
@@ -3561,18 +3743,19 @@ mod tests {
         .unwrap();
         assert_eq!(task.version_id, version_id);
 
-        let filtered: Vec<Task> = serde_json::from_str(&tool_text(
+        let filtered = page_tasks(&tool_text(
             server
                 .list_tasks(Parameters(ListTasksParams {
                     project_id: pid,
                     version_id: Some(version_id),
                     status: None,
                     priority: None,
+                    limit: None,
+                    offset: None,
                 }))
                 .await
                 .unwrap(),
-        ))
-        .unwrap();
+        ));
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id, task.id);
     }

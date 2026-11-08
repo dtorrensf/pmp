@@ -4,12 +4,13 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
 
-use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
-use rusqlite::{Connection, Row, params};
+use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, Value, ValueRef};
+use rusqlite::{Connection, Row, params, params_from_iter};
 
 use crate::db::repository::{
-    DependencyRepository, NoteRepository, ProjectRepository, SummaryRepository, TaskRepository,
-    VersionRepository, check_dependency_set, check_done_transition, check_task_move, unique_ids,
+    DependencyRepository, LIST_LIMIT, NoteRepository, ProjectRepository, SummaryRepository,
+    TaskFilter, TaskRepository, VersionRepository, check_dependency_set, check_done_transition,
+    check_list_size, check_task_move, unique_ids,
 };
 use crate::domain::error::AppError;
 use crate::domain::project::Project;
@@ -67,12 +68,13 @@ impl SqliteRepository {
 impl ProjectRepository for SqliteRepository {
     fn list_projects(&self) -> Result<Vec<Project>, AppError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt =
-            conn.prepare("SELECT id, name, description, created_at FROM projects ORDER BY id")?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT id, name, description, created_at FROM projects ORDER BY id LIMIT {LIST_LIMIT}"
+        ))?;
         let projects = stmt
             .query_map([], project_from_row)?
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(projects)
+        check_list_size(projects)
     }
 
     fn create_project(&self, name: &str, description: &str) -> Result<Project, AppError> {
@@ -130,7 +132,8 @@ impl VersionRepository for SqliteRepository {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(&format!(
             "SELECT {VERSION_COLUMNS} FROM versions WHERE project_id = ?1
-                 ORDER BY CASE WHEN status = ?2 THEN 1 ELSE 0 END, id DESC"
+                 ORDER BY CASE WHEN status = ?2 THEN 1 ELSE 0 END, id DESC
+                 LIMIT {LIST_LIMIT}"
         ))?;
         let versions = stmt
             .query_map(
@@ -138,7 +141,7 @@ impl VersionRepository for SqliteRepository {
                 version_from_row,
             )?
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(versions)
+        check_list_size(versions)
     }
 
     fn create_version(
@@ -209,24 +212,81 @@ impl TaskRepository for SqliteRepository {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(&format!(
             "SELECT {TASK_COLUMNS} FROM tasks WHERE project_id = ?1
-                 ORDER BY CASE WHEN status = ?2 THEN 1 ELSE 0 END, priority DESC, created_at DESC"
+                 ORDER BY CASE WHEN status = ?2 THEN 1 ELSE 0 END, priority DESC, created_at DESC, id DESC
+                 LIMIT {LIST_LIMIT}"
         ))?;
         let tasks = stmt
             .query_map(params![project_id, Status::Done.as_str()], task_from_row)?
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(tasks)
+        check_list_size(tasks)
     }
 
     fn list_tasks_by_version(&self, version_id: i64) -> Result<Vec<Task>, AppError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(&format!(
             "SELECT {TASK_COLUMNS} FROM tasks WHERE version_id = ?1
-                 ORDER BY CASE WHEN status = ?2 THEN 1 ELSE 0 END, priority DESC, created_at DESC"
+                 ORDER BY CASE WHEN status = ?2 THEN 1 ELSE 0 END, priority DESC, created_at DESC, id DESC
+                 LIMIT {LIST_LIMIT}"
         ))?;
         let tasks = stmt
             .query_map(params![version_id, Status::Done.as_str()], task_from_row)?
             .collect::<Result<Vec<_>, _>>()?;
+        check_list_size(tasks)
+    }
+
+    fn list_tasks_page(
+        &self,
+        filter: &TaskFilter,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<Task>, AppError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE project_id = ?");
+        let mut values = vec![Value::Integer(filter.project_id)];
+        if let Some(version_id) = filter.version_id {
+            sql.push_str(" AND version_id = ?");
+            values.push(Value::Integer(version_id));
+        }
+        if let Some(status) = filter.status {
+            sql.push_str(" AND status = ?");
+            values.push(Value::Text(status.as_str().to_string()));
+        }
+        if let Some(priority) = filter.priority {
+            sql.push_str(" AND priority = ?");
+            values.push(Value::Integer(i64::from(priority)));
+        }
+        sql.push_str(
+            " ORDER BY CASE WHEN status = ? THEN 1 ELSE 0 END, priority DESC, created_at DESC, id DESC
+              LIMIT ? OFFSET ?",
+        );
+        values.push(Value::Text(Status::Done.as_str().to_string()));
+        values.push(Value::Integer(i64::from(limit)));
+        values.push(Value::Integer(i64::from(offset)));
+        let mut stmt = conn.prepare(&sql)?;
+        let tasks = stmt
+            .query_map(params_from_iter(values), task_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(tasks)
+    }
+
+    fn count_tasks(&self, filter: &TaskFilter) -> Result<u64, AppError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut sql = String::from("SELECT COUNT(*) FROM tasks WHERE project_id = ?");
+        let mut values = vec![Value::Integer(filter.project_id)];
+        if let Some(version_id) = filter.version_id {
+            sql.push_str(" AND version_id = ?");
+            values.push(Value::Integer(version_id));
+        }
+        if let Some(status) = filter.status {
+            sql.push_str(" AND status = ?");
+            values.push(Value::Text(status.as_str().to_string()));
+        }
+        if let Some(priority) = filter.priority {
+            sql.push_str(" AND priority = ?");
+            values.push(Value::Integer(i64::from(priority)));
+        }
+        let count: i64 = conn.query_row(&sql, params_from_iter(values), |row| row.get(0))?;
+        Ok(count as u64)
     }
 
     fn create_task(
@@ -495,15 +555,16 @@ impl DependencyRepository for SqliteRepository {
 impl NoteRepository for SqliteRepository {
     fn list_task_notes(&self, task_id: i64) -> Result<Vec<TaskNote>, AppError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(&format!(
             "SELECT id, task_id, content, created_at
              FROM task_notes WHERE task_id = ?1
-             ORDER BY created_at DESC, id DESC",
-        )?;
+             ORDER BY created_at DESC, id DESC
+             LIMIT {LIST_LIMIT}"
+        ))?;
         let notes = stmt
             .query_map([task_id], task_note_from_row)?
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(notes)
+        check_list_size(notes)
     }
 
     fn add_task_note(&self, task_id: i64, content: &str) -> Result<TaskNote, AppError> {
@@ -535,15 +596,16 @@ impl NoteRepository for SqliteRepository {
 impl SummaryRepository for SqliteRepository {
     fn list_version_summaries(&self, version_id: i64) -> Result<Vec<VersionSummary>, AppError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(&format!(
             "SELECT id, version_id, summary, snapshot_json, generated_at, created_at
              FROM version_summaries WHERE version_id = ?1
-             ORDER BY generated_at DESC, id DESC",
-        )?;
+             ORDER BY generated_at DESC, id DESC
+             LIMIT {LIST_LIMIT}"
+        ))?;
         let summaries = stmt
             .query_map([version_id], version_summary_from_row)?
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(summaries)
+        check_list_size(summaries)
     }
 
     fn get_version_summary(&self, id: i64) -> Result<VersionSummary, AppError> {
