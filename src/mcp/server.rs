@@ -1,6 +1,7 @@
 // Copyright (C) 2026 Diego Torréns Farias
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use rmcp::ErrorData;
@@ -44,6 +45,12 @@ const PROJECT_VERSIONS_TEMPLATE: &str = "pmp://projects/{id}/versions";
 const VERSION_TASKS_TEMPLATE: &str = "pmp://versions/{id}/tasks";
 const VERSION_SUMMARIES_TEMPLATE: &str = "pmp://versions/{id}/summaries";
 const SUMMARY_TEMPLATE: &str = "pmp://summaries/{id}";
+
+/// Deadline for one repository operation. A tool or resource read runs its
+/// repository work as a single blocking operation, so this bounds each MCP
+/// request. Override with `PMP_MCP_TIMEOUT_SECS` when a slow disk needs longer.
+const DEFAULT_REPOSITORY_TIMEOUT: Duration = Duration::from_secs(30);
+const REPOSITORY_TIMEOUT_ENV: &str = "PMP_MCP_TIMEOUT_SECS";
 
 pub struct PmpServer {
     repo: Arc<dyn Repository>,
@@ -910,9 +917,35 @@ where
     T: Send + 'static,
     F: FnOnce(Arc<dyn Repository>) -> Result<T, AppError> + Send + 'static,
 {
-    task::spawn_blocking(move || operation(repo))
-        .await
-        .map_err(internal_error)
+    execute_repository_with_timeout(repo, operation, repository_timeout()).await
+}
+
+async fn execute_repository_with_timeout<T, F>(
+    repo: Arc<dyn Repository>,
+    operation: F,
+    timeout: Duration,
+) -> Result<Result<T, AppError>, ErrorData>
+where
+    T: Send + 'static,
+    F: FnOnce(Arc<dyn Repository>) -> Result<T, AppError> + Send + 'static,
+{
+    let handle = task::spawn_blocking(move || operation(repo));
+    match tokio::time::timeout(timeout, handle).await {
+        Ok(joined) => joined.map_err(internal_error),
+        Err(_) => Err(internal_error("repository operation timed out")),
+    }
+}
+
+/// Timeout for repository operations: `PMP_MCP_TIMEOUT_SECS` when it is a
+/// positive integer, otherwise the default. An invalid value is ignored rather
+/// than preventing the server from starting.
+fn repository_timeout() -> Duration {
+    std::env::var(REPOSITORY_TIMEOUT_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_REPOSITORY_TIMEOUT)
 }
 
 async fn read_json_resource<T, F>(
@@ -3577,6 +3610,22 @@ mod priority_param_tests {
         }))
         .unwrap();
         assert_eq!(params.priority.map(Priority::from), Some(Priority::High));
+    }
+
+    #[tokio::test]
+    async fn repository_operations_time_out() {
+        let repo: Arc<dyn Repository> = Arc::new(crate::db::stub::StubRepository::default());
+        let result = execute_repository_with_timeout(
+            repo,
+            |_| {
+                std::thread::sleep(Duration::from_millis(200));
+                Ok(())
+            },
+            Duration::from_millis(10),
+        )
+        .await;
+        let err = result.expect_err("a blocked operation must fail with a timeout");
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
     }
 }
 
