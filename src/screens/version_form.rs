@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use std::sync::Arc;
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    widgets::{Block, Borders, Clear},
 };
 use ratatui_textarea::TextArea;
 
@@ -14,6 +13,9 @@ use crate::db::repository::Repository;
 use crate::domain::version::VersionStatus;
 use crate::screens::components::fields::{
     field_cursor_x, render_description_field, render_field, render_readonly_field,
+};
+use crate::screens::components::form::{
+    TextTarget, handle_text_keys, is_submit, key_press, next_field, render_form_frame,
 };
 use crate::screens::components::keys::{ctrl, key};
 use crate::screens::{Action, Component, Screen};
@@ -71,6 +73,19 @@ impl VersionForm {
     }
 }
 
+impl VersionForm {
+    /// Routes an editing key to the active text field. The status field takes
+    /// no text, so keys there are ignored.
+    fn handle_field_key(&mut self, code: KeyCode) {
+        let target = match self.active_field {
+            NAME => TextTarget::Line(&mut self.name),
+            DESCRIPTION => TextTarget::Area(&mut self.description),
+            _ => return,
+        };
+        handle_text_keys(target, code);
+    }
+}
+
 impl Component for VersionForm {
     fn init(&mut self) -> anyhow::Result<()> {
         if let Some(id) = self.version_id {
@@ -95,17 +110,8 @@ impl Component for VersionForm {
     }
 
     fn handle_event(&mut self, event: &Event) -> Option<Action> {
-        let Event::Key(KeyEvent {
-            code,
-            modifiers,
-            kind: KeyEventKind::Press,
-            ..
-        }) = event
-        else {
-            return None;
-        };
-
-        if *code == KeyCode::Char('s') && modifiers.contains(KeyModifiers::CONTROL) {
+        let (code, modifiers) = key_press(event)?;
+        if is_submit(code, modifiers) {
             return Some(Action::SaveVersion {
                 version_id: self.version_id,
                 project_id: self.project_id,
@@ -114,79 +120,30 @@ impl Component for VersionForm {
                 status: self.status,
             });
         }
-
         match code {
             KeyCode::Esc => Some(Action::Navigate(self.return_to.clone())),
             KeyCode::Tab => {
-                self.active_field = (self.active_field + 1) % 3;
+                self.active_field = next_field(self.active_field, 3);
                 None
             }
-            KeyCode::Backspace => {
-                match self.active_field {
-                    NAME => {
-                        self.name.pop();
-                    }
-                    DESCRIPTION => {
-                        self.description.delete_char();
-                    }
-                    _ => {}
-                }
-                None
-            }
-            KeyCode::Left | KeyCode::Right if self.active_field == STATUS => {
+            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if self.active_field == STATUS => {
                 self.status = self.status.next();
                 None
             }
-            KeyCode::Left if self.active_field == DESCRIPTION => {
-                self.description
-                    .move_cursor(ratatui_textarea::CursorMove::Back);
+            _ => {
+                self.handle_field_key(code);
                 None
             }
-            KeyCode::Right if self.active_field == DESCRIPTION => {
-                self.description
-                    .move_cursor(ratatui_textarea::CursorMove::Forward);
-                None
-            }
-            KeyCode::Up if self.active_field == DESCRIPTION => {
-                self.description
-                    .move_cursor(ratatui_textarea::CursorMove::Up);
-                None
-            }
-            KeyCode::Down if self.active_field == DESCRIPTION => {
-                self.description
-                    .move_cursor(ratatui_textarea::CursorMove::Down);
-                None
-            }
-            KeyCode::Enter if self.active_field == DESCRIPTION => {
-                self.description.insert_newline();
-                None
-            }
-            KeyCode::Char(' ') if self.active_field == STATUS => {
-                self.status = self.status.next();
-                None
-            }
-            KeyCode::Char(c) => {
-                match self.active_field {
-                    NAME => self.name.push(*c),
-                    DESCRIPTION => self.description.insert_char(*c),
-                    _ => {}
-                }
-                None
-            }
-            _ => None,
         }
     }
 
     fn render(&self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(Clear, area);
         let title = if self.version_id.is_some() {
             "Edit Version"
         } else {
             "Create Version"
         };
-        let block = Block::default().title(title).borders(Borders::ALL);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+        let inner = render_form_frame(frame, area, title);
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)

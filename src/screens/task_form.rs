@@ -3,12 +3,12 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 use ratatui_textarea::TextArea;
 
@@ -16,6 +16,9 @@ use crate::db::repository::Repository;
 use crate::domain::task::{Priority, Status, Task, TaskNote};
 use crate::screens::components::fields::{
     field_cursor_x, render_description_field, render_field, render_readonly_field,
+};
+use crate::screens::components::form::{
+    TextTarget, handle_text_keys, is_submit, key_press, next_field, render_form_frame,
 };
 use crate::screens::components::keys::{ctrl, key};
 use crate::screens::components::popup::{centered_rect_percent, render_popup_scaffold};
@@ -209,6 +212,87 @@ impl TaskForm {
     }
 }
 
+impl TaskForm {
+    /// Ctrl+S: rejects an empty name, otherwise emits `SaveTask`.
+    fn submit(&mut self) -> Option<Action> {
+        if self.name.trim().is_empty() {
+            self.error = Some("Task name cannot be empty".to_string());
+            return None;
+        }
+        Some(Action::SaveTask {
+            task_id: self.task_id,
+            version_id: self.version_id,
+            name: self.name.clone(),
+            description: self.description.lines().join("\n"),
+            status: self.status,
+            priority: self.priority,
+            depends_on_ids: self.selected_deps.iter().copied().collect(),
+        })
+    }
+
+    /// PageUp/PageDown scroll the dependency or notes list when it is focused.
+    fn scroll_focused_section(&self, up: bool) {
+        let scroll = match self.active_field {
+            4 => &self.deps_scroll,
+            5 => &self.notes_scroll,
+            _ => return,
+        };
+        if up {
+            scroll.page_up();
+        } else {
+            scroll.page_down();
+        }
+    }
+
+    /// Enter opens the dependency picker on field 4 and saves the typed note
+    /// on field 5. On the other fields it behaves as an editing key.
+    fn handle_enter(&mut self) -> Option<Action> {
+        match self.active_field {
+            4 => {
+                self.dep_original_selection = self.selected_deps.clone();
+                self.dep_filter.clear();
+                self.popup_selected = 0;
+                self.recompute_filtered_tasks();
+                self.show_dep_popup = true;
+                None
+            }
+            5 => match self.task_id {
+                Some(task_id) if !self.new_note.trim().is_empty() => Some(Action::AddTaskNote {
+                    task_id,
+                    content: self.new_note.clone(),
+                }),
+                _ => None,
+            },
+            _ => {
+                self.handle_field_key(KeyCode::Enter);
+                None
+            }
+        }
+    }
+
+    /// Routes a key to the focused field. Status and priority cycle with
+    /// ←/→ or h/l, the text fields take the key as editing input, and the
+    /// dependency field takes no keys here.
+    fn handle_field_key(&mut self, code: KeyCode) {
+        match (self.active_field, code) {
+            (2, KeyCode::Left | KeyCode::Char('h')) => self.status = self.status.previous(),
+            (2, KeyCode::Right | KeyCode::Char('l')) => self.status = self.status.next(),
+            (3, KeyCode::Left | KeyCode::Char('h')) => self.priority = self.priority.previous(),
+            (3, KeyCode::Right | KeyCode::Char('l')) => self.priority = self.priority.next(),
+            (0, _) => {
+                handle_text_keys(TextTarget::Line(&mut self.name), code);
+            }
+            (1, _) => {
+                handle_text_keys(TextTarget::Area(&mut self.description), code);
+            }
+            (5, _) => {
+                handle_text_keys(TextTarget::Line(&mut self.new_note), code);
+            }
+            _ => {}
+        }
+    }
+}
+
 impl Component for TaskForm {
     fn init(&mut self) -> anyhow::Result<()> {
         self.project_id = self.repo.get_version(self.version_id)?.project_id;
@@ -269,167 +353,38 @@ impl Component for TaskForm {
     }
 
     fn handle_event(&mut self, event: &Event) -> Option<Action> {
-        if let Event::Key(KeyEvent {
-            code,
-            modifiers,
-            kind: KeyEventKind::Press,
-            ..
-        }) = event
-        {
-            if *code == KeyCode::Char('s') && modifiers.contains(KeyModifiers::CONTROL) {
-                if self.name.trim().is_empty() {
-                    self.error = Some("Task name cannot be empty".to_string());
-                    return None;
-                }
-                return Some(Action::SaveTask {
-                    task_id: self.task_id,
-                    version_id: self.version_id,
-                    name: self.name.clone(),
-                    description: self.description.lines().join("\n"),
-                    status: self.status,
-                    priority: self.priority,
-                    depends_on_ids: self.selected_deps.iter().copied().collect(),
-                });
+        let (code, modifiers) = key_press(event)?;
+        if is_submit(code, modifiers) {
+            return self.submit();
+        }
+        if self.show_dep_popup {
+            return self.handle_popup_event(&code);
+        }
+        match code {
+            KeyCode::Esc => Some(Action::Navigate(self.return_to.clone())),
+            KeyCode::Tab => {
+                self.active_field = next_field(self.active_field, 6);
+                None
             }
-
-            if self.show_dep_popup {
-                return self.handle_popup_event(code);
+            KeyCode::PageUp | KeyCode::PageDown => {
+                self.scroll_focused_section(code == KeyCode::PageUp);
+                None
             }
-
-            match code {
-                KeyCode::Esc => Some(Action::Navigate(self.return_to.clone())),
-                KeyCode::Tab => {
-                    self.active_field = (self.active_field + 1) % 6;
-                    None
-                }
-                KeyCode::PageUp | KeyCode::PageDown => {
-                    let scroll = match self.active_field {
-                        4 => &self.deps_scroll,
-                        5 => &self.notes_scroll,
-                        _ => return None,
-                    };
-                    if *code == KeyCode::PageUp {
-                        scroll.page_up();
-                    } else {
-                        scroll.page_down();
-                    }
-                    None
-                }
-                KeyCode::Backspace => {
-                    match self.active_field {
-                        0 => {
-                            self.name.pop();
-                        }
-                        1 => {
-                            self.description.delete_char();
-                        }
-                        5 => {
-                            self.new_note.pop();
-                        }
-                        _ => {}
-                    }
-                    None
-                }
-                KeyCode::Left => {
-                    if self.active_field == 1 {
-                        self.description
-                            .move_cursor(ratatui_textarea::CursorMove::Back);
-                    } else if self.active_field == 2 {
-                        self.status = self.status.previous();
-                    } else if self.active_field == 3 {
-                        self.priority = self.priority.previous();
-                    }
-                    None
-                }
-                KeyCode::Right => {
-                    if self.active_field == 1 {
-                        self.description
-                            .move_cursor(ratatui_textarea::CursorMove::Forward);
-                    } else if self.active_field == 2 {
-                        self.status = self.status.next();
-                    } else if self.active_field == 3 {
-                        self.priority = self.priority.next();
-                    }
-                    None
-                }
-                KeyCode::Up => {
-                    if self.active_field == 1 {
-                        self.description
-                            .move_cursor(ratatui_textarea::CursorMove::Up);
-                    }
-                    None
-                }
-                KeyCode::Down => {
-                    if self.active_field == 1 {
-                        self.description
-                            .move_cursor(ratatui_textarea::CursorMove::Down);
-                    }
-                    None
-                }
-                KeyCode::Enter => {
-                    if self.active_field == 1 {
-                        self.description.insert_newline();
-                    } else if self.active_field == 4 {
-                        self.dep_original_selection = self.selected_deps.clone();
-                        self.dep_filter.clear();
-                        self.popup_selected = 0;
-                        self.recompute_filtered_tasks();
-                        self.show_dep_popup = true;
-                    } else if self.active_field == 5
-                        && let Some(task_id) = self.task_id
-                        && !self.new_note.trim().is_empty()
-                    {
-                        return Some(Action::AddTaskNote {
-                            task_id,
-                            content: self.new_note.clone(),
-                        });
-                    }
-                    None
-                }
-                KeyCode::Char(c) => {
-                    match self.active_field {
-                        0 => self.name.push(*c),
-                        1 => {
-                            self.description.insert_char(*c);
-                        }
-                        2 => {
-                            if *c == 'h' {
-                                self.status = self.status.previous();
-                            } else if *c == 'l' {
-                                self.status = self.status.next();
-                            }
-                        }
-                        3 => {
-                            if *c == 'h' {
-                                self.priority = self.priority.previous();
-                            } else if *c == 'l' {
-                                self.priority = self.priority.next();
-                            }
-                        }
-                        5 => {
-                            self.new_note.push(*c);
-                        }
-                        _ => {}
-                    }
-                    None
-                }
-                _ => None,
+            KeyCode::Enter => self.handle_enter(),
+            _ => {
+                self.handle_field_key(code);
+                None
             }
-        } else {
-            None
         }
     }
 
     fn render(&self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(Clear, area);
         let title = if self.task_id.is_some() {
             "Edit Task"
         } else {
             "Create Task"
         };
-        let block = Block::default().title(title).borders(Borders::ALL);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+        let inner = render_form_frame(frame, area, title);
 
         let mut constraints = vec![
             Constraint::Length(3), // Name

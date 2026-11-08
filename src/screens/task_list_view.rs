@@ -185,153 +185,179 @@ impl TaskListView {
     /// embedding screen, which should consult [`TaskListView::is_browsing`]
     /// before applying them.
     pub fn handle_key(&mut self, code: KeyCode, repo: &dyn Repository) -> Option<Action> {
-        match &mut self.mode {
-            TaskListMode::Browsing => match code {
-                KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j') => {
-                    move_selection(&mut self.selected, self.tasks.len(), code);
-                    None
-                }
-                KeyCode::Enter => self.tasks.get(self.selected).map(|task| {
-                    Action::Navigate(Screen::TaskForm {
-                        version_id: task.version_id,
-                        task_id: task.id,
-                    })
+        match self.mode {
+            TaskListMode::Browsing => self.handle_browsing_key(code, repo),
+            TaskListMode::ConfirmDelete(_) => self.handle_confirm_delete_key(code),
+            TaskListMode::MovingTask(_) => self.handle_moving_key(code),
+            TaskListMode::Filtering(_) => self.handle_filtering_key(code),
+        }
+    }
+
+    /// Keys while browsing the table: move the selection, open, change status,
+    /// delete, or start filtering.
+    fn handle_browsing_key(&mut self, code: KeyCode, repo: &dyn Repository) -> Option<Action> {
+        match code {
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j') => {
+                move_selection(&mut self.selected, self.tasks.len(), code);
+                None
+            }
+            KeyCode::Enter => self.tasks.get(self.selected).map(|task| {
+                Action::Navigate(Screen::TaskForm {
+                    version_id: task.version_id,
+                    task_id: task.id,
+                })
+            }),
+            KeyCode::Tab => self
+                .tasks
+                .get(self.selected)
+                .map(|task| Action::UpdateTaskStatus {
+                    task_id: task.id.unwrap_or(0),
+                    new_status: task.status.next(),
                 }),
-                KeyCode::Tab => {
-                    self.tasks
-                        .get(self.selected)
-                        .map(|task| Action::UpdateTaskStatus {
-                            task_id: task.id.unwrap_or(0),
-                            new_status: task.status.next(),
-                        })
+            KeyCode::Char('d') => {
+                if let Some(task) = self.tasks.get(self.selected) {
+                    let task_id = task.id.unwrap_or(0);
+                    let task_name = task.name.clone();
+                    let dependents_count = repo.get_dependents(task_id).unwrap_or_default().len();
+                    let message = if dependents_count > 0 {
+                        format!(
+                            "Deleting will remove {} dependency links. Continue? (y/N)",
+                            dependents_count
+                        )
+                    } else {
+                        format!("Delete task {}? (y/N)", task_name)
+                    };
+                    self.mode = TaskListMode::ConfirmDelete(ConfirmDialog::new(
+                        message,
+                        Action::DeleteTask { task_id },
+                    ));
                 }
-                KeyCode::Char('d') => {
-                    if let Some(task) = self.tasks.get(self.selected) {
-                        let task_id = task.id.unwrap_or(0);
-                        let task_name = task.name.clone();
-                        let dependents_count =
-                            repo.get_dependents(task_id).unwrap_or_default().len();
-                        let message = if dependents_count > 0 {
-                            format!(
-                                "Deleting will remove {} dependency links. Continue? (y/N)",
-                                dependents_count
-                            )
-                        } else {
-                            format!("Delete task {}? (y/N)", task_name)
-                        };
-                        self.mode = TaskListMode::ConfirmDelete(ConfirmDialog::new(
-                            message,
-                            Action::DeleteTask { task_id },
-                        ));
-                    }
-                    None
-                }
-                KeyCode::Char('f') => {
-                    self.mode = TaskListMode::Filtering(FilterState {
-                        filter_title: self.filter_title.clone().unwrap_or_default(),
-                        filter_status: self.filter_status,
-                        filter_priority: self.filter_priority,
-                        selected_field: FilterField::Status,
-                    });
-                    None
-                }
-                _ => None,
-            },
-            TaskListMode::ConfirmDelete(dialog) => {
-                let action = dialog.handle_key(code);
+                None
+            }
+            KeyCode::Char('f') => {
+                self.mode = TaskListMode::Filtering(FilterState {
+                    filter_title: self.filter_title.clone().unwrap_or_default(),
+                    filter_status: self.filter_status,
+                    filter_priority: self.filter_priority,
+                    selected_field: FilterField::Status,
+                });
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Keys in the delete confirmation: the dialog decides, then browsing resumes.
+    fn handle_confirm_delete_key(&mut self, code: KeyCode) -> Option<Action> {
+        let TaskListMode::ConfirmDelete(dialog) = &mut self.mode else {
+            return None;
+        };
+        let action = dialog.handle_key(code);
+        self.mode = TaskListMode::Browsing;
+        action
+    }
+
+    /// Keys in the move-to-version popup.
+    fn handle_moving_key(&mut self, code: KeyCode) -> Option<Action> {
+        let TaskListMode::MovingTask(state) = &mut self.mode else {
+            return None;
+        };
+        match code {
+            KeyCode::Esc => {
+                self.mode = TaskListMode::Browsing;
+                None
+            }
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j') => {
+                move_selection(&mut state.selected, state.targets.len(), code);
+                None
+            }
+            KeyCode::Enter => {
+                let action = state.targets.get(state.selected).and_then(|target| {
+                    target.id.map(|version_id| Action::MoveTask {
+                        task_id: state.task_id,
+                        version_id,
+                    })
+                });
+                // Without targets (only one version) the popup just closes.
                 self.mode = TaskListMode::Browsing;
                 action
             }
-            TaskListMode::MovingTask(state) => match code {
-                KeyCode::Esc => {
-                    self.mode = TaskListMode::Browsing;
-                    None
-                }
-                KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j') => {
-                    move_selection(&mut state.selected, state.targets.len(), code);
-                    None
-                }
-                KeyCode::Enter => {
-                    let action = state.targets.get(state.selected).and_then(|target| {
-                        target.id.map(|version_id| Action::MoveTask {
-                            task_id: state.task_id,
-                            version_id,
-                        })
-                    });
-                    // Without targets (only one version) the popup just closes.
-                    self.mode = TaskListMode::Browsing;
-                    action
-                }
-                _ => None,
-            },
-            TaskListMode::Filtering(state) => match code {
-                KeyCode::Esc => {
-                    self.mode = TaskListMode::Browsing;
-                    None
-                }
-                KeyCode::Enter => {
-                    self.filter_title = (!state.filter_title.trim().is_empty())
-                        .then(|| state.filter_title.trim().to_lowercase());
-                    self.filter_status = state.filter_status;
-                    self.filter_priority = state.filter_priority;
-                    self.apply_filter();
-                    self.mode = TaskListMode::Browsing;
-                    None
-                }
-                KeyCode::Tab => {
-                    state.selected_field = match state.selected_field {
-                        FilterField::Title => FilterField::Status,
-                        FilterField::Status => FilterField::Priority,
-                        FilterField::Priority => FilterField::Title,
-                    };
-                    None
-                }
-                KeyCode::Char(character) if state.selected_field == FilterField::Title => {
-                    state.filter_title.push(character);
-                    None
-                }
-                KeyCode::Backspace if state.selected_field == FilterField::Title => {
-                    state.filter_title.pop();
-                    None
-                }
-                KeyCode::Left => {
-                    match state.selected_field {
-                        FilterField::Title => {}
-                        FilterField::Status => {
-                            state.filter_status = state
-                                .filter_status
-                                .map(Status::cycle_previous)
-                                .unwrap_or(Some(Status::Done));
-                        }
-                        FilterField::Priority => {
-                            state.filter_priority = state
-                                .filter_priority
-                                .map(Priority::cycle_previous)
-                                .unwrap_or(Some(Priority::Low));
-                        }
-                    };
-                    None
-                }
-                KeyCode::Right => {
-                    match state.selected_field {
-                        FilterField::Title => {}
-                        FilterField::Status => {
-                            state.filter_status = state
-                                .filter_status
-                                .map(Status::cycle_next)
-                                .unwrap_or(Some(Status::Todo));
-                        }
-                        FilterField::Priority => {
-                            state.filter_priority = state
-                                .filter_priority
-                                .map(Priority::cycle_next)
-                                .unwrap_or(Some(Priority::High));
-                        }
-                    };
-                    None
-                }
-                _ => None,
-            },
+            _ => None,
+        }
+    }
+
+    /// Keys in the filter popup: edit the title, cycle status and priority.
+    fn handle_filtering_key(&mut self, code: KeyCode) -> Option<Action> {
+        let TaskListMode::Filtering(state) = &mut self.mode else {
+            return None;
+        };
+        match code {
+            KeyCode::Esc => {
+                self.mode = TaskListMode::Browsing;
+                None
+            }
+            KeyCode::Enter => {
+                self.filter_title = (!state.filter_title.trim().is_empty())
+                    .then(|| state.filter_title.trim().to_lowercase());
+                self.filter_status = state.filter_status;
+                self.filter_priority = state.filter_priority;
+                self.apply_filter();
+                self.mode = TaskListMode::Browsing;
+                None
+            }
+            KeyCode::Tab => {
+                state.selected_field = match state.selected_field {
+                    FilterField::Title => FilterField::Status,
+                    FilterField::Status => FilterField::Priority,
+                    FilterField::Priority => FilterField::Title,
+                };
+                None
+            }
+            KeyCode::Char(character) if state.selected_field == FilterField::Title => {
+                state.filter_title.push(character);
+                None
+            }
+            KeyCode::Backspace if state.selected_field == FilterField::Title => {
+                state.filter_title.pop();
+                None
+            }
+            KeyCode::Left => {
+                match state.selected_field {
+                    FilterField::Title => {}
+                    FilterField::Status => {
+                        state.filter_status = state
+                            .filter_status
+                            .map(Status::cycle_previous)
+                            .unwrap_or(Some(Status::Done));
+                    }
+                    FilterField::Priority => {
+                        state.filter_priority = state
+                            .filter_priority
+                            .map(Priority::cycle_previous)
+                            .unwrap_or(Some(Priority::Low));
+                    }
+                };
+                None
+            }
+            KeyCode::Right => {
+                match state.selected_field {
+                    FilterField::Title => {}
+                    FilterField::Status => {
+                        state.filter_status = state
+                            .filter_status
+                            .map(Status::cycle_next)
+                            .unwrap_or(Some(Status::Todo));
+                    }
+                    FilterField::Priority => {
+                        state.filter_priority = state
+                            .filter_priority
+                            .map(Priority::cycle_next)
+                            .unwrap_or(Some(Priority::High));
+                    }
+                };
+                None
+            }
+            _ => None,
         }
     }
 
