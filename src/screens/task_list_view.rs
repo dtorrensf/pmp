@@ -15,7 +15,7 @@ use crate::screens::components::confirm_dialog::ConfirmDialog;
 use crate::screens::components::fields::{render_field, render_readonly_field};
 use crate::screens::components::list_navigation::move_selection;
 use crate::screens::components::popup::{centered_rect, render_popup_scaffold};
-use crate::screens::components::scroll::{ListScroll, render_scrollbar};
+use crate::screens::components::scroll::{ListScroll, list_rows, render_list_scrollbar};
 use crate::screens::{Action, Screen};
 
 #[derive(Debug, Clone)]
@@ -381,7 +381,7 @@ impl TaskListView {
         }
 
         // Rows that fit below the top border and the header row.
-        let row_height = area.height.saturating_sub(3) as usize;
+        let row_height = list_rows(area, 1);
         let range = self
             .scroll
             .visible_range(self.tasks.len(), self.selected, row_height);
@@ -438,11 +438,7 @@ impl TaskListView {
             .block(Block::default().title(title).borders(Borders::ALL));
         frame.render_widget(table, area);
 
-        // Scrollbar on the right border, aligned with the data rows.
-        if row_height > 0 && area.width > 0 {
-            let track = Rect::new(area.x + area.width - 1, area.y + 2, 1, row_height as u16);
-            render_scrollbar(frame, track, self.tasks.len(), row_height, range.start);
-        }
+        render_list_scrollbar(frame, area, 1, self.tasks.len(), range.start);
     }
 }
 

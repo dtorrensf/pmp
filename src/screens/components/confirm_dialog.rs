@@ -48,6 +48,37 @@ impl ConfirmDialog {
     }
 }
 
+/// The confirmation a screen currently shows, if any. While it is open the
+/// screen sends every key to it, and the first key closes it.
+#[derive(Debug, Default, Clone)]
+pub struct ConfirmState(Option<ConfirmDialog>);
+
+impl ConfirmState {
+    /// Opens `dialog`, replacing any dialog already open.
+    pub fn open(&mut self, dialog: ConfirmDialog) {
+        self.0 = Some(dialog);
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.0.is_some()
+    }
+
+    pub fn dialog(&self) -> Option<&ConfirmDialog> {
+        self.0.as_ref()
+    }
+
+    pub fn close(&mut self) {
+        self.0 = None;
+    }
+
+    /// Answers the open dialog with `code` and closes it. Returns the action
+    /// to run when `code` confirms it, and `None` otherwise or when no dialog
+    /// is open.
+    pub fn answer(&mut self, code: KeyCode) -> Option<Action> {
+        self.0.take()?.handle_key(code)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crossterm::event::KeyCode;
@@ -89,5 +120,30 @@ mod tests {
     fn render_confirm_dialog_snapshot() {
         let dialog = ConfirmDialog::new("Delete task T3? (y/N)", Action::DeleteTask { task_id: 1 });
         insta::assert_snapshot!(render_dialog(&dialog, 60, 24));
+    }
+
+    #[test]
+    fn answer_closes_the_dialog_on_any_key() {
+        let action = Action::DeleteTask { task_id: 7 };
+        let mut state = ConfirmState::default();
+        state.open(ConfirmDialog::new("Delete?", action.clone()));
+        assert!(state.is_open());
+        assert_eq!(state.answer(KeyCode::Char('n')), None);
+        assert!(!state.is_open());
+    }
+
+    #[test]
+    fn answer_confirms_with_y_and_closes() {
+        let action = Action::DeleteTask { task_id: 7 };
+        let mut state = ConfirmState::default();
+        state.open(ConfirmDialog::new("Delete?", action.clone()));
+        assert_eq!(state.answer(KeyCode::Char('y')), Some(action));
+        assert!(!state.is_open());
+    }
+
+    #[test]
+    fn answer_without_dialog_is_none() {
+        let mut state = ConfirmState::default();
+        assert_eq!(state.answer(KeyCode::Char('y')), None);
     }
 }
