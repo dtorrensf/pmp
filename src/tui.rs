@@ -18,6 +18,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 use crate::screens::Action;
@@ -172,7 +173,7 @@ fn render_footer_row(
         return;
     }
     let hint = format!("⬆ New v{version} (u)");
-    let hint_width = (hint.chars().count() as u16).min(area.width);
+    let hint_width = (hint.width() as u16).min(area.width);
     let parts = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(0), Constraint::Length(hint_width)])

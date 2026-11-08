@@ -12,6 +12,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 use ratatui_textarea::{TextArea, WrapMode};
+use unicode_width::UnicodeWidthStr;
 
 /// Renders an editable text field: red border on `error`, bold border when
 /// `active` (error takes precedence), plain otherwise.
@@ -68,6 +69,15 @@ pub fn render_description_field(
     frame.render_widget(&textarea, area);
 }
 
+/// Screen column for a cursor placed after `text` inside the `Borders::ALL`
+/// field drawn in `area`. Widths use terminal display columns (CJK glyphs take
+/// two), and the result is clamped so the cursor never leaves the field.
+pub fn field_cursor_x(area: Rect, text: &str) -> u16 {
+    let inner = area.width.saturating_sub(2) as usize;
+    let used = text.width().min(inner) as u16;
+    area.x.saturating_add(1).saturating_add(used)
+}
+
 /// Renders a value the user cycles with arrow keys; the title advertises the
 /// `(←/→)` hint and the border is bold while the field is active.
 pub fn render_readonly_field(
@@ -100,7 +110,7 @@ mod tests {
     use crate::screens::Component;
     use crate::screens::test_utils::render_to_string;
 
-    use super::{render_description_field, render_field, render_readonly_field};
+    use super::{field_cursor_x, render_description_field, render_field, render_readonly_field};
 
     /// Adapts the free field-renderer functions to the `Component` interface
     /// so they can be rendered through the shared `test_utils` helpers.
@@ -171,6 +181,19 @@ mod tests {
             .draw(|frame| target.render(frame, frame.area()))
             .unwrap();
         terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn field_cursor_counts_display_columns_and_clamps() {
+        let area = Rect::new(2, 1, 10, 3);
+        // Ascii: after 3 chars -> x + 1 border + 3.
+        assert_eq!(field_cursor_x(area, "abc"), 6);
+        // CJK: two chars occupy four columns.
+        assert_eq!(field_cursor_x(area, "中文"), 2 + 1 + 4);
+        // Longer than the inner width (8): clamped to the right border.
+        assert_eq!(field_cursor_x(area, &"x".repeat(50)), 2 + 1 + 8);
+        // Degenerate width never underflows.
+        assert_eq!(field_cursor_x(Rect::new(0, 0, 0, 0), "abc"), 1);
     }
 
     #[test]

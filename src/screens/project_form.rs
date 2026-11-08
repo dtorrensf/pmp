@@ -11,7 +11,7 @@ use ratatui::{
 use ratatui_textarea::TextArea;
 
 use crate::db::repository::Repository;
-use crate::screens::components::fields::{render_description_field, render_field};
+use crate::screens::components::fields::{field_cursor_x, render_description_field, render_field};
 use crate::screens::components::keys::{ctrl, key};
 use crate::screens::{Action, Component, Screen};
 
@@ -189,7 +189,7 @@ impl Component for ProjectForm {
         );
 
         if self.active_field == 0 {
-            let x = chunks[0].x + 1 + self.name.chars().count() as u16;
+            let x = field_cursor_x(chunks[0], &self.name);
             let y = chunks[0].y + 1;
             frame.set_cursor_position((x, y));
         }

@@ -20,6 +20,8 @@
 use std::cell::Cell;
 use std::ops::Range;
 
+use unicode_width::UnicodeWidthStr;
+
 use ratatui::{
     Frame,
     layout::Rect,
@@ -146,8 +148,10 @@ pub fn clamp_text_scroll(scroll: u16, total_lines: usize, viewport_height: u16) 
 /// Estimates how many rows `text` occupies when wrapped to `width` columns,
 /// using greedy word wrapping similar to `Paragraph` with `Wrap`. Each
 /// logical line is at least one row; words longer than `width` are split.
-/// Widths are counted in `char`s, which is exact for ASCII and close enough
-/// for the Latin text used in the UI. `width == 0` yields one row per line.
+/// Widths are terminal display columns (CJK glyphs take two), so the estimate
+/// matches ratatui's own wrapping. A word wider than `width` is split by
+/// columns, which can be off by one for double-width glyphs at the split point.
+/// `width == 0` yields one row per line.
 pub fn wrapped_line_count(text: &str, width: u16) -> usize {
     let width = width as usize;
     text.lines().map(|line| wrap_line_rows(line, width)).sum()
@@ -160,7 +164,7 @@ fn wrap_line_rows(line: &str, width: usize) -> usize {
     let mut rows = 1;
     let mut col = 0usize;
     for word in line.split_whitespace() {
-        let len = word.chars().count();
+        let len = word.width();
         let needed = if col == 0 { len } else { col + 1 + len };
         if needed <= width {
             col = needed;
@@ -200,6 +204,14 @@ pub fn render_scrollbar(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrap_estimate_counts_cjk_as_double_width() {
+        // "中文中文" is 4 glyphs but 8 columns: it does not fit in 4 columns.
+        assert_eq!(wrapped_line_count("中文中文", 4), 2);
+        assert_eq!(wrapped_line_count("中文 中文", 5), 2);
+        assert_eq!(wrapped_line_count("ab cd", 5), 1);
+    }
 
     #[test]
     fn empty_list_yields_empty_range_and_zero_offset() {

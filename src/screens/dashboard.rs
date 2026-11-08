@@ -11,6 +11,7 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Bar, BarChart, BarGroup, Block, Borders, Gauge, List, ListItem, Paragraph, Wrap},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::db::repository::Repository;
 use crate::domain::project::Project;
@@ -56,7 +57,7 @@ impl VersionRow {
         ];
         let mut spans = vec![
             Span::styled(
-                format!("{:<name_width$}", self.name_column()),
+                pad_display(&self.name_column(), name_width),
                 self.version.status.style(),
             ),
             Span::raw("  "),
@@ -437,12 +438,18 @@ fn status_counts<'a>(tasks: impl IntoIterator<Item = &'a Task>) -> [u64; 3] {
     counts
 }
 
+/// Right-pads `text` with spaces to `width` terminal columns.
+fn pad_display(text: &str, width: usize) -> String {
+    let fill = width.saturating_sub(text.width());
+    format!("{text}{}", " ".repeat(fill))
+}
+
 /// Lines for the versions list. The name column is padded to the longest
 /// name so every bar starts at the same column.
 fn version_lines(rows: &[VersionRow]) -> Vec<Line<'static>> {
     let name_width = rows
         .iter()
-        .map(|row| row.name_column().chars().count())
+        .map(|row| row.name_column().width())
         .max()
         .unwrap_or(0);
     rows.iter().map(|row| row.line(name_width)).collect()
@@ -528,6 +535,14 @@ mod tests {
             .draw(|frame| dashboard.render(frame, frame.area()))
             .unwrap();
         buffer_to_string(terminal.backend().buffer())
+    }
+
+    #[test]
+    fn pad_display_pads_by_terminal_columns() {
+        // "中文" is 4 columns, so 4 spaces bring it to the 8-column target.
+        assert_eq!(pad_display("中文", 8).width(), 8);
+        assert_eq!(pad_display("v1", 5), "v1   ");
+        assert_eq!(pad_display("toolong", 3), "toolong");
     }
 
     #[test]

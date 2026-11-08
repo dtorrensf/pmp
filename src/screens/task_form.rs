@@ -15,7 +15,7 @@ use ratatui_textarea::TextArea;
 use crate::db::repository::Repository;
 use crate::domain::task::{Priority, Status, Task, TaskNote};
 use crate::screens::components::fields::{
-    render_description_field, render_field, render_readonly_field,
+    field_cursor_x, render_description_field, render_field, render_readonly_field,
 };
 use crate::screens::components::keys::{ctrl, key};
 use crate::screens::components::popup::{centered_rect_percent, render_popup_scaffold};
@@ -491,11 +491,11 @@ impl Component for TaskForm {
         }
 
         if self.active_field == 0 {
-            let x = chunks[0].x + 1 + self.name.chars().count() as u16;
+            let x = field_cursor_x(chunks[0], &self.name);
             let y = chunks[0].y + 1;
             frame.set_cursor_position((x, y));
         } else if self.active_field == 5 {
-            let x = notes_chunks[1].x + 1 + self.new_note.chars().count() as u16;
+            let x = field_cursor_x(notes_chunks[1], &self.new_note);
             let y = notes_chunks[1].y + 1;
             frame.set_cursor_position((x, y));
         }
