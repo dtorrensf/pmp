@@ -23,15 +23,6 @@ impl Status {
         }
     }
 
-    pub fn try_from_str(value: &str) -> Result<Self, AppError> {
-        match value {
-            "todo" => Ok(Status::Todo),
-            "in_progress" => Ok(Status::InProgress),
-            "done" => Ok(Status::Done),
-            _ => Err(AppError::Validation(format!("invalid status: {value}"))),
-        }
-    }
-
     pub fn next(self) -> Status {
         match self {
             Status::Todo => Status::InProgress,
@@ -150,6 +141,25 @@ impl Priority {
             Priority::High => Style::default().fg(Color::Red),
             Priority::Medium => Style::default().fg(Color::Yellow),
             Priority::Low => Style::default().fg(Color::Green),
+        }
+    }
+}
+
+impl From<Status> for &'static str {
+    fn from(status: Status) -> Self {
+        status.as_str()
+    }
+}
+
+impl TryFrom<&str> for Status {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "todo" => Ok(Status::Todo),
+            "in_progress" => Ok(Status::InProgress),
+            "done" => Ok(Status::Done),
+            _ => Err(AppError::Validation(format!("invalid status: {value}"))),
         }
     }
 }

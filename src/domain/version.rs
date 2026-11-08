@@ -12,21 +12,31 @@ pub enum VersionStatus {
     Released,
 }
 
-impl VersionStatus {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            VersionStatus::Open => "open",
-            VersionStatus::Released => "released",
-        }
+impl From<VersionStatus> for &'static str {
+    fn from(status: VersionStatus) -> Self {
+        status.as_str()
     }
+}
 
-    pub fn try_from_str(value: &str) -> Result<Self, AppError> {
+impl TryFrom<&str> for VersionStatus {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value {
             "open" => Ok(VersionStatus::Open),
             "released" => Ok(VersionStatus::Released),
             _ => Err(AppError::Validation(format!(
                 "invalid version status: {value}"
             ))),
+        }
+    }
+}
+
+impl VersionStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            VersionStatus::Open => "open",
+            VersionStatus::Released => "released",
         }
     }
 
@@ -158,23 +168,21 @@ mod tests {
     }
 
     #[test]
-    fn version_status_as_str_and_try_from_str_round_trip() {
+    fn version_status_as_str_and_try_from_round_trip() {
         for status in VersionStatus::all() {
-            assert_eq!(
-                VersionStatus::try_from_str(status.as_str()).unwrap(),
-                status
-            );
+            assert_eq!(VersionStatus::try_from(status.as_str()).unwrap(), status);
+            assert_eq!(<&str>::from(status), status.as_str());
         }
     }
 
     #[test]
-    fn version_status_try_from_str_rejects_invalid_values() {
+    fn version_status_try_from_rejects_invalid_values() {
         assert!(matches!(
-            VersionStatus::try_from_str("closed"),
+            VersionStatus::try_from("closed"),
             Err(AppError::Validation(_))
         ));
         assert!(matches!(
-            VersionStatus::try_from_str(""),
+            VersionStatus::try_from(""),
             Err(AppError::Validation(_))
         ));
     }

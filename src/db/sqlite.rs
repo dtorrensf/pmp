@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
 
+use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use rusqlite::{Connection, Row, params};
 
 use crate::db::repository::{
@@ -20,6 +21,12 @@ mod embedded {
     use refinery::embed_migrations;
     embed_migrations!("src/db/migrations");
 }
+
+/// Column lists shared by every query that maps a row with `task_from_row`
+/// or `version_from_row`; those read the columns by name.
+const TASK_COLUMNS: &str = "id, project_id, name, description, status, priority, \
+                            created_at, version_id, completed_at";
+const VERSION_COLUMNS: &str = "id, project_id, name, description, status, created_at";
 
 pub struct SqliteRepository {
     conn: Mutex<Connection>,
@@ -108,26 +115,27 @@ impl Repository for SqliteRepository {
 
     fn list_tasks_by_project(&self, project_id: i64) -> Result<Vec<Task>, AppError> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, project_id, name, description, status, priority, created_at, version_id, completed_at
-             FROM tasks WHERE project_id = ?1
-             ORDER BY CASE WHEN status = 'done' THEN 1 ELSE 0 END, priority DESC, created_at DESC",
-        )?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {TASK_COLUMNS} FROM tasks WHERE project_id = ?1
+                 ORDER BY CASE WHEN status = ?2 THEN 1 ELSE 0 END, priority DESC, created_at DESC"
+        ))?;
         let tasks = stmt
-            .query_map([project_id], task_from_row)?
+            .query_map(params![project_id, Status::Done.as_str()], task_from_row)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(tasks)
     }
 
     fn list_versions_by_project(&self, project_id: i64) -> Result<Vec<Version>, AppError> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, project_id, name, description, status, created_at
-             FROM versions WHERE project_id = ?1
-             ORDER BY CASE WHEN status = 'released' THEN 1 ELSE 0 END, id DESC",
-        )?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {VERSION_COLUMNS} FROM versions WHERE project_id = ?1
+                 ORDER BY CASE WHEN status = ?2 THEN 1 ELSE 0 END, id DESC"
+        ))?;
         let versions = stmt
-            .query_map([project_id], version_from_row)?
+            .query_map(
+                params![project_id, VersionStatus::Released.as_str()],
+                version_from_row,
+            )?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(versions)
     }
@@ -154,8 +162,7 @@ impl Repository for SqliteRepository {
     fn get_version(&self, id: i64) -> Result<Version, AppError> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT id, project_id, name, description, status, created_at
-             FROM versions WHERE id = ?1",
+            &format!("SELECT {VERSION_COLUMNS} FROM versions WHERE id = ?1"),
             [id],
             version_from_row,
         )
@@ -195,13 +202,12 @@ impl Repository for SqliteRepository {
 
     fn list_tasks_by_version(&self, version_id: i64) -> Result<Vec<Task>, AppError> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, project_id, name, description, status, priority, created_at, version_id, completed_at
-             FROM tasks WHERE version_id = ?1
-             ORDER BY CASE WHEN status = 'done' THEN 1 ELSE 0 END, priority DESC, created_at DESC",
-        )?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {TASK_COLUMNS} FROM tasks WHERE version_id = ?1
+                 ORDER BY CASE WHEN status = ?2 THEN 1 ELSE 0 END, priority DESC, created_at DESC"
+        ))?;
         let tasks = stmt
-            .query_map([version_id], task_from_row)?
+            .query_map(params![version_id, Status::Done.as_str()], task_from_row)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(tasks)
     }
@@ -251,8 +257,7 @@ impl Repository for SqliteRepository {
     fn get_task(&self, id: i64) -> Result<Task, AppError> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT id, project_id, name, description, status, priority, created_at, version_id, completed_at
-             FROM tasks WHERE id = ?1",
+            &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id = ?1"),
             [id],
             task_from_row,
         )
@@ -421,8 +426,8 @@ impl Repository for SqliteRepository {
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM task_dependencies d
              JOIN tasks t ON d.depends_on_id = t.id
-             WHERE d.task_id = ?1 AND t.status != 'done'",
-            [task_id],
+             WHERE d.task_id = ?1 AND t.status != ?2",
+            params![task_id, Status::Done.as_str()],
             |row| row.get(0),
         )?;
         Ok(count > 0)
@@ -555,8 +560,8 @@ impl Repository for SqliteRepository {
     fn delete_done_tasks_by_version(&self, version_id: i64) -> Result<(), AppError> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "DELETE FROM tasks WHERE version_id = ?1 AND status = 'done'",
-            [version_id],
+            "DELETE FROM tasks WHERE version_id = ?1 AND status = ?2",
+            params![version_id, Status::Done.as_str()],
         )?;
         Ok(())
     }
@@ -584,8 +589,8 @@ impl Repository for SqliteRepository {
         .map_err(version_summary_write_error)?;
         let id = tx.last_insert_rowid();
         tx.execute(
-            "DELETE FROM tasks WHERE version_id = ?1 AND status = 'done'",
-            [version_id],
+            "DELETE FROM tasks WHERE version_id = ?1 AND status = ?2",
+            params![version_id, Status::Done.as_str()],
         )?;
         tx.commit()?;
         drop(conn);
@@ -620,41 +625,48 @@ fn project_from_row(row: &Row) -> Result<Project, rusqlite::Error> {
 }
 
 fn task_from_row(row: &Row) -> Result<Task, rusqlite::Error> {
-    let status: String = row.get(4)?;
-    let priority: i64 = row.get(5)?;
     Ok(Task {
-        id: Some(row.get(0)?),
-        project_id: row.get(1)?,
-        name: row.get(2)?,
-        description: row.get(3)?,
-        status: Status::try_from_str(&status).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
-        })?,
-        priority: Priority::try_from(priority).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(
-                5,
-                rusqlite::types::Type::Integer,
-                Box::new(e),
-            )
-        })?,
-        created_at: row.get(6)?,
-        version_id: row.get(7)?,
-        completed_at: row.get(8)?,
+        id: Some(row.get("id")?),
+        project_id: row.get("project_id")?,
+        name: row.get("name")?,
+        description: row.get("description")?,
+        status: row.get("status")?,
+        priority: row.get("priority")?,
+        created_at: row.get("created_at")?,
+        version_id: row.get("version_id")?,
+        completed_at: row.get("completed_at")?,
     })
 }
 
 fn version_from_row(row: &Row) -> Result<Version, rusqlite::Error> {
-    let status: String = row.get(4)?;
     Ok(Version {
-        id: Some(row.get(0)?),
-        project_id: row.get(1)?,
-        name: row.get(2)?,
-        description: row.get(3)?,
-        status: VersionStatus::try_from_str(&status).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
-        })?,
-        created_at: row.get(5)?,
+        id: Some(row.get("id")?),
+        project_id: row.get("project_id")?,
+        name: row.get("name")?,
+        description: row.get("description")?,
+        status: row.get("status")?,
+        created_at: row.get("created_at")?,
     })
+}
+
+/// Statuses and priorities are stored as their `as_str` / integer codes. These
+/// impls decode them, so every query reads them through the same mapping.
+impl FromSql for Status {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        Status::try_from(value.as_str()?).map_err(|e| FromSqlError::Other(Box::new(e)))
+    }
+}
+
+impl FromSql for VersionStatus {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        VersionStatus::try_from(value.as_str()?).map_err(|e| FromSqlError::Other(Box::new(e)))
+    }
+}
+
+impl FromSql for Priority {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        Priority::try_from(value.as_i64()?).map_err(|e| FromSqlError::Other(Box::new(e)))
+    }
 }
 
 /// Maps a UNIQUE(project_id, name) violation to a validation error.
@@ -1277,5 +1289,60 @@ mod tests {
         repo.delete_task(task_id).unwrap();
 
         assert!(repo.list_task_notes(task_id).unwrap().is_empty());
+    }
+
+    /// Every status must be accepted by the `tasks.status` CHECK and read back
+    /// unchanged. `status_slot` is an exhaustive match: a new variant does not
+    /// compile until it is given a slot, and `ALL_STATUSES` must cover every slot.
+    #[test]
+    fn every_task_status_is_accepted_by_the_schema() {
+        const ALL_STATUSES: [Status; 3] = [Status::Todo, Status::InProgress, Status::Done];
+        fn status_slot(status: Status) -> usize {
+            match status {
+                Status::Todo => 0,
+                Status::InProgress => 1,
+                Status::Done => 2,
+            }
+        }
+        for status in ALL_STATUSES {
+            assert_eq!(ALL_STATUSES[status_slot(status)], status);
+        }
+        assert_eq!(ALL_STATUSES.len(), status_slot(Status::Done) + 1);
+
+        let (_dir, repo) = setup();
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let vid = repo.default_version_id(pid).unwrap();
+        for status in ALL_STATUSES {
+            let task = repo
+                .create_task(pid, vid, "T", "", status, Priority::Low)
+                .unwrap();
+            assert_eq!(repo.get_task(task.id.unwrap()).unwrap().status, status);
+        }
+    }
+
+    #[test]
+    fn every_version_status_is_accepted_by_the_schema() {
+        const ALL_STATUSES: [VersionStatus; 2] = [VersionStatus::Open, VersionStatus::Released];
+        fn status_slot(status: VersionStatus) -> usize {
+            match status {
+                VersionStatus::Open => 0,
+                VersionStatus::Released => 1,
+            }
+        }
+        for status in ALL_STATUSES {
+            assert_eq!(ALL_STATUSES[status_slot(status)], status);
+        }
+        assert_eq!(ALL_STATUSES.len(), status_slot(VersionStatus::Released) + 1);
+
+        let (_dir, repo) = setup();
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        for (i, status) in ALL_STATUSES.into_iter().enumerate() {
+            let name = format!("v{i}.0.0");
+            let version = repo.create_version(pid, &name, "").unwrap();
+            let id = version.id.unwrap();
+            let updated = repo.update_version(id, &name, "", status).unwrap();
+            assert_eq!(updated.status, status);
+            assert_eq!(repo.get_version(id).unwrap().status, status);
+        }
     }
 }
