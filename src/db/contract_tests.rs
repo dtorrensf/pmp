@@ -374,6 +374,68 @@ fn add_dependency_rejects_cross_version_tasks() {
 }
 
 #[test]
+fn delete_project_removes_its_versions_tasks_notes_dependencies_and_summaries() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v1 = repo.default_version_id(pid).unwrap();
+        let v2 = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let keep_pid = repo.create_project("Keep", "").unwrap().id.unwrap();
+        let keep_v = repo.default_version_id(keep_pid).unwrap();
+
+        let v1_task = task_in_version(repo, pid, v1, "V1");
+        let a = task_in_version(repo, pid, v2, "A");
+        let b = task_in_version(repo, pid, v2, "B");
+        let keep = task_in_version(repo, keep_pid, keep_v, "Keep");
+        repo.add_dependency(b, a).unwrap();
+        let note = repo.add_task_note(a, "note").unwrap();
+        repo.create_version_summary(v2, "Summary", "{}").unwrap();
+
+        repo.delete_project(pid).unwrap();
+
+        assert!(
+            matches!(repo.get_project(pid), Err(AppError::NotFound)),
+            "{name}: project"
+        );
+        assert!(
+            matches!(repo.get_version(v1), Err(AppError::NotFound)),
+            "{name}: v1"
+        );
+        assert!(
+            matches!(repo.get_version(v2), Err(AppError::NotFound)),
+            "{name}: v2"
+        );
+        assert!(
+            matches!(repo.get_task(v1_task), Err(AppError::NotFound)),
+            "{name}: v1 task"
+        );
+        assert!(
+            matches!(repo.get_task(a), Err(AppError::NotFound)),
+            "{name}: task a"
+        );
+        assert!(
+            matches!(repo.get_task(b), Err(AppError::NotFound)),
+            "{name}: task b"
+        );
+        assert!(
+            matches!(
+                repo.delete_task_note(note.id.unwrap()),
+                Err(AppError::NotFound)
+            ),
+            "{name}: note"
+        );
+        assert!(repo.get_dependencies(b).unwrap().is_empty(), "{name}: deps");
+        assert!(
+            repo.list_version_summaries(v2).unwrap().is_empty(),
+            "{name}: summaries"
+        );
+
+        // A different project must stay untouched.
+        assert!(repo.get_project(keep_pid).is_ok(), "{name}: other project");
+        assert!(repo.get_task(keep).is_ok(), "{name}: other task");
+    });
+}
+
+#[test]
 fn delete_version_removes_its_tasks_and_dependencies() {
     for_each_repo(|name, repo| {
         let pid = repo.create_project("P", "").unwrap().id.unwrap();
@@ -417,6 +479,21 @@ fn task_in_version(repo: &dyn Repository, pid: i64, version: i64, name: &str) ->
         .unwrap()
         .id
         .unwrap()
+}
+
+#[test]
+fn ids_are_scoped_per_table_like_sqlite_rowids() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let vid = repo.default_version_id(pid).unwrap();
+        let tid = task_in_version(repo, pid, vid, "T");
+        let note = repo.add_task_note(tid, "n").unwrap();
+
+        assert_eq!(pid, 1, "{name}: first project id");
+        assert_eq!(vid, 1, "{name}: first version id");
+        assert_eq!(tid, 1, "{name}: first task id");
+        assert_eq!(note.id, Some(1), "{name}: first note id");
+    });
 }
 
 #[test]

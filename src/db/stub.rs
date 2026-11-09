@@ -13,10 +13,57 @@ use crate::domain::validation;
 use crate::domain::version::{self, Version, VersionStatus};
 use crate::domain::version_summary::VersionSummary;
 
+/// Entity kinds that own an id sequence in the stub. SQLite allocates ids per
+/// table (rowid), so the stub keeps one counter per entity instead of sharing a
+/// single sequence, which would assign ids that diverge from production.
+#[derive(Clone, Copy)]
+enum IdKind {
+    Project,
+    Version,
+    Task,
+    Note,
+    Summary,
+}
+
+struct IdCounters {
+    project: i64,
+    version: i64,
+    task: i64,
+    note: i64,
+    summary: i64,
+}
+
+impl Default for IdCounters {
+    fn default() -> Self {
+        Self {
+            project: 1,
+            version: 1,
+            task: 1,
+            note: 1,
+            summary: 1,
+        }
+    }
+}
+
+impl IdCounters {
+    fn next(&mut self, kind: IdKind) -> i64 {
+        let slot = match kind {
+            IdKind::Project => &mut self.project,
+            IdKind::Version => &mut self.version,
+            IdKind::Task => &mut self.task,
+            IdKind::Note => &mut self.note,
+            IdKind::Summary => &mut self.summary,
+        };
+        let current = *slot;
+        *slot += 1;
+        current
+    }
+}
+
 pub struct StubRepository {
     pub projects: Mutex<Vec<Project>>,
     pub tasks: Mutex<Vec<Task>>,
-    pub next_id: Mutex<i64>,
+    next_ids: Mutex<IdCounters>,
     pub dependencies: Mutex<Vec<TaskDependency>>,
     pub task_notes: Mutex<Vec<TaskNote>>,
     pub versions: Mutex<Vec<Version>>,
@@ -28,7 +75,7 @@ impl Default for StubRepository {
         Self {
             projects: Mutex::new(Vec::new()),
             tasks: Mutex::new(Vec::new()),
-            next_id: Mutex::new(1),
+            next_ids: Mutex::new(IdCounters::default()),
             dependencies: Mutex::new(Vec::new()),
             task_notes: Mutex::new(Vec::new()),
             versions: Mutex::new(Vec::new()),
@@ -38,11 +85,9 @@ impl Default for StubRepository {
 }
 
 impl StubRepository {
-    fn next_id(&self) -> i64 {
-        let mut id = self.next_id.lock().unwrap_or_else(|e| e.into_inner());
-        let current = *id;
-        *id += 1;
-        current
+    fn next_id(&self, kind: IdKind) -> i64 {
+        let mut ids = self.next_ids.lock().unwrap_or_else(|e| e.into_inner());
+        ids.next(kind)
     }
 
     fn ensure_version_in_project(&self, version_id: i64, project_id: i64) -> Result<(), AppError> {
@@ -90,7 +135,7 @@ impl ProjectRepository for StubRepository {
         validation::validate_name("project", name)?;
         validation::validate_text("project", "description", description)?;
         let project = Project {
-            id: Some(self.next_id()),
+            id: Some(self.next_id(IdKind::Project)),
             name: name.to_string(),
             description: description.to_string(),
             created_at: "now".to_string(),
@@ -103,7 +148,7 @@ impl ProjectRepository for StubRepository {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(Version {
-                id: Some(self.next_id()),
+                id: Some(self.next_id(IdKind::Version)),
                 project_id: project.id.unwrap(),
                 name: version::DEFAULT_VERSION_NAME.to_string(),
                 description: String::new(),
@@ -156,10 +201,22 @@ impl ProjectRepository for StubRepository {
         let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
         tasks.retain(|t| t.project_id != id);
         drop(tasks);
-        self.versions
+        let version_ids: Vec<i64> = {
+            let mut versions = self.versions.lock().unwrap_or_else(|e| e.into_inner());
+            let ids = versions
+                .iter()
+                .filter(|v| v.project_id == id)
+                .filter_map(|v| v.id)
+                .collect();
+            versions.retain(|v| v.project_id != id);
+            ids
+        };
+        let mut summaries = self
+            .version_summaries
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .retain(|v| v.project_id != id);
+            .unwrap_or_else(|e| e.into_inner());
+        summaries.retain(|s| !version_ids.contains(&s.version_id));
+        drop(summaries);
         let mut projects = self.projects.lock().unwrap_or_else(|e| e.into_inner());
         projects.retain(|p| p.id != Some(id));
         Ok(())
@@ -204,7 +261,7 @@ impl VersionRepository for StubRepository {
         }
         drop(versions);
         let version = Version {
-            id: Some(self.next_id()),
+            id: Some(self.next_id(IdKind::Version)),
             project_id,
             name: name.to_string(),
             description: description.to_string(),
@@ -273,6 +330,10 @@ impl VersionRepository for StubRepository {
         for task_id in &task_ids {
             self.delete_task(*task_id)?;
         }
+        self.version_summaries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|s| s.version_id != id);
         self.versions
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -321,7 +382,7 @@ impl TaskRepository for StubRepository {
         validation::validate_text("task", "description", description)?;
         self.ensure_version_in_project(version_id, project_id)?;
         let task = Task {
-            id: Some(self.next_id()),
+            id: Some(self.next_id(IdKind::Task)),
             project_id,
             version_id,
             name: name.to_string(),
@@ -613,7 +674,7 @@ impl NoteRepository for StubRepository {
 
     fn add_task_note(&self, task_id: i64, content: &str) -> Result<TaskNote, AppError> {
         let mut note = TaskNote::new(task_id, content)?;
-        note.id = Some(self.next_id());
+        note.id = Some(self.next_id(IdKind::Note));
         note.created_at = "now".to_string();
         self.task_notes
             .lock()
@@ -679,7 +740,7 @@ impl SummaryRepository for StubRepository {
             ));
         }
         let summary = VersionSummary {
-            id: Some(self.next_id()),
+            id: Some(self.next_id(IdKind::Summary)),
             version_id,
             summary: summary.to_string(),
             snapshot_json: snapshot_json.to_string(),
