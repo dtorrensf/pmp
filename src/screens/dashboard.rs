@@ -11,17 +11,18 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Bar, BarChart, BarGroup, Block, Borders, Gauge, List, ListItem, Paragraph, Wrap},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::db::repository::Repository;
 use crate::domain::project::Project;
 use crate::domain::task::{Status, Task};
 use crate::domain::version::Version;
-use crate::screens::components::confirm_dialog::ConfirmDialog;
+use crate::screens::components::confirm_dialog::{ConfirmDialog, ConfirmState};
 use crate::screens::components::keys::key;
 use crate::screens::components::list_navigation::move_selection;
-use crate::screens::components::progress::completion_percentage;
+use crate::screens::components::progress::{completion_percentage, percent};
 use crate::screens::components::scroll::{
-    ListScroll, TextScroll, render_scrollbar, wrapped_line_count,
+    ListScroll, TextScroll, list_rows, render_list_scrollbar, wrapped_line_count,
 };
 use crate::screens::{AUTO_REFRESH_INTERVAL, Action, Component, Screen};
 
@@ -56,7 +57,7 @@ impl VersionRow {
         ];
         let mut spans = vec![
             Span::styled(
-                format!("{:<name_width$}", self.name_column()),
+                pad_display(&self.name_column(), name_width),
                 self.version.status.style(),
             ),
             Span::raw("  "),
@@ -93,7 +94,7 @@ pub struct ProjectDashboard {
     all_tasks: Vec<Task>,
     versions: Vec<VersionRow>,
     selected: usize,
-    confirm_delete: Option<ConfirmDialog>,
+    confirm_delete: ConfirmState,
     description_scroll: TextScroll,
     versions_scroll: ListScroll,
 }
@@ -124,7 +125,7 @@ impl ProjectDashboard {
             all_tasks: Vec::new(),
             versions: Vec::new(),
             selected: 0,
-            confirm_delete: None,
+            confirm_delete: ConfirmState::default(),
             description_scroll: TextScroll::new(),
             versions_scroll: ListScroll::new(),
         }
@@ -153,7 +154,7 @@ impl ProjectDashboard {
     }
 
     pub fn is_confirming_delete(&self) -> bool {
-        self.confirm_delete.is_some()
+        self.confirm_delete.is_open()
     }
 
     fn load(&mut self) -> anyhow::Result<()> {
@@ -170,11 +171,7 @@ impl ProjectDashboard {
                     .collect();
                 let total = tasks.len() as u64;
                 let [todo, in_progress, done] = status_counts(tasks.iter().copied());
-                let percentage = if total == 0 {
-                    0
-                } else {
-                    (done as f64 / total as f64 * 100.0).round() as u64
-                };
+                let percentage = percent(done, total);
                 VersionRow {
                     version,
                     todo,
@@ -197,7 +194,7 @@ impl ProjectDashboard {
 
 impl Component for ProjectDashboard {
     fn init(&mut self) -> anyhow::Result<()> {
-        self.confirm_delete = None;
+        self.confirm_delete.close();
         self.load()
     }
 
@@ -210,9 +207,7 @@ impl Component for ProjectDashboard {
     }
 
     fn auto_refresh_interval(&self) -> Option<Duration> {
-        self.confirm_delete
-            .is_none()
-            .then_some(AUTO_REFRESH_INTERVAL)
+        (!self.confirm_delete.is_open()).then_some(AUTO_REFRESH_INTERVAL)
     }
 
     fn handle_event(&mut self, event: &Event) -> Option<Action> {
@@ -226,10 +221,8 @@ impl Component for ProjectDashboard {
         };
         let code = *code;
 
-        if let Some(dialog) = &self.confirm_delete {
-            let action = dialog.handle_key(code);
-            self.confirm_delete = None;
-            return action;
+        if self.confirm_delete.is_open() {
+            return self.confirm_delete.answer(code);
         }
 
         match code {
@@ -281,7 +274,7 @@ impl Component for ProjectDashboard {
                     "Delete version {}? Its tasks will be removed. (y/N)",
                     row.version.name
                 );
-                self.confirm_delete = Some(ConfirmDialog::new(
+                self.confirm_delete.open(ConfirmDialog::new(
                     message,
                     Action::DeleteVersion { version_id },
                 ));
@@ -384,7 +377,7 @@ impl Component for ProjectDashboard {
 
 impl ProjectDashboard {
     fn render_versions(&self, frame: &mut Frame, area: Rect) {
-        if let Some(dialog) = &self.confirm_delete {
+        if let Some(dialog) = self.confirm_delete.dialog() {
             dialog.render(frame, area);
             return;
         }
@@ -397,7 +390,7 @@ impl ProjectDashboard {
             return;
         }
         // Rows that fit inside the top and bottom borders.
-        let row_height = area.height.saturating_sub(2) as usize;
+        let row_height = list_rows(area, 0);
         let range =
             self.versions_scroll
                 .visible_range(self.versions.len(), self.selected, row_height);
@@ -417,11 +410,7 @@ impl ProjectDashboard {
             .collect();
         frame.render_widget(List::new(items).block(block), area);
 
-        // Scrollbar on the right border, aligned with the data rows.
-        if row_height > 0 && area.width > 0 {
-            let track = Rect::new(area.x + area.width - 1, area.y + 1, 1, row_height as u16);
-            render_scrollbar(frame, track, self.versions.len(), row_height, range.start);
-        }
+        render_list_scrollbar(frame, area, 0, self.versions.len(), range.start);
     }
 }
 
@@ -437,12 +426,18 @@ fn status_counts<'a>(tasks: impl IntoIterator<Item = &'a Task>) -> [u64; 3] {
     counts
 }
 
+/// Right-pads `text` with spaces to `width` terminal columns.
+fn pad_display(text: &str, width: usize) -> String {
+    let fill = width.saturating_sub(text.width());
+    format!("{text}{}", " ".repeat(fill))
+}
+
 /// Lines for the versions list. The name column is padded to the longest
 /// name so every bar starts at the same column.
 fn version_lines(rows: &[VersionRow]) -> Vec<Line<'static>> {
     let name_width = rows
         .iter()
-        .map(|row| row.name_column().chars().count())
+        .map(|row| row.name_column().width())
         .max()
         .unwrap_or(0);
     rows.iter().map(|row| row.line(name_width)).collect()
@@ -475,6 +470,7 @@ fn bar_segments(counts: [u64; 3], width: usize) -> [usize; 3] {
 
 #[cfg(test)]
 mod tests {
+    use crate::db::repository::*;
     use std::sync::Arc;
 
     use crossterm::event::KeyCode;
@@ -528,6 +524,14 @@ mod tests {
             .draw(|frame| dashboard.render(frame, frame.area()))
             .unwrap();
         buffer_to_string(terminal.backend().buffer())
+    }
+
+    #[test]
+    fn pad_display_pads_by_terminal_columns() {
+        // "中文" is 4 columns, so 4 spaces bring it to the 8-column target.
+        assert_eq!(pad_display("中文", 8).width(), 8);
+        assert_eq!(pad_display("v1", 5), "v1   ");
+        assert_eq!(pad_display("toolong", 3), "toolong");
     }
 
     #[test]

@@ -2,16 +2,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use std::sync::Arc;
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    widgets::{Block, Borders, Clear},
 };
 use ratatui_textarea::TextArea;
 
 use crate::db::repository::Repository;
-use crate::screens::components::fields::{render_description_field, render_field};
+use crate::screens::components::fields::{field_cursor_x, render_description_field, render_field};
+use crate::screens::components::form::{
+    TextTarget, handle_text_keys, is_submit, key_press, next_field, render_form_frame,
+};
 use crate::screens::components::keys::{ctrl, key};
 use crate::screens::{Action, Component, Screen};
 
@@ -52,20 +54,25 @@ impl ProjectForm {
     }
 }
 
+impl ProjectForm {
+    /// Routes an editing key to the active field (name or description).
+    fn handle_field_key(&mut self, code: KeyCode) {
+        let target = if self.active_field == 0 {
+            TextTarget::Line(&mut self.name)
+        } else {
+            TextTarget::Area(&mut self.description)
+        };
+        handle_text_keys(target, code);
+    }
+}
+
 impl Component for ProjectForm {
     fn init(&mut self) -> anyhow::Result<()> {
         if let Some(id) = self.project_id {
             let project = self.repo.get_project(id)?;
             self.name = project.name;
             let mut textarea = TextArea::default();
-            for line in project.description.lines() {
-                if !textarea.lines().join("").is_empty() {
-                    textarea.insert_newline();
-                }
-                for c in line.chars() {
-                    textarea.insert_char(c);
-                }
-            }
+            textarea.insert_str(&project.description);
             self.description = textarea;
         } else {
             self.name.clear();
@@ -80,94 +87,34 @@ impl Component for ProjectForm {
     }
 
     fn handle_event(&mut self, event: &Event) -> Option<Action> {
-        if let Event::Key(KeyEvent {
-            code,
-            modifiers,
-            kind: KeyEventKind::Press,
-            ..
-        }) = event
-        {
-            if *code == KeyCode::Char('s') && modifiers.contains(KeyModifiers::CONTROL) {
-                return Some(Action::SaveProject {
-                    project_id: self.project_id,
-                    name: self.name.clone(),
-                    description: self.description.lines().join("\n"),
-                });
+        let (code, modifiers) = key_press(event)?;
+        if is_submit(code, modifiers) {
+            return Some(Action::SaveProject {
+                project_id: self.project_id,
+                name: self.name.clone(),
+                description: self.description.lines().join("\n"),
+            });
+        }
+        match code {
+            KeyCode::Esc => Some(Action::Navigate(self.return_to.clone())),
+            KeyCode::Tab => {
+                self.active_field = next_field(self.active_field, 2);
+                None
             }
-
-            match code {
-                KeyCode::Esc => Some(Action::Navigate(self.return_to.clone())),
-                KeyCode::Tab => {
-                    self.active_field = 1 - self.active_field;
-                    None
-                }
-                KeyCode::Backspace => {
-                    if self.active_field == 0 {
-                        self.name.pop();
-                    } else {
-                        self.description.delete_char();
-                    }
-                    None
-                }
-                KeyCode::Left => {
-                    if self.active_field == 1 {
-                        self.description
-                            .move_cursor(ratatui_textarea::CursorMove::Back);
-                    }
-                    None
-                }
-                KeyCode::Right => {
-                    if self.active_field == 1 {
-                        self.description
-                            .move_cursor(ratatui_textarea::CursorMove::Forward);
-                    }
-                    None
-                }
-                KeyCode::Up => {
-                    if self.active_field == 1 {
-                        self.description
-                            .move_cursor(ratatui_textarea::CursorMove::Up);
-                    }
-                    None
-                }
-                KeyCode::Down => {
-                    if self.active_field == 1 {
-                        self.description
-                            .move_cursor(ratatui_textarea::CursorMove::Down);
-                    }
-                    None
-                }
-                KeyCode::Enter => {
-                    if self.active_field == 1 {
-                        self.description.insert_newline();
-                    }
-                    None
-                }
-                KeyCode::Char(c) => {
-                    if self.active_field == 0 {
-                        self.name.push(*c);
-                    } else {
-                        self.description.insert_char(*c);
-                    }
-                    None
-                }
-                _ => None,
+            _ => {
+                self.handle_field_key(code);
+                None
             }
-        } else {
-            None
         }
     }
 
     fn render(&self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(Clear, area);
         let title = if self.project_id.is_some() {
             "Edit Project"
         } else {
             "Create Project"
         };
-        let block = Block::default().title(title).borders(Borders::ALL);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+        let inner = render_form_frame(frame, area, title);
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -196,7 +143,7 @@ impl Component for ProjectForm {
         );
 
         if self.active_field == 0 {
-            let x = chunks[0].x + 1 + self.name.chars().count() as u16;
+            let x = field_cursor_x(chunks[0], &self.name);
             let y = chunks[0].y + 1;
             frame.set_cursor_position((x, y));
         }
@@ -205,6 +152,7 @@ impl Component for ProjectForm {
 
 #[cfg(test)]
 mod tests {
+    use crate::db::repository::*;
     use std::sync::Arc;
 
     use crossterm::event::KeyCode;
@@ -233,6 +181,16 @@ mod tests {
         form.set_project_id(project.id);
         form.init().unwrap();
         form
+    }
+
+    #[test]
+    fn edit_keeps_leading_blank_line_in_description() {
+        let repo = Arc::new(StubRepository::default());
+        let project = repo.create_project("Alpha", "\nSecond line").unwrap();
+        let mut form = ProjectForm::new(repo.clone());
+        form.set_project_id(project.id);
+        form.init().unwrap();
+        assert_eq!(form.description.lines(), ["", "Second line"]);
     }
 
     #[test]

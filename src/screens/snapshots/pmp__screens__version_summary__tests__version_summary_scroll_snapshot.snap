@@ -1,0 +1,24 @@
+---
+source: src/screens/version_summary.rs
+expression: "render_to_string(&screen, 60, 20)"
+---
+┌v1.0.0 · Summary──────────────────────────────────────────┐
+│Summary line 5                                            │
+│Summary line 6                                            │
+│Summary line 7                                            │
+│Summary line 8                                            │
+│Summary line 9                                            │
+│Summary line 10                                           │
+│Summary line 11                                           │
+│Summary line 12                                           │
+│Summary line 13                                           │
+│Summary line 14                                           │
+│┌Distribution────────────────────────────────────────────┐│
+││done         1 #                                        ││
+││todo         0                                          ││
+││in_progress  0                                          ││
+││high         1 #                                        ││
+││medium       0                                          ││
+││low          0                                          ││
+│└────────────────────────────────────────────────────────┘│
+└──────────────────────────────────────────────────────────┘

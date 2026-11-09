@@ -1,6 +1,7 @@
 // Copyright (C) 2026 Diego Torréns Farias
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use rmcp::ErrorData;
@@ -16,11 +17,52 @@ use rmcp::{tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
 use tokio::task;
 
-use crate::db::repository::Repository;
+use crate::db::repository::{Repository, RepositoryPolicy, TaskFilter};
 use crate::domain::error::AppError;
 use crate::domain::task::{Priority, Status};
+use crate::domain::validation::{validate_name, validate_text};
 use crate::domain::version::VersionStatus;
 use crate::mcp::task_description::{compose_description, split_description};
+
+/// Tool-error texts for missing records.
+const PROJECT_NOT_FOUND: &str = "project not found";
+const VERSION_NOT_FOUND: &str = "version not found";
+const TASK_NOT_FOUND: &str = "task not found";
+const TASK_OR_VERSION_NOT_FOUND: &str = "task or version not found";
+const NOTE_NOT_FOUND: &str = "note not found";
+const SUMMARY_NOT_FOUND: &str = "summary not found";
+const RESOURCE_NOT_FOUND_MESSAGE: &str = "resource not found";
+
+/// Resource URIs. Each template is listed to clients and parsed by
+/// `read_resource`; the test `every_listed_template_is_readable` keeps them in sync.
+const PROJECTS_URI: &str = "pmp://projects";
+const PROJECTS_PREFIX: &str = "pmp://projects/";
+const VERSIONS_PREFIX: &str = "pmp://versions/";
+const SUMMARIES_PREFIX: &str = "pmp://summaries/";
+const PROJECT_TEMPLATE: &str = "pmp://projects/{id}";
+const PROJECT_TASKS_TEMPLATE: &str = "pmp://projects/{id}/tasks";
+const PROJECT_VERSIONS_TEMPLATE: &str = "pmp://projects/{id}/versions";
+const VERSION_TASKS_TEMPLATE: &str = "pmp://versions/{id}/tasks";
+const VERSION_SUMMARIES_TEMPLATE: &str = "pmp://versions/{id}/summaries";
+const SUMMARY_TEMPLATE: &str = "pmp://summaries/{id}";
+
+/// Deadline for one repository operation. A tool or resource read runs its
+/// repository work as a single blocking operation, so this bounds each MCP
+/// request. Override with `PMP_MCP_TIMEOUT_SECS` when a slow disk needs longer.
+const DEFAULT_REPOSITORY_TIMEOUT: Duration = Duration::from_secs(30);
+const REPOSITORY_TIMEOUT_ENV: &str = "PMP_MCP_TIMEOUT_SECS";
+
+/// Default and maximum page size for `list_tasks`.
+const DEFAULT_TASK_PAGE_SIZE: u32 = 100;
+const MAX_TASK_PAGE_SIZE: u32 = 500;
+
+/// Upper bound for one serialized tool or resource response. Pagination keeps
+/// normal pages below this; the cap protects the client context window when a
+/// single record (a summary snapshot, a note) is still large.
+const MAX_RESPONSE_BYTES: usize = 1_000_000;
+
+/// Items per page when listing resources or resource templates.
+const RESOURCE_PAGE_SIZE: usize = 50;
 
 pub struct PmpServer {
     repo: Arc<dyn Repository>,
@@ -54,6 +96,19 @@ pub struct ListTasksParams {
     pub version_id: Option<i64>,
     pub status: Option<Status>,
     pub priority: Option<PriorityParam>,
+    /// Maximum tasks to return. Defaults to 100; capped at 500.
+    pub limit: Option<u32>,
+    /// Number of matching tasks to skip. Defaults to 0.
+    pub offset: Option<u32>,
+}
+
+#[derive(Serialize)]
+struct TaskPage {
+    tasks: Vec<crate::domain::task::Task>,
+    total: u64,
+    limit: u32,
+    offset: u32,
+    has_more: bool,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -81,7 +136,7 @@ pub struct CreateVersionParams {
     pub name: String,
     pub description: Option<String>,
     /// `open` (default) or `released`.
-    pub status: Option<String>,
+    pub status: Option<VersionStatus>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -92,7 +147,7 @@ pub struct UpdateVersionParams {
     /// New description. When omitted, the current description is kept.
     pub description: Option<String>,
     /// New status: `open` or `released`. When omitted, the current status is kept.
-    pub status: Option<String>,
+    pub status: Option<VersionStatus>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -170,55 +225,123 @@ pub struct NoteIdParams {
     pub note_id: i64,
 }
 
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct VersionIdParams {
+    pub version_id: i64,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct CompactVersionParams {
+    pub version_id: i64,
+    pub summary: String,
+    /// When omitted or true, the version is marked `released` after compacting
+    /// once no tasks remain. Ignored while todo tasks remain: the version stays open.
+    pub mark_released: Option<bool>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ReadVersionSummaryParams {
+    pub version_id: i64,
+    pub summary_id: i64,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct SummaryIdParams {
+    pub summary_id: i64,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct DeleteVersionSummaryParams {
+    /// The version the summary belongs to; a mismatch is reported as not found.
+    pub version_id: i64,
+    pub summary_id: i64,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ExportVersionSummaryParams {
+    pub summary_id: i64,
+}
+
 #[tool_router]
 impl PmpServer {
     pub fn new(repo: Arc<dyn Repository>) -> Self {
         Self { repo }
     }
 
-    pub async fn list_resources(&self) -> Result<ListResourcesResult, ErrorData> {
-        let resource = Resource::new("pmp://projects", "projects")
+    pub async fn list_resources_page(
+        &self,
+        cursor: Option<&str>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        let resource = Resource::new(PROJECTS_URI, "projects")
             .with_description(
                 "All user projects. Read this to see what projects the user is working on.",
             )
             .with_mime_type("application/json");
-        Ok(ListResourcesResult::with_all_items(vec![resource]))
+        let (resources, next_cursor) = paginate_page(vec![resource], cursor, RESOURCE_PAGE_SIZE)?;
+        let mut result = ListResourcesResult::with_all_items(resources);
+        result.next_cursor = next_cursor;
+        Ok(result)
     }
 
-    pub async fn list_resource_templates(&self) -> Result<ListResourceTemplatesResult, ErrorData> {
+    pub async fn list_resource_templates_page(
+        &self,
+        cursor: Option<&str>,
+    ) -> Result<ListResourceTemplatesResult, ErrorData> {
         let templates = vec![
-            ResourceTemplate::new("pmp://projects/{id}", "project")
+            ResourceTemplate::new(PROJECT_TEMPLATE, "project")
                 .with_description("A single project by id. Use to get details about a specific project.")
                 .with_mime_type("application/json"),
-            ResourceTemplate::new("pmp://projects/{id}/tasks", "project_tasks")
+            ResourceTemplate::new(PROJECT_TASKS_TEMPLATE, "project_tasks")
                 .with_description("Tasks for a project across all its versions. Use to see all tasks and their status for a specific project.")
                 .with_mime_type("application/json"),
-            ResourceTemplate::new("pmp://projects/{id}/versions", "project_versions")
+            ResourceTemplate::new(PROJECT_VERSIONS_TEMPLATE, "project_versions")
                 .with_description("Versions of a project, open ones first. Use to see the release lines of a project and their status.")
                 .with_mime_type("application/json"),
-            ResourceTemplate::new("pmp://versions/{id}/tasks", "version_tasks")
+            ResourceTemplate::new(VERSION_TASKS_TEMPLATE, "version_tasks")
                 .with_description("Tasks of one version. Use to see the work scheduled for a specific release.")
                 .with_mime_type("application/json"),
+            ResourceTemplate::new(VERSION_SUMMARIES_TEMPLATE, "version_summaries")
+                .with_description("Summaries of a version after compaction. Use to review what was frozen.")
+                .with_mime_type("application/json"),
+            ResourceTemplate::new(SUMMARY_TEMPLATE, "version_summary")
+                .with_description("A single version summary by id, including its frozen snapshot.")
+                .with_mime_type("application/json"),
         ];
-        Ok(ListResourceTemplatesResult::with_all_items(templates))
+        let (templates, next_cursor) = paginate_page(templates, cursor, RESOURCE_PAGE_SIZE)?;
+        let mut result = ListResourceTemplatesResult::with_all_items(templates);
+        result.next_cursor = next_cursor;
+        Ok(result)
     }
 
     pub async fn read_resource(&self, uri: &str) -> Result<ReadResourceResult, ErrorData> {
         let repo = self.repo.clone();
 
         match uri {
-            "pmp://projects" => read_json_resource(repo, uri, |repo| repo.list_projects()).await,
-            uri if uri.starts_with("pmp://versions/") => {
-                let tail = &uri["pmp://versions/".len()..];
-                let id = tail
-                    .strip_suffix("/tasks")
-                    .ok_or_else(|| ErrorData::invalid_params("unsupported resource uri", None))?
-                    .parse::<i64>()
-                    .map_err(|_| ErrorData::invalid_params("invalid version id", None))?;
-                read_json_resource(repo, uri, move |repo| repo.list_tasks_by_version(id)).await
+            PROJECTS_URI => read_json_resource(repo, uri, |repo| repo.list_projects()).await,
+            uri if uri.starts_with(VERSIONS_PREFIX) => {
+                let tail = &uri[VERSIONS_PREFIX.len()..];
+                if let Some(prefix) = tail.strip_suffix("/summaries") {
+                    let id = prefix
+                        .parse::<i64>()
+                        .map_err(|_| ErrorData::invalid_params("invalid version id", None))?;
+                    read_json_resource(repo, uri, move |repo| repo.list_version_summaries(id)).await
+                } else {
+                    let id = tail
+                        .strip_suffix("/tasks")
+                        .ok_or_else(|| ErrorData::invalid_params("unsupported resource uri", None))?
+                        .parse::<i64>()
+                        .map_err(|_| ErrorData::invalid_params("invalid version id", None))?;
+                    read_json_resource(repo, uri, move |repo| repo.list_tasks_by_version(id)).await
+                }
             }
-            uri if uri.starts_with("pmp://projects/") => {
-                let tail = &uri["pmp://projects/".len()..];
+            uri if uri.starts_with(SUMMARIES_PREFIX) => {
+                let id = uri[SUMMARIES_PREFIX.len()..]
+                    .parse::<i64>()
+                    .map_err(|_| ErrorData::invalid_params("invalid summary id", None))?;
+                read_json_resource(repo, uri, move |repo| repo.get_version_summary(id)).await
+            }
+            uri if uri.starts_with(PROJECTS_PREFIX) => {
+                let tail = &uri[PROJECTS_PREFIX.len()..];
                 if let Some(prefix) = tail.strip_suffix("/versions") {
                     let id = prefix
                         .parse::<i64>()
@@ -243,7 +366,7 @@ impl PmpServer {
 
     #[tool(
         name = "list_tasks",
-        description = "List tasks for a project, optionally filtered by version_id (see list_versions), status (todo, in_progress, done) and priority (Low, Medium, High). Use when the user asks about their tasks, to-dos, pending work or progress, or to pick the next task to work on."
+        description = "List tasks for a project, optionally filtered by version_id (see list_versions), status (todo, in_progress, done) and priority (Low, Medium, High). Results are paginated: use limit (default 100, max 500) and offset, and check has_more/total to fetch the next page. Use when the user asks about their tasks, to-dos, pending work or progress, or to pick the next task to work on."
     )]
     async fn list_tasks(
         &self,
@@ -253,34 +376,42 @@ impl PmpServer {
         let version_id = params.version_id;
         let status = params.status;
         let priority = params.priority.map(Priority::from);
+        let limit = params
+            .limit
+            .unwrap_or(DEFAULT_TASK_PAGE_SIZE)
+            .clamp(1, MAX_TASK_PAGE_SIZE);
+        let offset = params.offset.unwrap_or(0);
+        let filter = TaskFilter {
+            project_id,
+            version_id,
+            status,
+            priority,
+        };
         let result = execute_repository(self.repo.clone(), move |repo| {
             repo.get_project(project_id)?;
-            match version_id {
-                Some(version_id) => {
-                    let version = repo.get_version(version_id).map_err(|_| {
-                        AppError::Validation("version does not belong to the project".to_string())
-                    })?;
-                    if version.project_id != project_id {
-                        return Err(AppError::Validation(
-                            "version does not belong to the project".to_string(),
-                        ));
-                    }
-                    repo.list_tasks_by_version(version_id)
+            if let Some(version_id) = version_id {
+                let version = repo.get_version(version_id).map_err(|_| {
+                    AppError::Validation("version does not belong to the project".to_string())
+                })?;
+                if version.project_id != project_id {
+                    return Err(AppError::Validation(
+                        "version does not belong to the project".to_string(),
+                    ));
                 }
-                None => repo.list_tasks_by_project(project_id),
             }
+            let tasks = repo.list_tasks_page(&filter, limit, offset)?;
+            let total = repo.count_tasks(&filter)?;
+            let has_more = (u64::from(offset) + tasks.len() as u64) < total;
+            Ok(TaskPage {
+                tasks,
+                total,
+                limit,
+                offset,
+                has_more,
+            })
         })
         .await?;
-        let result = result.map(|tasks| {
-            tasks
-                .into_iter()
-                .filter(|task| {
-                    status.is_none_or(|value| task.status == value)
-                        && priority.is_none_or(|value| task.priority == value)
-                })
-                .collect::<Vec<_>>()
-        });
-        tool_result(result, "project not found")
+        tool_result(result, PROJECT_NOT_FOUND)
     }
 
     #[tool(
@@ -288,8 +419,10 @@ impl PmpServer {
         description = "List all projects of the user. Use to discover project ids before listing versions or tasks, or when the user asks what projects they have."
     )]
     async fn list_projects(&self) -> Result<CallToolResult, ErrorData> {
-        let result = execute_repository(self.repo.clone(), |repo| repo.list_projects()).await?;
-        tool_result(result, "project not found")
+        run_tool(self.repo.clone(), PROJECT_NOT_FOUND, |repo| {
+            repo.list_projects()
+        })
+        .await
     }
 
     #[tool(
@@ -300,17 +433,13 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<CreateProjectParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = execute_repository(self.repo.clone(), move |repo| {
-            if params.name.trim().is_empty() {
-                return Err(AppError::Validation(
-                    "project name cannot be empty".to_string(),
-                ));
-            }
+        run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
+            validate_name("project", &params.name)?;
             let description = params.description.unwrap_or_default();
+            validate_text("project", "description", &description)?;
             repo.create_project(&params.name, &description)
         })
-        .await?;
-        tool_result(result, "project not found")
+        .await
     }
 
     #[tool(
@@ -321,18 +450,14 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<UpdateProjectParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = execute_repository(self.repo.clone(), move |repo| {
-            if params.name.trim().is_empty() {
-                return Err(AppError::Validation(
-                    "project name cannot be empty".to_string(),
-                ));
-            }
+        run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
+            validate_name("project", &params.name)?;
             let current = repo.get_project(params.project_id)?;
             let description = params.description.unwrap_or(current.description);
+            validate_text("project", "description", &description)?;
             repo.update_project(params.project_id, &params.name, &description)
         })
-        .await?;
-        tool_result(result, "project not found")
+        .await
     }
 
     #[tool(
@@ -343,12 +468,11 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<ListVersionsParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
             repo.get_project(params.project_id)?;
             repo.list_versions_by_project(params.project_id)
         })
-        .await?;
-        tool_result(result, "project not found")
+        .await
     }
 
     #[tool(
@@ -359,13 +483,12 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<CreateVersionParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = execute_repository(self.repo.clone(), move |repo| {
-            let status = match params.status.as_deref() {
-                Some(value) => VersionStatus::try_from_str(value)?,
-                None => VersionStatus::Open,
-            };
+        run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
+            validate_name("version", &params.name)?;
+            let status = params.status.unwrap_or(VersionStatus::Open);
             repo.get_project(params.project_id)?;
             let description = params.description.unwrap_or_default();
+            validate_text("version", "description", &description)?;
             let version = repo.create_version(params.project_id, &params.name, &description)?;
             match version.id {
                 Some(id) if status != VersionStatus::Open => {
@@ -374,8 +497,7 @@ impl PmpServer {
                 _ => Ok(version),
             }
         })
-        .await?;
-        tool_result(result, "project not found")
+        .await
     }
 
     #[tool(
@@ -386,22 +508,15 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<UpdateVersionParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = execute_repository(self.repo.clone(), move |repo| {
-            if params.name.trim().is_empty() {
-                return Err(AppError::Validation(
-                    "version name cannot be empty".to_string(),
-                ));
-            }
+        run_tool(self.repo.clone(), VERSION_NOT_FOUND, move |repo| {
+            validate_name("version", &params.name)?;
             let current = repo.get_version(params.version_id)?;
             let description = params.description.unwrap_or(current.description);
-            let status = match params.status.as_deref() {
-                Some(value) => VersionStatus::try_from_str(value)?,
-                None => current.status,
-            };
+            validate_text("version", "description", &description)?;
+            let status = params.status.unwrap_or(current.status);
             repo.update_version(params.version_id, &params.name, &description, status)
         })
-        .await?;
-        tool_result(result, "version not found")
+        .await
     }
 
     #[tool(
@@ -412,11 +527,10 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<MoveTaskParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        run_tool(self.repo.clone(), TASK_OR_VERSION_NOT_FOUND, move |repo| {
             repo.move_task(params.task_id, params.version_id)
         })
-        .await?;
-        tool_result(result, "task or version not found")
+        .await
     }
 
     #[tool(
@@ -429,11 +543,10 @@ impl PmpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let task_id = params.task_id;
         let priority = params.priority;
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        run_tool(self.repo.clone(), TASK_NOT_FOUND, move |repo| {
             repo.update_task_priority(task_id, priority.into())
         })
-        .await?;
-        tool_result(result, "task not found")
+        .await
     }
 
     #[tool(
@@ -444,13 +557,9 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<UpdateTaskParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = execute_repository(self.repo.clone(), move |repo| {
-            if let Some(name) = &params.name
-                && name.trim().is_empty()
-            {
-                return Err(AppError::Validation(
-                    "task name cannot be empty".to_string(),
-                ));
+        run_tool(self.repo.clone(), TASK_NOT_FOUND, move |repo| {
+            if let Some(name) = &params.name {
+                validate_name("task", name)?;
             }
             let current = repo.get_task(params.task_id)?;
             let name = params.name.clone().unwrap_or_else(|| current.name.clone());
@@ -462,19 +571,24 @@ impl PmpServer {
             } else {
                 let mut sections = split_description(&current.description);
                 if let Some(context) = params.context {
+                    validate_text("task", "context", &context)?;
                     sections.context = context;
                 }
                 if let Some(requirements) = params.requirements {
+                    validate_text("task", "requirements", &requirements)?;
                     sections.requirements = requirements;
                 }
                 if let Some(benefits) = params.benefits {
+                    validate_text("task", "benefits", &benefits)?;
                     sections.benefits = benefits;
                 }
-                compose_description(
+                let description = compose_description(
                     &sections.context,
                     &sections.requirements,
                     &sections.benefits,
-                )
+                );
+                validate_text("task", "description", &description)?;
+                description
             };
             repo.update_task(
                 params.task_id,
@@ -484,8 +598,7 @@ impl PmpServer {
                 current.priority,
             )
         })
-        .await?;
-        tool_result(result, "task not found")
+        .await
     }
 
     #[tool(
@@ -496,15 +609,15 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<CreateTaskParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = execute_repository(self.repo.clone(), move |repo| {
-            if params.name.trim().is_empty() {
-                return Err(AppError::Validation(
-                    "task name cannot be empty".to_string(),
-                ));
-            }
+        run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
+            validate_name("task", &params.name)?;
+            validate_text("task", "context", &params.context)?;
+            validate_text("task", "requirements", &params.requirements)?;
+            validate_text("task", "benefits", &params.benefits)?;
             repo.get_project(params.project_id)?;
             let description =
                 compose_description(&params.context, &params.requirements, &params.benefits);
+            validate_text("task", "description", &description)?;
             repo.create_task(
                 params.project_id,
                 params.version_id,
@@ -514,8 +627,7 @@ impl PmpServer {
                 params.priority.into(),
             )
         })
-        .await?;
-        tool_result(result, "project not found")
+        .await
     }
 
     #[tool(
@@ -528,20 +640,10 @@ impl PmpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let task_id = params.task_id;
         let new_status = params.status;
-        let result = execute_repository(self.repo.clone(), move |repo| {
-            let task = repo.get_task(task_id)?;
-            if new_status == Status::Done
-                && task.status != Status::Done
-                && repo.has_incomplete_dependencies(task_id)?
-            {
-                return Err(AppError::Validation(
-                    "cannot mark task as done: it has incomplete dependencies".to_string(),
-                ));
-            }
+        run_tool(self.repo.clone(), TASK_NOT_FOUND, move |repo| {
             repo.update_task_status(task_id, new_status)
         })
-        .await?;
-        tool_result(result, "task not found")
+        .await
     }
 
     #[tool(
@@ -565,7 +667,7 @@ impl PmpServer {
                     "depends_on_ids": depends_on_ids,
                 })
             }),
-            "task not found",
+            TASK_NOT_FOUND,
         )
     }
 
@@ -590,7 +692,7 @@ impl PmpServer {
                     "task_ids": task_ids,
                 })
             }),
-            "task not found",
+            TASK_NOT_FOUND,
         )
     }
 
@@ -617,7 +719,7 @@ impl PmpServer {
                     "depends_on_id": depends_on_id,
                 })
             }),
-            "task not found",
+            TASK_NOT_FOUND,
         )
     }
 
@@ -642,7 +744,7 @@ impl PmpServer {
                     "depends_on_ids": ids,
                 })
             }),
-            "task not found",
+            TASK_NOT_FOUND,
         )
     }
 
@@ -669,7 +771,7 @@ impl PmpServer {
                     "depends_on_id": depends_on_id,
                 })
             }),
-            "task not found",
+            TASK_NOT_FOUND,
         )
     }
 
@@ -682,12 +784,11 @@ impl PmpServer {
         Parameters(params): Parameters<TaskIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let task_id = params.task_id;
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        run_tool(self.repo.clone(), TASK_NOT_FOUND, move |repo| {
             repo.get_task(task_id)?;
             repo.list_task_notes(task_id)
         })
-        .await?;
-        tool_result(result, "task not found")
+        .await
     }
 
     #[tool(
@@ -700,12 +801,12 @@ impl PmpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let task_id = params.task_id;
         let content = params.content;
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        run_tool(self.repo.clone(), TASK_NOT_FOUND, move |repo| {
             repo.get_task(task_id)?;
+            validate_text("note", "content", &content)?;
             repo.add_task_note(task_id, &content)
         })
-        .await?;
-        tool_result(result, "task not found")
+        .await
     }
 
     #[tool(
@@ -723,9 +824,149 @@ impl PmpServer {
         .await?;
         tool_result(
             result.map(|()| serde_json::json!({ "note_id": note_id })),
-            "note not found",
+            NOTE_NOT_FOUND,
         )
     }
+
+    #[tool(
+        name = "preview_compact_version",
+        description = "Preview the JSON snapshot that compact_version would freeze for a version, without changing anything. Includes the version, its done tasks (todo tasks are not frozen), their notes and dependencies, plus the previous summary when recompacting. Use before compact_version to review what will be persisted."
+    )]
+    async fn preview_compact_version(
+        &self,
+        Parameters(params): Parameters<VersionIdParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let version_id = params.version_id;
+        run_tool(self.repo.clone(), VERSION_NOT_FOUND, move |repo| {
+            repo.get_version(version_id)?;
+            let snapshot = repo.build_compact_snapshot(version_id)?;
+            serde_json::from_str::<serde_json::Value>(&snapshot)
+                .map_err(|e| AppError::Validation(format!("snapshot parse error: {e}")))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "compact_version",
+        description = "Compact a version into a frozen summary. Freezes only its done tasks (with their notes/dependencies) and deletes them; todo tasks stay in the version. Fails if any task is in_progress, or if there is nothing to freeze (no done tasks and no previous summary). If todo tasks remain, the version stays open; otherwise it is marked released by default. When recompacting, the new summary must preserve the relevant knowledge from the previous summary (available in the preview as previous_summary) while incorporating the new tasks, notes and dependencies with their completed_at."
+    )]
+    async fn compact_version(
+        &self,
+        Parameters(params): Parameters<CompactVersionParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let version_id = params.version_id;
+        let summary = params.summary;
+        let mark_released = params.mark_released.unwrap_or(true);
+        run_tool(self.repo.clone(), VERSION_NOT_FOUND, move |repo| {
+            validate_text("version summary", "summary", &summary)?;
+            repo.can_compact(version_id)?;
+            let snapshot = repo.build_compact_snapshot(version_id)?;
+            // Replaces the previous summary, stores the new one and deletes the
+            // done tasks in one transaction: a failure leaves everything intact.
+            let created = repo.compact_version(version_id, &summary, &snapshot)?;
+            // Pending (todo) tasks keep the version open for further work;
+            // otherwise the version is released unless the caller opts out.
+            let has_remaining_tasks = !repo.list_tasks_by_version(version_id)?.is_empty();
+            let target_status = if has_remaining_tasks {
+                Some(VersionStatus::Open)
+            } else if mark_released {
+                Some(VersionStatus::Released)
+            } else {
+                None
+            };
+            if let Some(status) = target_status {
+                let version = repo.get_version(version_id)?;
+                if version.status != status {
+                    repo.update_version(version_id, &version.name, &version.description, status)?;
+                }
+            }
+            Ok(created)
+        })
+        .await
+    }
+
+    #[tool(
+        name = "list_version_summaries",
+        description = "List the summaries of a version, newest first. A version holds at most one summary; after compaction its tasks live only in the summary snapshot. Use to review what was frozen."
+    )]
+    async fn list_version_summaries(
+        &self,
+        Parameters(params): Parameters<VersionIdParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let version_id = params.version_id;
+        run_tool(self.repo.clone(), VERSION_NOT_FOUND, move |repo| {
+            repo.get_version(version_id)?;
+            repo.list_version_summaries(version_id)
+        })
+        .await
+    }
+
+    #[tool(
+        name = "read_version_summary",
+        description = "Read one version summary by id, restricted to the given version. Returns the summary prose plus its frozen snapshot JSON. Use to inspect what a compacted version contained."
+    )]
+    async fn read_version_summary(
+        &self,
+        Parameters(params): Parameters<ReadVersionSummaryParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let version_id = params.version_id;
+        let summary_id = params.summary_id;
+        run_tool(self.repo.clone(), SUMMARY_NOT_FOUND, move |repo| {
+            let summary = repo.get_version_summary(summary_id)?;
+            if summary.version_id != version_id {
+                return Err(AppError::NotFound);
+            }
+            Ok(summary)
+        })
+        .await
+    }
+
+    #[tool(
+        name = "delete_version_summary",
+        description = "Delete a version summary by its id, restricted to the given version. Use to remove a compaction artifact; tasks already deleted during compaction are not restored."
+    )]
+    async fn delete_version_summary(
+        &self,
+        Parameters(params): Parameters<DeleteVersionSummaryParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let version_id = params.version_id;
+        let summary_id = params.summary_id;
+        run_tool(self.repo.clone(), SUMMARY_NOT_FOUND, move |repo| {
+            let summary = repo.get_version_summary(summary_id)?;
+            if summary.version_id != version_id {
+                return Err(AppError::NotFound);
+            }
+            repo.delete_version_summary(summary_id)?;
+            Ok(serde_json::json!({ "summary_id": summary_id }))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "export_version_summary",
+        description = "Export a version summary to a self-contained Markdown file with Mermaid charts (status pie, priority pie, dependency flowchart) and a task table. The file is always written inside the app's exports folder; the tool takes no destination path. Use to share or render a compacted version outside the app. Returns the written path."
+    )]
+    async fn export_version_summary(
+        &self,
+        Parameters(params): Parameters<ExportVersionSummaryParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let summary_id = params.summary_id;
+        let result = execute_repository(self.repo.clone(), move |repo| {
+            crate::mcp::export::export_version_summary_markdown(repo.as_ref(), summary_id)
+        })
+        .await?;
+        tool_result(
+            result.map(|path| serde_json::json!({ "path": path.to_string_lossy() })),
+            SUMMARY_NOT_FOUND,
+        )
+    }
+}
+
+/// Internal failure sent to the client. The detail goes to the server log
+/// only: it can contain file paths or SQL text.
+fn internal_error(detail: impl std::fmt::Display) -> ErrorData {
+    tracing::error!(error = %detail, "internal MCP error");
+    ErrorData::internal_error("internal error", None::<serde_json::Value>)
 }
 
 async fn execute_repository<T, F>(
@@ -736,9 +977,35 @@ where
     T: Send + 'static,
     F: FnOnce(Arc<dyn Repository>) -> Result<T, AppError> + Send + 'static,
 {
-    task::spawn_blocking(move || operation(repo))
-        .await
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None::<serde_json::Value>))
+    execute_repository_with_timeout(repo, operation, repository_timeout()).await
+}
+
+async fn execute_repository_with_timeout<T, F>(
+    repo: Arc<dyn Repository>,
+    operation: F,
+    timeout: Duration,
+) -> Result<Result<T, AppError>, ErrorData>
+where
+    T: Send + 'static,
+    F: FnOnce(Arc<dyn Repository>) -> Result<T, AppError> + Send + 'static,
+{
+    let handle = task::spawn_blocking(move || operation(repo));
+    match tokio::time::timeout(timeout, handle).await {
+        Ok(joined) => joined.map_err(internal_error),
+        Err(_) => Err(internal_error("repository operation timed out")),
+    }
+}
+
+/// Timeout for repository operations: `PMP_MCP_TIMEOUT_SECS` when it is a
+/// positive integer, otherwise the default. An invalid value is ignored rather
+/// than preventing the server from starting.
+fn repository_timeout() -> Duration {
+    std::env::var(REPOSITORY_TIMEOUT_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_REPOSITORY_TIMEOUT)
 }
 
 async fn read_json_resource<T, F>(
@@ -753,15 +1020,53 @@ where
     let value = execute_repository(repo, operation)
         .await?
         .map_err(app_error_to_mcp)?;
-    let text = serde_json::to_string_pretty(&value)
-        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+    let text = serde_json::to_string_pretty(&value).map_err(internal_error)?;
+    if text.len() > MAX_RESPONSE_BYTES {
+        return Err(response_too_large());
+    }
     Ok(ReadResourceResult::new(vec![
         ResourceContents::text(text, uri).with_mime_type("application/json"),
     ]))
 }
 
 fn json_content<T: Serialize>(value: &T) -> Result<ContentBlock, ErrorData> {
-    ContentBlock::json(value).map_err(|e| ErrorData::internal_error(e.to_string(), None))
+    let bytes = serde_json::to_vec(value).map_err(internal_error)?;
+    if bytes.len() > MAX_RESPONSE_BYTES {
+        return Err(response_too_large());
+    }
+    ContentBlock::json(value).map_err(internal_error)
+}
+
+/// Error returned when one response would exceed [`MAX_RESPONSE_BYTES`].
+fn response_too_large() -> ErrorData {
+    ErrorData::invalid_params(
+        format!("response exceeds {MAX_RESPONSE_BYTES} bytes; narrow the query or use pagination"),
+        None::<serde_json::Value>,
+    )
+}
+
+/// Slices `items` using an offset cursor (`"0"`, `"50"`, ...). Returns the page
+/// and the cursor for the next page when one exists.
+fn paginate_page<T>(
+    items: Vec<T>,
+    cursor: Option<&str>,
+    page_size: usize,
+) -> Result<(Vec<T>, Option<String>), ErrorData> {
+    let mut items = items;
+    let start = match cursor {
+        Some(cursor) if !cursor.is_empty() => cursor
+            .parse::<usize>()
+            .map_err(|_| ErrorData::invalid_params("invalid cursor", None))?,
+        _ => 0,
+    };
+    if start > items.len() {
+        return Err(ErrorData::invalid_params("cursor is out of range", None));
+    }
+    let total = items.len();
+    let end = (start + page_size).min(total);
+    let page = items.drain(start..end).collect();
+    let next_cursor = (end < total).then(|| end.to_string());
+    Ok((page, next_cursor))
 }
 
 fn tool_success<T: Serialize>(value: &T) -> Result<CallToolResult, ErrorData> {
@@ -787,22 +1092,39 @@ fn tool_result<T: Serialize>(
     }
 }
 
+/// Runs a repository operation for a tool and maps the outcome to a tool
+/// result, using `not_found` as the text for a missing record.
+async fn run_tool<T, F>(
+    repo: Arc<dyn Repository>,
+    not_found: &str,
+    operation: F,
+) -> Result<CallToolResult, ErrorData>
+where
+    T: Serialize + Send + 'static,
+    F: FnOnce(Arc<dyn Repository>) -> Result<T, AppError> + Send + 'static,
+{
+    let result = execute_repository(repo, operation).await?;
+    tool_result(result, not_found)
+}
+
 #[tool_handler]
 impl ServerHandler for PmpServer {
     async fn list_resources(
         &self,
-        _request: Option<rmcp::model::PaginatedRequestParams>,
+        request: Option<rmcp::model::PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
-        self.list_resources().await
+        self.list_resources_page(request.as_ref().and_then(|r| r.cursor.as_deref()))
+            .await
     }
 
     async fn list_resource_templates(
         &self,
-        _request: Option<rmcp::model::PaginatedRequestParams>,
+        request: Option<rmcp::model::PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, ErrorData> {
-        self.list_resource_templates().await
+        self.list_resource_templates_page(request.as_ref().and_then(|r| r.cursor.as_deref()))
+            .await
     }
 
     async fn read_resource(
@@ -842,16 +1164,17 @@ pub async fn serve(repo: Arc<dyn Repository>) -> Result<()> {
     Ok(())
 }
 
+/// The single mapping from domain errors to MCP protocol errors, used by
+/// tools and resources alike. Database errors are logged on the server and
+/// reported to the client as a generic internal error.
 fn app_error_to_mcp(err: AppError) -> ErrorData {
     match err {
         AppError::NotFound => ErrorData::new(
-            ErrorCode(-32602),
-            "resource not found".to_string(),
+            ErrorCode::RESOURCE_NOT_FOUND,
+            RESOURCE_NOT_FOUND_MESSAGE.to_string(),
             None::<serde_json::Value>,
         ),
-        AppError::DbError(_) => {
-            ErrorData::internal_error(err.to_string(), None::<serde_json::Value>)
-        }
+        AppError::DbError(source) => internal_error(source),
         AppError::Validation(_) | AppError::DependencyCycle => {
             ErrorData::invalid_params(err.to_string(), None::<serde_json::Value>)
         }
@@ -860,6 +1183,7 @@ fn app_error_to_mcp(err: AppError) -> ErrorData {
 
 #[cfg(test)]
 mod tests {
+    use crate::db::repository::RepositoryPolicy;
     use std::sync::Arc;
 
     use rmcp::ErrorData;
@@ -867,18 +1191,26 @@ mod tests {
     use rmcp::model::{CallToolResult, ErrorCode, ReadResourceResult, ResourceContents};
 
     use super::PriorityParam;
-    use crate::db::repository::Repository;
+    use crate::db::repository::{
+        DependencyRepository, NoteRepository, ProjectRepository, SummaryRepository, TaskRepository,
+        VersionRepository,
+    };
     use crate::db::stub::StubRepository;
     use crate::domain::error::AppError;
     use crate::domain::project::Project;
     use crate::domain::task::{Priority, Status, Task, TaskNote};
+    use crate::domain::validation::MAX_TEXT_LEN;
     use crate::domain::version::{Version, VersionStatus};
+    use crate::domain::version_summary::VersionSummary;
 
     use super::{
-        AddTaskNoteParams, CreateProjectParams, CreateTaskParams, CreateVersionParams,
-        ListTasksParams, ListVersionsParams, MoveTaskParams, NoteIdParams, PmpServer,
-        SetTaskDependenciesParams, TaskDependencyParams, TaskIdParams, UpdateProjectParams,
-        UpdateTaskParams, UpdateTaskPriorityParams, UpdateTaskStatusParams, UpdateVersionParams,
+        AddTaskNoteParams, CompactVersionParams, CreateProjectParams, CreateTaskParams,
+        CreateVersionParams, DeleteVersionSummaryParams, ExportVersionSummaryParams,
+        ListTasksParams, ListVersionsParams, MAX_RESPONSE_BYTES, MoveTaskParams, NoteIdParams,
+        PmpServer, ReadVersionSummaryParams, SetTaskDependenciesParams, TaskDependencyParams,
+        TaskIdParams, UpdateProjectParams, UpdateTaskParams, UpdateTaskPriorityParams,
+        UpdateTaskStatusParams, UpdateVersionParams, VersionIdParams, app_error_to_mcp,
+        json_content, paginate_page,
     };
     use crate::mcp::task_description::compose_description;
 
@@ -930,9 +1262,15 @@ mod tests {
             .expect("tool result should have text content")
     }
 
+    /// Extracts the `tasks` array from a `list_tasks` page response.
+    fn page_tasks(text: &str) -> Vec<Task> {
+        let page: serde_json::Value = serde_json::from_str(text).unwrap();
+        serde_json::from_value(page["tasks"].clone()).unwrap()
+    }
+
     struct FailingRepository;
 
-    impl Repository for FailingRepository {
+    impl ProjectRepository for FailingRepository {
         fn list_projects(&self) -> Result<Vec<Project>, AppError> {
             Ok(vec![])
         }
@@ -949,22 +1287,12 @@ mod tests {
             unimplemented!()
         }
 
-        fn list_tasks_by_project(&self, _: i64) -> Result<Vec<Task>, AppError> {
-            Err(AppError::DbError(rusqlite::Error::InvalidQuery))
-        }
-
-        fn create_task(
-            &self,
-            _: i64,
-            _: i64,
-            _: &str,
-            _: &str,
-            _: Status,
-            _: Priority,
-        ) -> Result<Task, AppError> {
+        fn delete_project(&self, _: i64) -> Result<(), AppError> {
             unimplemented!()
         }
+    }
 
+    impl VersionRepository for FailingRepository {
         fn list_versions_by_project(&self, _: i64) -> Result<Vec<Version>, AppError> {
             Err(AppError::DbError(rusqlite::Error::InvalidQuery))
         }
@@ -988,6 +1316,24 @@ mod tests {
         }
 
         fn delete_version(&self, _: i64) -> Result<(), AppError> {
+            unimplemented!()
+        }
+    }
+
+    impl TaskRepository for FailingRepository {
+        fn list_tasks_by_project(&self, _: i64) -> Result<Vec<Task>, AppError> {
+            Err(AppError::DbError(rusqlite::Error::InvalidQuery))
+        }
+
+        fn create_task(
+            &self,
+            _: i64,
+            _: i64,
+            _: &str,
+            _: &str,
+            _: Status,
+            _: Priority,
+        ) -> Result<Task, AppError> {
             unimplemented!()
         }
 
@@ -1022,6 +1368,16 @@ mod tests {
             unimplemented!()
         }
 
+        fn delete_task(&self, _: i64) -> Result<(), AppError> {
+            unimplemented!()
+        }
+
+        fn delete_done_tasks_by_version(&self, _: i64) -> Result<(), AppError> {
+            unimplemented!()
+        }
+    }
+
+    impl DependencyRepository for FailingRepository {
         fn add_dependency(&self, _: i64, _: i64) -> Result<(), AppError> {
             unimplemented!()
         }
@@ -1042,14 +1398,6 @@ mod tests {
             unimplemented!()
         }
 
-        fn delete_project(&self, _: i64) -> Result<(), AppError> {
-            unimplemented!()
-        }
-
-        fn delete_task(&self, _: i64) -> Result<(), AppError> {
-            unimplemented!()
-        }
-
         fn get_dependents(&self, _: i64) -> Result<Vec<i64>, AppError> {
             unimplemented!()
         }
@@ -1057,7 +1405,9 @@ mod tests {
         fn would_create_cycle(&self, _: i64, _: i64) -> Result<bool, AppError> {
             unimplemented!()
         }
+    }
 
+    impl NoteRepository for FailingRepository {
         fn list_task_notes(&self, _: i64) -> Result<Vec<TaskNote>, AppError> {
             unimplemented!()
         }
@@ -1071,10 +1421,37 @@ mod tests {
         }
     }
 
+    impl SummaryRepository for FailingRepository {
+        fn list_version_summaries(&self, _: i64) -> Result<Vec<VersionSummary>, AppError> {
+            unimplemented!()
+        }
+
+        fn get_version_summary(&self, _: i64) -> Result<VersionSummary, AppError> {
+            unimplemented!()
+        }
+
+        fn create_version_summary(
+            &self,
+            _: i64,
+            _: &str,
+            _: &str,
+        ) -> Result<VersionSummary, AppError> {
+            unimplemented!()
+        }
+
+        fn delete_version_summary(&self, _: i64) -> Result<(), AppError> {
+            unimplemented!()
+        }
+
+        fn compact_version(&self, _: i64, _: &str, _: &str) -> Result<VersionSummary, AppError> {
+            unimplemented!()
+        }
+    }
+
     #[tokio::test]
     async fn list_resources_includes_projects() {
         let (server, _) = server();
-        let result = server.list_resources().await.unwrap();
+        let result = server.list_resources_page(None).await.unwrap();
         assert_eq!(result.resources.len(), 1);
         assert_eq!(result.resources[0].uri, "pmp://projects");
     }
@@ -1082,7 +1459,7 @@ mod tests {
     #[tokio::test]
     async fn list_resource_templates_include_project_and_tasks() {
         let (server, _) = server();
-        let result = server.list_resource_templates().await.unwrap();
+        let result = server.list_resource_templates_page(None).await.unwrap();
         insta::assert_json_snapshot!(
             result
                 .resource_templates
@@ -1090,6 +1467,27 @@ mod tests {
                 .map(|t| (&t.uri_template, &t.name))
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[tokio::test]
+    async fn every_listed_template_is_readable() {
+        let (server, _) = server();
+        let templates = server
+            .list_resource_templates_page(None)
+            .await
+            .unwrap()
+            .resource_templates;
+        assert!(!templates.is_empty());
+        for template in templates {
+            let uri = template.uri_template.replace("{id}", "1");
+            if let Err(err) = server.read_resource(&uri).await {
+                assert_ne!(
+                    err.message, "unsupported resource uri",
+                    "template {} is listed but not readable",
+                    template.uri_template
+                );
+            }
+        }
     }
 
     #[tokio::test]
@@ -1150,7 +1548,7 @@ mod tests {
             .await
             .unwrap_err();
         let ErrorData { code, .. } = err;
-        assert_eq!(code, ErrorCode(-32602));
+        assert_eq!(code, ErrorCode::RESOURCE_NOT_FOUND);
         insta::assert_json_snapshot!(err);
     }
 
@@ -1163,12 +1561,50 @@ mod tests {
                 version_id: None,
                 status: None,
                 priority: None,
+                limit: None,
+                offset: None,
             }))
             .await
             .unwrap();
         let text = tool_text(result);
-        let tasks: Vec<Task> = serde_json::from_str(&text).unwrap();
+        let tasks = page_tasks(&text);
         assert_eq!(tasks.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn list_tasks_paginates_with_limit_and_offset() {
+        let (server, _, pid) = seeded_server();
+        let first = server
+            .list_tasks(Parameters(ListTasksParams {
+                project_id: pid,
+                version_id: None,
+                status: None,
+                priority: None,
+                limit: Some(2),
+                offset: None,
+            }))
+            .await
+            .unwrap();
+        let page: serde_json::Value = serde_json::from_str(&tool_text(first)).unwrap();
+        assert_eq!(page["tasks"].as_array().unwrap().len(), 2);
+        assert_eq!(page["total"], 3);
+        assert_eq!(page["has_more"], true);
+
+        let second = server
+            .list_tasks(Parameters(ListTasksParams {
+                project_id: pid,
+                version_id: None,
+                status: None,
+                priority: None,
+                limit: Some(2),
+                offset: Some(2),
+            }))
+            .await
+            .unwrap();
+        let page: serde_json::Value = serde_json::from_str(&tool_text(second)).unwrap();
+        assert_eq!(page["tasks"].as_array().unwrap().len(), 1);
+        assert_eq!(page["total"], 3);
+        assert_eq!(page["has_more"], false);
     }
 
     #[tokio::test]
@@ -1180,11 +1616,13 @@ mod tests {
                 version_id: None,
                 status: Some(Status::Done),
                 priority: None,
+                limit: None,
+                offset: None,
             }))
             .await
             .unwrap();
         let text = tool_text(result);
-        let tasks: Vec<Task> = serde_json::from_str(&text).unwrap();
+        let tasks = page_tasks(&text);
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].status, Status::Done);
     }
@@ -1198,11 +1636,13 @@ mod tests {
                 version_id: None,
                 status: None,
                 priority: Some(PriorityParam::High),
+                limit: None,
+                offset: None,
             }))
             .await
             .unwrap();
         let text = tool_text(result);
-        let tasks: Vec<Task> = serde_json::from_str(&text).unwrap();
+        let tasks = page_tasks(&text);
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].priority, Priority::High);
     }
@@ -1216,14 +1656,51 @@ mod tests {
                 version_id: None,
                 status: Some(Status::Todo),
                 priority: Some(PriorityParam::Low),
+                limit: None,
+                offset: None,
             }))
             .await
             .unwrap();
         let text = tool_text(result);
-        let tasks: Vec<Task> = serde_json::from_str(&text).unwrap();
+        let tasks = page_tasks(&text);
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].status, Status::Todo);
         assert_eq!(tasks[0].priority, Priority::Low);
+    }
+
+    #[tokio::test]
+    async fn resource_lists_reject_invalid_cursor() {
+        let (server, _) = server();
+        let err = server
+            .list_resources_page(Some("not-a-number"))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        let err = server
+            .list_resource_templates_page(Some("999"))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn paginate_page_slices_and_reports_next_cursor() {
+        let (page, next) = paginate_page(vec![1, 2, 3, 4, 5], None, 2).unwrap();
+        assert_eq!(page, vec![1, 2]);
+        assert_eq!(next.as_deref(), Some("2"));
+        let (page, next) = paginate_page(vec![1, 2, 3, 4, 5], Some("2"), 2).unwrap();
+        assert_eq!(page, vec![3, 4]);
+        assert_eq!(next.as_deref(), Some("4"));
+        let (page, next) = paginate_page(vec![1, 2, 3, 4, 5], Some("4"), 2).unwrap();
+        assert_eq!(page, vec![5]);
+        assert!(next.is_none());
+    }
+
+    #[test]
+    fn json_content_rejects_oversized_responses() {
+        let big = "a".repeat(MAX_RESPONSE_BYTES + 1);
+        let err = json_content(&big).unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     }
 
     #[tokio::test]
@@ -1235,12 +1712,47 @@ mod tests {
                 version_id: None,
                 status: None,
                 priority: None,
+                limit: None,
+                offset: None,
             }))
             .await
             .unwrap();
         assert_eq!(result.is_error, Some(true));
         let message = tool_text(result);
         assert!(message.contains("project not found"));
+    }
+
+    #[tokio::test]
+    async fn db_error_details_are_not_sent_to_client() {
+        let server = PmpServer::new(Arc::new(FailingRepository));
+        let err = server
+            .list_tasks(Parameters(ListTasksParams {
+                project_id: 1,
+                version_id: None,
+                status: None,
+                priority: None,
+                limit: None,
+                offset: None,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
+        assert_eq!(err.message, "internal error");
+        assert!(!err.message.contains("InvalidQuery"));
+        assert!(err.data.is_none());
+    }
+
+    #[test]
+    fn app_error_mapping_is_stable_for_each_variant() {
+        let not_found = app_error_to_mcp(AppError::NotFound);
+        assert_eq!(not_found.code, ErrorCode::RESOURCE_NOT_FOUND);
+        let db = app_error_to_mcp(AppError::DbError(rusqlite::Error::InvalidQuery));
+        assert_eq!(db.code, ErrorCode::INTERNAL_ERROR);
+        assert_eq!(db.message, "internal error");
+        let validation = app_error_to_mcp(AppError::Validation("bad".into()));
+        assert_eq!(validation.code, ErrorCode::INVALID_PARAMS);
+        let cycle = app_error_to_mcp(AppError::DependencyCycle);
+        assert_eq!(cycle.code, ErrorCode::INVALID_PARAMS);
     }
 
     #[tokio::test]
@@ -1253,10 +1765,12 @@ mod tests {
                 version_id: None,
                 status: None,
                 priority: None,
+                limit: None,
+                offset: None,
             }))
             .await
             .unwrap_err();
-        assert_eq!(err.code, ErrorCode(-32603));
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
     }
 
     #[tokio::test]
@@ -1802,7 +2316,7 @@ mod tests {
             }))
             .await
             .unwrap_err();
-        assert_eq!(err.code, ErrorCode(-32603));
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
     }
 
     #[tokio::test]
@@ -1903,6 +2417,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_task_rejects_oversized_arguments() {
+        let (server, repo) = server();
+        let project = repo.create_project("Alpha", "").unwrap();
+        let pid = project.id.unwrap();
+
+        let result = server
+            .create_task(Parameters(CreateTaskParams {
+                project_id: pid,
+                version_id: repo.default_version_id(pid).unwrap(),
+                name: "Task".to_string(),
+                context: "a".repeat(MAX_TEXT_LEN + 1),
+                requirements: "".to_string(),
+                benefits: "".to_string(),
+                priority: PriorityParam::Medium,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let message = tool_text(result);
+        assert!(message.contains("cannot exceed"), "{message}");
+    }
+
+    #[tokio::test]
     async fn create_task_db_error_returns_internal_error() {
         let repo = Arc::new(FailingRepository);
         let server = PmpServer::new(repo);
@@ -1918,7 +2455,7 @@ mod tests {
             }))
             .await
             .unwrap_err();
-        assert_eq!(err.code, ErrorCode(-32603));
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
     }
 
     #[tokio::test]
@@ -2084,7 +2621,7 @@ mod tests {
         drop(running);
 
         let text = tool_text(result);
-        let tasks: Vec<Task> = serde_json::from_str(&text).unwrap();
+        let tasks = page_tasks(&text);
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].status, Status::Done);
     }
@@ -2106,6 +2643,437 @@ mod tests {
         let mut line = String::new();
         reader.read_line(&mut line).await.unwrap();
         serde_json::from_str(&line).unwrap_or_else(|_| panic!("expected json, got: {line:?}"))
+    }
+
+    #[tokio::test]
+    async fn preview_compact_version_returns_snapshot_json() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version = repo.create_version(pid, "v1.0.0", "").unwrap();
+        let task = repo
+            .create_task(
+                pid,
+                version.id.unwrap(),
+                "A",
+                "",
+                Status::Done,
+                Priority::Low,
+            )
+            .unwrap();
+        repo.add_task_note(task.id.unwrap(), "done!").unwrap();
+
+        let result = server
+            .preview_compact_version(Parameters(VersionIdParams {
+                version_id: version.id.unwrap(),
+            }))
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&tool_text(result)).unwrap();
+        assert_eq!(value["version"]["name"], "v1.0.0");
+        assert_eq!(value["tasks"].as_array().unwrap().len(), 1);
+        assert_eq!(value["notes"].as_array().unwrap().len(), 1);
+        assert!(value["previous_summary"].is_null());
+    }
+
+    #[tokio::test]
+    async fn compact_version_rejects_tasks_in_progress() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version = repo.create_version(pid, "v1.0.0", "").unwrap();
+        let vid = version.id.unwrap();
+        repo.create_task(pid, vid, "Done", "", Status::Done, Priority::Low)
+            .unwrap();
+        repo.create_task(pid, vid, "Working", "", Status::InProgress, Priority::Low)
+            .unwrap();
+
+        let result = server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "Summary".to_string(),
+                mark_released: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let text = tool_text(result);
+        assert!(text.contains("in progress"));
+    }
+
+    #[tokio::test]
+    async fn compact_version_rejects_empty_version_without_summary() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version = repo.create_version(pid, "v1.0.0", "").unwrap();
+        let vid = version.id.unwrap();
+
+        let result = server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "Summary".to_string(),
+                mark_released: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(tool_text(result).contains("nothing to compact"));
+    }
+
+    #[tokio::test]
+    async fn compact_version_compacts_and_marks_released() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version = repo.create_version(pid, "v1.0.0", "").unwrap();
+        let vid = version.id.unwrap();
+        let task = repo
+            .create_task(pid, vid, "Done", "", Status::Done, Priority::Low)
+            .unwrap();
+        repo.add_task_note(task.id.unwrap(), "note").unwrap();
+
+        let result = server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "Summary".to_string(),
+                mark_released: None,
+            }))
+            .await
+            .unwrap();
+        let summary: VersionSummary = serde_json::from_str(&tool_text(result)).unwrap();
+        assert_eq!(summary.summary, "Summary");
+        assert_eq!(summary.version_id, vid);
+        assert!(repo.list_tasks_by_version(vid).unwrap().is_empty());
+        assert_eq!(
+            repo.get_version(vid).unwrap().status,
+            VersionStatus::Released
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_version_respects_mark_released_false() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version = repo.create_version(pid, "v1.0.0", "").unwrap();
+        let vid = version.id.unwrap();
+        repo.create_task(pid, vid, "Done", "", Status::Done, Priority::Low)
+            .unwrap();
+
+        let result = server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "Summary".to_string(),
+                mark_released: Some(false),
+            }))
+            .await
+            .unwrap();
+        let summary: VersionSummary = serde_json::from_str(&tool_text(result)).unwrap();
+        assert_eq!(summary.summary, "Summary");
+        assert_eq!(repo.get_version(vid).unwrap().status, VersionStatus::Open);
+    }
+
+    #[tokio::test]
+    async fn list_read_and_delete_version_summaries() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version = repo.create_version(pid, "v1.0.0", "").unwrap();
+        let vid = version.id.unwrap();
+        repo.create_task(pid, vid, "Done", "", Status::Done, Priority::Low)
+            .unwrap();
+        server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "Summary".to_string(),
+                mark_released: None,
+            }))
+            .await
+            .unwrap();
+
+        let listed = server
+            .list_version_summaries(Parameters(VersionIdParams { version_id: vid }))
+            .await
+            .unwrap();
+        let summaries: Vec<VersionSummary> = serde_json::from_str(&tool_text(listed)).unwrap();
+        assert_eq!(summaries.len(), 1);
+        let id = summaries[0].id.unwrap();
+
+        let read = server
+            .read_version_summary(Parameters(ReadVersionSummaryParams {
+                version_id: vid,
+                summary_id: id,
+            }))
+            .await
+            .unwrap();
+        let summary: VersionSummary = serde_json::from_str(&tool_text(read)).unwrap();
+        assert_eq!(summary.summary, "Summary");
+
+        let deleted = server
+            .delete_version_summary(Parameters(DeleteVersionSummaryParams {
+                version_id: vid,
+                summary_id: id,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(deleted.is_error, Some(false));
+        assert!(repo.get_version_summary(id).is_err());
+    }
+
+    #[tokio::test]
+    async fn delete_version_summary_rejects_mismatched_version() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let vid = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        repo.create_task(pid, vid, "Done", "", Status::Done, Priority::Low)
+            .unwrap();
+        server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "Summary".to_string(),
+                mark_released: None,
+            }))
+            .await
+            .unwrap();
+        let id = repo.list_version_summaries(vid).unwrap()[0].id.unwrap();
+
+        let result = server
+            .delete_version_summary(Parameters(DeleteVersionSummaryParams {
+                version_id: 999_999,
+                summary_id: id,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(tool_text(result).contains("summary not found"));
+        assert!(repo.get_version_summary(id).is_ok(), "summary must survive");
+    }
+
+    #[tokio::test]
+    async fn create_version_applies_the_shared_name_rule() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let blank = server
+            .create_version(Parameters(CreateVersionParams {
+                project_id: pid,
+                name: "   ".to_string(),
+                description: None,
+                status: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(blank.is_error, Some(true));
+        assert!(tool_text(blank).contains("version name cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn read_version_summary_rejects_mismatched_version() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version = repo.create_version(pid, "v1.0.0", "").unwrap();
+        let vid = version.id.unwrap();
+        repo.create_task(pid, vid, "Done", "", Status::Done, Priority::Low)
+            .unwrap();
+        server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "Summary".to_string(),
+                mark_released: None,
+            }))
+            .await
+            .unwrap();
+        let summaries = repo.list_version_summaries(vid).unwrap();
+        let id = summaries[0].id.unwrap();
+
+        let result = server
+            .read_version_summary(Parameters(ReadVersionSummaryParams {
+                version_id: 999_999,
+                summary_id: id,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(tool_text(result).contains("summary not found"));
+    }
+
+    #[tokio::test]
+    async fn compact_version_recompacts_preserving_previous_summary() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version = repo.create_version(pid, "v1.0.0", "").unwrap();
+        let vid = version.id.unwrap();
+
+        // First cycle: one done task, compact it.
+        let first = repo
+            .create_task(pid, vid, "First", "", Status::Todo, Priority::Low)
+            .unwrap();
+        repo.update_task_status(first.id.unwrap(), Status::Done)
+            .unwrap();
+        server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "First summary".to_string(),
+                mark_released: Some(false),
+            }))
+            .await
+            .unwrap();
+
+        // Second cycle: add a new task to the compacted version and recompact.
+        let second = repo
+            .create_task(pid, vid, "Second", "", Status::Todo, Priority::Low)
+            .unwrap();
+        repo.update_task_status(second.id.unwrap(), Status::Done)
+            .unwrap();
+        let result = server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "Second summary".to_string(),
+                mark_released: None,
+            }))
+            .await
+            .unwrap();
+        let summary: VersionSummary = serde_json::from_str(&tool_text(result)).unwrap();
+        assert_eq!(summary.summary, "Second summary");
+
+        let snapshot: serde_json::Value = serde_json::from_str(&summary.snapshot_json).unwrap();
+        let prev = &snapshot["previous_summary"];
+        assert!(!prev.is_null());
+        assert_eq!(prev["summary"], "First summary");
+    }
+
+    #[tokio::test]
+    async fn partial_compaction_freezes_only_done_and_keeps_version_open() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let vid = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let done = repo
+            .create_task(pid, vid, "Done", "", Status::Done, Priority::Low)
+            .unwrap();
+        let todo = repo
+            .create_task(pid, vid, "Todo", "", Status::Todo, Priority::Low)
+            .unwrap();
+        repo.add_task_note(todo.id.unwrap(), "todo note").unwrap();
+
+        let result = server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "Partial".to_string(),
+                mark_released: None,
+            }))
+            .await
+            .unwrap();
+        let summary: VersionSummary = serde_json::from_str(&tool_text(result)).unwrap();
+
+        let snapshot: serde_json::Value = serde_json::from_str(&summary.snapshot_json).unwrap();
+        let tasks = snapshot["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0]["id"], done.id.unwrap());
+        assert!(snapshot["notes"].as_array().unwrap().is_empty());
+
+        let remaining = repo.list_tasks_by_version(vid).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, todo.id);
+        assert_eq!(repo.get_version(vid).unwrap().status, VersionStatus::Open);
+    }
+
+    #[tokio::test]
+    async fn compact_version_rejects_when_in_progress_even_with_done_tasks() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let vid = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        repo.create_task(pid, vid, "Done", "", Status::Done, Priority::Low)
+            .unwrap();
+        repo.create_task(pid, vid, "WIP", "", Status::InProgress, Priority::Low)
+            .unwrap();
+
+        let result = server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "Summary".to_string(),
+                mark_released: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(repo.list_version_summaries(vid).unwrap().is_empty());
+        assert_eq!(repo.list_tasks_by_version(vid).unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn partial_then_full_compaction_releases_version() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let vid = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        repo.create_task(pid, vid, "First", "", Status::Done, Priority::Low)
+            .unwrap();
+        let later = repo
+            .create_task(pid, vid, "Later", "", Status::Todo, Priority::Low)
+            .unwrap();
+        server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "Partial".to_string(),
+                mark_released: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(repo.get_version(vid).unwrap().status, VersionStatus::Open);
+
+        repo.update_task_status(later.id.unwrap(), Status::Done)
+            .unwrap();
+        let result = server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "Final".to_string(),
+                mark_released: None,
+            }))
+            .await
+            .unwrap();
+        let summary: VersionSummary = serde_json::from_str(&tool_text(result)).unwrap();
+        assert_eq!(summary.summary, "Final");
+        assert!(repo.list_tasks_by_version(vid).unwrap().is_empty());
+        assert_eq!(
+            repo.get_version(vid).unwrap().status,
+            VersionStatus::Released
+        );
+
+        let snapshot: serde_json::Value = serde_json::from_str(&summary.snapshot_json).unwrap();
+        assert_eq!(snapshot["previous_summary"]["summary"], "Partial");
+    }
+
+    #[tokio::test]
+    async fn export_version_summary_writes_markdown_with_mermaid() {
+        let (server, repo) = server();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version = repo.create_version(pid, "v1.0.0", "").unwrap();
+        let vid = version.id.unwrap();
+        let task = repo
+            .create_task(pid, vid, "A", "", Status::Done, Priority::High)
+            .unwrap();
+        repo.add_task_note(task.id.unwrap(), "done note").unwrap();
+        server
+            .compact_version(Parameters(CompactVersionParams {
+                version_id: vid,
+                summary: "Prose summary".to_string(),
+                mark_released: None,
+            }))
+            .await
+            .unwrap();
+        let summaries = repo.list_version_summaries(vid).unwrap();
+        let summary_id = summaries[0].id.unwrap();
+
+        let result = server
+            .export_version_summary(Parameters(ExportVersionSummaryParams { summary_id }))
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&tool_text(result)).unwrap();
+        let written = std::path::PathBuf::from(value["path"].as_str().unwrap());
+        let exports = dirs::data_dir().unwrap().join("pmp").join("exports");
+        assert!(written.starts_with(&exports), "{}", written.display());
+
+        let markdown = std::fs::read_to_string(&written).unwrap();
+        assert!(markdown.contains("Prose summary"));
+        assert!(markdown.contains("```mermaid"));
+        assert!(markdown.contains("pie title Tasks by status"));
+        assert!(markdown.contains("pie title Tasks by priority"));
+        assert!(markdown.contains("flowchart LR"));
+        assert!(markdown.contains("done note"));
+        std::fs::remove_file(written).unwrap();
     }
 
     #[tokio::test]
@@ -2197,6 +3165,12 @@ mod tests {
         assert!(tools.iter().any(|t| t["name"] == "add_task_note"));
         assert!(tools.iter().any(|t| t["name"] == "delete_task_note"));
         assert!(tools.iter().any(|t| t["name"] == "move_task"));
+        assert!(tools.iter().any(|t| t["name"] == "preview_compact_version"));
+        assert!(tools.iter().any(|t| t["name"] == "compact_version"));
+        assert!(tools.iter().any(|t| t["name"] == "list_version_summaries"));
+        assert!(tools.iter().any(|t| t["name"] == "read_version_summary"));
+        assert!(tools.iter().any(|t| t["name"] == "delete_version_summary"));
+        assert!(tools.iter().any(|t| t["name"] == "export_version_summary"));
 
         let create_request = serde_json::json!({
             "jsonrpc": "2.0",
@@ -2242,7 +3216,7 @@ mod tests {
         let content = call_response["result"]["content"][0]["text"]
             .as_str()
             .expect("tool result should have text content");
-        let tasks: Vec<Task> = serde_json::from_str(content).unwrap();
+        let tasks = page_tasks(content);
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].status, Status::Done);
 
@@ -2456,10 +3430,12 @@ mod tests {
                 version_id: Some(v1),
                 status: None,
                 priority: None,
+                limit: None,
+                offset: None,
             }))
             .await
             .unwrap();
-        let tasks: Vec<Task> = serde_json::from_str(&tool_text(result)).unwrap();
+        let tasks = page_tasks(&tool_text(result));
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].name, "New");
     }
@@ -2475,6 +3451,8 @@ mod tests {
                 version_id: Some(repo.default_version_id(beta).unwrap()),
                 status: None,
                 priority: None,
+                limit: None,
+                offset: None,
             }))
             .await
             .unwrap();
@@ -2532,7 +3510,7 @@ mod tests {
                 project_id: pid,
                 name: "v0.2.0".to_string(),
                 description: None,
-                status: Some("released".to_string()),
+                status: Some(VersionStatus::Released),
             }))
             .await
             .unwrap();
@@ -2544,11 +3522,11 @@ mod tests {
     async fn create_version_rejects_empty_duplicate_and_invalid_status() {
         let (server, repo) = server();
         let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
-        let params = |name: &str, status: Option<&str>| CreateVersionParams {
+        let params = |name: &str, status: Option<VersionStatus>| CreateVersionParams {
             project_id: pid,
             name: name.to_string(),
             description: None,
-            status: status.map(str::to_string),
+            status,
         };
         let empty = server
             .create_version(Parameters(params("  ", None)))
@@ -2568,12 +3546,13 @@ mod tests {
         assert_eq!(duplicate.is_error, Some(true));
         assert!(tool_text(duplicate).contains("version already exists"));
 
-        let invalid = server
-            .create_version(Parameters(params("v0.3.0", Some("closed"))))
-            .await
-            .unwrap();
-        assert_eq!(invalid.is_error, Some(true));
-        assert!(tool_text(invalid).contains("invalid version status"));
+        // Unknown statuses are rejected by the schema, before the tool runs.
+        let invalid = serde_json::from_value::<CreateVersionParams>(serde_json::json!({
+            "project_id": pid,
+            "name": "v0.3.0",
+            "status": "closed",
+        }));
+        assert!(invalid.is_err());
     }
 
     #[tokio::test]
@@ -2608,7 +3587,7 @@ mod tests {
                     version_id,
                     name: "v0.2.0".to_string(),
                     description: Some("changed".to_string()),
-                    status: Some("released".to_string()),
+                    status: Some(VersionStatus::Released),
                 }))
                 .await
                 .unwrap(),
@@ -2661,23 +3640,18 @@ mod tests {
         assert_eq!(unknown.is_error, Some(true));
         assert!(tool_text(unknown).contains("version not found"));
 
-        let invalid = server
-            .update_version(Parameters(UpdateVersionParams {
-                version_id,
-                name: "v0.1.0".to_string(),
-                description: None,
-                status: Some("closed".to_string()),
-            }))
-            .await
-            .unwrap();
-        assert_eq!(invalid.is_error, Some(true));
-        assert!(tool_text(invalid).contains("invalid version status"));
+        let invalid = serde_json::from_value::<UpdateVersionParams>(serde_json::json!({
+            "version_id": version_id,
+            "name": "v0.1.0",
+            "status": "closed",
+        }));
+        assert!(invalid.is_err());
     }
 
     #[tokio::test]
     async fn resource_templates_include_versions_and_version_tasks() {
         let (server, _) = server();
-        let result = server.list_resource_templates().await.unwrap();
+        let result = server.list_resource_templates_page(None).await.unwrap();
         let uris: Vec<&str> = result
             .resource_templates
             .iter()
@@ -2769,18 +3743,19 @@ mod tests {
         .unwrap();
         assert_eq!(task.version_id, version_id);
 
-        let filtered: Vec<Task> = serde_json::from_str(&tool_text(
+        let filtered = page_tasks(&tool_text(
             server
                 .list_tasks(Parameters(ListTasksParams {
                     project_id: pid,
                     version_id: Some(version_id),
                     status: None,
                     priority: None,
+                    limit: None,
+                    offset: None,
                 }))
                 .await
                 .unwrap(),
-        ))
-        .unwrap();
+        ));
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id, task.id);
     }
@@ -2857,6 +3832,22 @@ mod priority_param_tests {
         }))
         .unwrap();
         assert_eq!(params.priority.map(Priority::from), Some(Priority::High));
+    }
+
+    #[tokio::test]
+    async fn repository_operations_time_out() {
+        let repo: Arc<dyn Repository> = Arc::new(crate::db::stub::StubRepository::default());
+        let result = execute_repository_with_timeout(
+            repo,
+            |_| {
+                std::thread::sleep(Duration::from_millis(200));
+                Ok(())
+            },
+            Duration::from_millis(10),
+        )
+        .await;
+        let err = result.expect_err("a blocked operation must fail with a timeout");
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
     }
 }
 

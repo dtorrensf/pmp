@@ -13,17 +13,12 @@ use ratatui::{
 };
 
 use crate::db::repository::Repository;
-use crate::screens::components::confirm_dialog::ConfirmDialog;
+use crate::screens::components::confirm_dialog::{ConfirmDialog, ConfirmState};
 use crate::screens::components::keys::key;
 use crate::screens::components::list_navigation::move_selection;
 use crate::screens::components::progress::completion_percentage;
-use crate::screens::components::scroll::{ListScroll, render_scrollbar};
+use crate::screens::components::scroll::{ListScroll, list_rows, render_list_scrollbar};
 use crate::screens::{AUTO_REFRESH_INTERVAL, Action, Component, Screen};
-
-pub enum ProjectListMode {
-    Browsing,
-    ConfirmDelete(ConfirmDialog),
-}
 
 pub struct ProjectListScreen {
     repo: Arc<dyn Repository>,
@@ -32,7 +27,7 @@ pub struct ProjectListScreen {
     version_counts: Vec<usize>,
     selected: usize,
     scroll: ListScroll,
-    mode: ProjectListMode,
+    confirm: ConfirmState,
 }
 
 impl ProjectListScreen {
@@ -55,7 +50,7 @@ impl ProjectListScreen {
             version_counts: Vec::new(),
             selected: 0,
             scroll: ListScroll::new(),
-            mode: ProjectListMode::Browsing,
+            confirm: ConfirmState::default(),
         }
     }
 
@@ -90,7 +85,7 @@ impl Component for ProjectListScreen {
             })
             .collect();
         self.selected = self.selected.min(self.projects.len().saturating_sub(1));
-        self.mode = ProjectListMode::Browsing;
+        self.confirm.close();
         Ok(())
     }
 
@@ -99,7 +94,7 @@ impl Component for ProjectListScreen {
     }
 
     fn auto_refresh_interval(&self) -> Option<Duration> {
-        matches!(&self.mode, ProjectListMode::Browsing).then_some(AUTO_REFRESH_INTERVAL)
+        (!self.confirm.is_open()).then_some(AUTO_REFRESH_INTERVAL)
     }
 
     fn handle_event(&mut self, event: &Event) -> Option<Action> {
@@ -109,47 +104,43 @@ impl Component for ProjectListScreen {
             ..
         }) = event
         {
-            match &self.mode {
-                ProjectListMode::Browsing => match code {
-                    KeyCode::Char('q') => Some(Action::Quit),
-                    KeyCode::Char('r') => Some(Action::Refresh),
-                    KeyCode::Char('c') => {
-                        Some(Action::Navigate(Screen::ProjectForm { project_id: None }))
-                    }
-                    KeyCode::Char('d') => {
-                        if let Some(project) = self.projects.get(self.selected) {
-                            let project_id = project.id.unwrap_or(0);
-                            let message = format!(
-                                "Delete project {}? This will remove all its tasks ⚠️. (y/N)",
-                                project.name
-                            );
-                            self.mode = ProjectListMode::ConfirmDelete(ConfirmDialog::new(
-                                message,
-                                Action::DeleteProject { project_id },
-                            ));
-                        }
-                        None
-                    }
-                    KeyCode::Char('e') => self
-                        .projects
-                        .get(self.selected)
-                        .map(|p| Action::Navigate(Screen::ProjectForm { project_id: p.id })),
-                    KeyCode::Enter => self.projects.get(self.selected).map(|p| {
-                        Action::Navigate(Screen::ProjectDashboard {
-                            project_id: p.id.unwrap_or(0),
-                        })
-                    }),
-                    KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k') => {
-                        move_selection(&mut self.selected, self.projects.len(), *code);
-                        None
-                    }
-                    _ => None,
-                },
-                ProjectListMode::ConfirmDelete(dialog) => {
-                    let action = dialog.handle_key(*code);
-                    self.mode = ProjectListMode::Browsing;
-                    action
+            if self.confirm.is_open() {
+                return self.confirm.answer(*code);
+            }
+            match code {
+                KeyCode::Char('q') => Some(Action::Quit),
+                KeyCode::Char('r') => Some(Action::Refresh),
+                KeyCode::Char('c') => {
+                    Some(Action::Navigate(Screen::ProjectForm { project_id: None }))
                 }
+                KeyCode::Char('d') => {
+                    if let Some(project) = self.projects.get(self.selected) {
+                        let project_id = project.id.unwrap_or(0);
+                        let message = format!(
+                            "Delete project {}? This will remove all its tasks ⚠️. (y/N)",
+                            project.name
+                        );
+                        self.confirm.open(ConfirmDialog::new(
+                            message,
+                            Action::DeleteProject { project_id },
+                        ));
+                    }
+                    None
+                }
+                KeyCode::Char('e') => self
+                    .projects
+                    .get(self.selected)
+                    .map(|p| Action::Navigate(Screen::ProjectForm { project_id: p.id })),
+                KeyCode::Enter => self.projects.get(self.selected).map(|p| {
+                    Action::Navigate(Screen::ProjectDashboard {
+                        project_id: p.id.unwrap_or(0),
+                    })
+                }),
+                KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k') => {
+                    move_selection(&mut self.selected, self.projects.len(), *code);
+                    None
+                }
+                _ => None,
             }
         } else {
             None
@@ -157,9 +148,9 @@ impl Component for ProjectListScreen {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect) {
-        match &self.mode {
-            ProjectListMode::Browsing => render_list(self, frame, area),
-            ProjectListMode::ConfirmDelete(dialog) => dialog.render(frame, area),
+        match self.confirm.dialog() {
+            Some(dialog) => dialog.render(frame, area),
+            None => render_list(self, frame, area),
         }
     }
 }
@@ -175,7 +166,7 @@ fn render_list(screen: &ProjectListScreen, frame: &mut Frame, area: Rect) {
     }
 
     // Rows that fit inside the top and bottom borders.
-    let row_height = area.height.saturating_sub(2) as usize;
+    let row_height = list_rows(area, 0);
     let range = screen
         .scroll
         .visible_range(screen.projects.len(), screen.selected, row_height);
@@ -205,15 +196,12 @@ fn render_list(screen: &ProjectListScreen, frame: &mut Frame, area: Rect) {
     let list = List::new(items).block(block);
     frame.render_widget(list, area);
 
-    // Scrollbar on the right border, aligned with the data rows.
-    if row_height > 0 && area.width > 0 {
-        let track = Rect::new(area.x + area.width - 1, area.y + 1, 1, row_height as u16);
-        render_scrollbar(frame, track, screen.projects.len(), row_height, range.start);
-    }
+    render_list_scrollbar(frame, area, 0, screen.projects.len(), range.start);
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::db::repository::*;
     use std::sync::Arc;
 
     use crossterm::event::KeyCode;

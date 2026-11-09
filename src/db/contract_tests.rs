@@ -7,11 +7,12 @@
 //! (Liskov Substitution Principle). Add new behavioral guarantees here
 //! whenever the trait contract grows.
 
-use crate::db::repository::Repository;
+use crate::db::repository::{Repository, RepositoryPolicy, TaskFilter};
 use crate::db::sqlite::SqliteRepository;
 use crate::db::stub::StubRepository;
 use crate::domain::error::AppError;
 use crate::domain::task::{Priority, Status};
+use crate::domain::validation::{MAX_NAME_LEN, MAX_TEXT_LEN};
 use crate::domain::version::VersionStatus;
 
 fn sqlite_repo() -> (tempfile::TempDir, SqliteRepository) {
@@ -79,6 +80,106 @@ fn add_task_note_accepts_valid_content() {
         assert_eq!(note.task_id, task_id, "{name}");
         assert_eq!(note.content, "valid note", "{name}");
         assert!(note.id.is_some(), "{name}");
+    });
+}
+
+#[test]
+fn create_project_rejects_oversized_name() {
+    for_each_repo(|name, repo| {
+        let long = "a".repeat(MAX_NAME_LEN + 1);
+        let result = repo.create_project(&long, "");
+        assert!(
+            matches!(result, Err(AppError::Validation(_))),
+            "{name}: expected Validation error for an oversized project name, got {result:?}"
+        );
+    });
+}
+
+#[test]
+fn create_task_rejects_oversized_description() {
+    for_each_repo(|name, repo| {
+        let project = repo.create_project("P", "").unwrap();
+        let project_id = project.id.unwrap();
+        let version_id = repo.default_version_id(project_id).unwrap();
+        let long = "a".repeat(MAX_TEXT_LEN + 1);
+        let result = repo.create_task(
+            project_id,
+            version_id,
+            "T",
+            &long,
+            Status::Todo,
+            Priority::Medium,
+        );
+        assert!(
+            matches!(result, Err(AppError::Validation(_))),
+            "{name}: expected Validation error for an oversized task description, got {result:?}"
+        );
+    });
+}
+
+#[test]
+fn add_task_note_rejects_oversized_content() {
+    for_each_repo(|name, repo| {
+        let task_id = create_task(repo);
+        let long = "a".repeat(MAX_TEXT_LEN + 1);
+        let result = repo.add_task_note(task_id, &long);
+        assert!(
+            matches!(result, Err(AppError::Validation(_))),
+            "{name}: expected Validation error for an oversized note, got {result:?}"
+        );
+    });
+}
+
+#[test]
+fn list_tasks_page_filters_in_storage_and_paginates() {
+    for_each_repo(|name, repo| {
+        let project = repo.create_project("P", "").unwrap();
+        let project_id = project.id.unwrap();
+        let version_id = repo.default_version_id(project_id).unwrap();
+        for (task_name, status, priority) in [
+            ("todo-low", Status::Todo, Priority::Low),
+            ("todo-high", Status::Todo, Priority::High),
+            ("done-low", Status::Done, Priority::Low),
+            ("progress", Status::InProgress, Priority::Medium),
+        ] {
+            repo.create_task(project_id, version_id, task_name, "", status, priority)
+                .unwrap();
+        }
+
+        let todo = TaskFilter {
+            project_id,
+            version_id: Some(version_id),
+            status: Some(Status::Todo),
+            priority: None,
+        };
+        assert_eq!(repo.count_tasks(&todo).unwrap(), 2, "{name}");
+        assert_eq!(
+            repo.list_tasks_page(&todo, 10, 0).unwrap().len(),
+            2,
+            "{name}"
+        );
+
+        let high = TaskFilter {
+            priority: Some(Priority::High),
+            ..todo
+        };
+        assert_eq!(repo.count_tasks(&high).unwrap(), 1, "{name}");
+        let page = repo.list_tasks_page(&high, 10, 0).unwrap();
+        assert_eq!(page[0].name, "todo-high", "{name}");
+
+        let second = repo.list_tasks_page(&todo, 1, 1).unwrap();
+        assert_eq!(second.len(), 1, "{name}");
+
+        let done = TaskFilter {
+            status: Some(Status::Done),
+            ..todo
+        };
+        assert_eq!(repo.count_tasks(&done).unwrap(), 1, "{name}");
+        assert_eq!(
+            repo.list_tasks_page(&done, 10, 1).unwrap().len(),
+            0,
+            "{name}"
+        );
     });
 }
 
@@ -273,6 +374,68 @@ fn add_dependency_rejects_cross_version_tasks() {
 }
 
 #[test]
+fn delete_project_removes_its_versions_tasks_notes_dependencies_and_summaries() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v1 = repo.default_version_id(pid).unwrap();
+        let v2 = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let keep_pid = repo.create_project("Keep", "").unwrap().id.unwrap();
+        let keep_v = repo.default_version_id(keep_pid).unwrap();
+
+        let v1_task = task_in_version(repo, pid, v1, "V1");
+        let a = task_in_version(repo, pid, v2, "A");
+        let b = task_in_version(repo, pid, v2, "B");
+        let keep = task_in_version(repo, keep_pid, keep_v, "Keep");
+        repo.add_dependency(b, a).unwrap();
+        let note = repo.add_task_note(a, "note").unwrap();
+        repo.create_version_summary(v2, "Summary", "{}").unwrap();
+
+        repo.delete_project(pid).unwrap();
+
+        assert!(
+            matches!(repo.get_project(pid), Err(AppError::NotFound)),
+            "{name}: project"
+        );
+        assert!(
+            matches!(repo.get_version(v1), Err(AppError::NotFound)),
+            "{name}: v1"
+        );
+        assert!(
+            matches!(repo.get_version(v2), Err(AppError::NotFound)),
+            "{name}: v2"
+        );
+        assert!(
+            matches!(repo.get_task(v1_task), Err(AppError::NotFound)),
+            "{name}: v1 task"
+        );
+        assert!(
+            matches!(repo.get_task(a), Err(AppError::NotFound)),
+            "{name}: task a"
+        );
+        assert!(
+            matches!(repo.get_task(b), Err(AppError::NotFound)),
+            "{name}: task b"
+        );
+        assert!(
+            matches!(
+                repo.delete_task_note(note.id.unwrap()),
+                Err(AppError::NotFound)
+            ),
+            "{name}: note"
+        );
+        assert!(repo.get_dependencies(b).unwrap().is_empty(), "{name}: deps");
+        assert!(
+            repo.list_version_summaries(v2).unwrap().is_empty(),
+            "{name}: summaries"
+        );
+
+        // A different project must stay untouched.
+        assert!(repo.get_project(keep_pid).is_ok(), "{name}: other project");
+        assert!(repo.get_task(keep).is_ok(), "{name}: other task");
+    });
+}
+
+#[test]
 fn delete_version_removes_its_tasks_and_dependencies() {
     for_each_repo(|name, repo| {
         let pid = repo.create_project("P", "").unwrap().id.unwrap();
@@ -316,6 +479,21 @@ fn task_in_version(repo: &dyn Repository, pid: i64, version: i64, name: &str) ->
         .unwrap()
         .id
         .unwrap()
+}
+
+#[test]
+fn ids_are_scoped_per_table_like_sqlite_rowids() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let vid = repo.default_version_id(pid).unwrap();
+        let tid = task_in_version(repo, pid, vid, "T");
+        let note = repo.add_task_note(tid, "n").unwrap();
+
+        assert_eq!(pid, 1, "{name}: first project id");
+        assert_eq!(vid, 1, "{name}: first version id");
+        assert_eq!(tid, 1, "{name}: first task id");
+        assert_eq!(note.id, Some(1), "{name}: first note id");
+    });
 }
 
 #[test]
@@ -570,5 +748,421 @@ fn move_task_unknown_task_or_version_returns_not_found() {
         assert!(matches!(err, AppError::NotFound), "{name}: task {err:?}");
         let err = repo.move_task(id, 999_999).unwrap_err();
         assert!(matches!(err, AppError::NotFound), "{name}: version {err:?}");
+    });
+}
+
+#[test]
+fn can_compact_rejects_non_done_tasks() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let a = task_in_version(repo, pid, v, "A");
+        assert!(
+            matches!(repo.can_compact(v), Err(AppError::Validation(_))),
+            "{name}: todo task must block compaction"
+        );
+        repo.update_task_status(a, Status::Done).unwrap();
+        assert!(repo.can_compact(v).is_ok(), "{name}");
+    });
+}
+
+#[test]
+fn can_compact_rejects_empty_version_without_previous_summary() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        assert!(
+            matches!(repo.can_compact(v), Err(AppError::Validation(_))),
+            "{name}"
+        );
+    });
+}
+
+#[test]
+fn can_compact_accepts_empty_version_with_previous_summary() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let a = task_in_version(repo, pid, v, "A");
+        repo.update_task_status(a, Status::Done).unwrap();
+        let snapshot = repo.build_compact_snapshot(v).unwrap();
+        repo.create_version_summary(v, "First", &snapshot).unwrap();
+        repo.delete_done_tasks_by_version(v).unwrap();
+        assert!(repo.can_compact(v).is_ok(), "{name}");
+    });
+}
+
+#[test]
+fn build_compact_snapshot_omits_previous_summary_on_first_compaction() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let a = task_in_version(repo, pid, v, "A");
+        repo.update_task_status(a, Status::Done).unwrap();
+        let snapshot = repo.build_compact_snapshot(v).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
+        assert!(json["previous_summary"].is_null(), "{name}");
+        assert_eq!(json["tasks"].as_array().unwrap().len(), 1, "{name}");
+    });
+}
+
+#[test]
+fn build_compact_snapshot_includes_previous_summary_recursively() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let a = task_in_version(repo, pid, v, "A");
+        repo.update_task_status(a, Status::Done).unwrap();
+
+        let first = repo.build_compact_snapshot(v).unwrap();
+        repo.create_version_summary(v, "First", &first).unwrap();
+
+        let second = repo.build_compact_snapshot(v).unwrap();
+        let second_json: serde_json::Value = serde_json::from_str(&second).unwrap();
+        let prev = &second_json["previous_summary"];
+        assert!(!prev.is_null(), "{name}: previous_summary must be present");
+        assert_eq!(prev["summary"], "First", "{name}");
+
+        let prev_snapshot: serde_json::Value =
+            serde_json::from_str(prev["snapshot_json"].as_str().unwrap()).unwrap();
+        let first_json: serde_json::Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(prev_snapshot, first_json, "{name}");
+    });
+}
+
+#[test]
+fn delete_done_tasks_by_version_cascades_notes_and_dependencies() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let keep_v = repo.default_version_id(pid).unwrap();
+        let keep = task_in_version(repo, pid, keep_v, "Keep");
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let a = task_in_version(repo, pid, v, "A");
+        let b = task_in_version(repo, pid, v, "B");
+        // b (todo) depends on a (done): the edge must disappear with a.
+        repo.add_dependency(b, a).unwrap();
+        repo.add_task_note(a, "note A").unwrap();
+        repo.update_task_status(a, Status::Done).unwrap();
+
+        repo.delete_done_tasks_by_version(v).unwrap();
+
+        assert!(
+            matches!(repo.get_task(a), Err(AppError::NotFound)),
+            "{name}"
+        );
+        assert!(repo.get_dependencies(b).unwrap().is_empty(), "{name}");
+        assert!(repo.list_task_notes(a).unwrap().is_empty(), "{name}");
+        assert!(repo.get_task(keep).is_ok(), "{name}");
+    });
+}
+
+#[test]
+fn delete_done_tasks_by_version_keeps_todo_tasks_intact() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let done = task_in_version(repo, pid, v, "Done");
+        let todo = task_in_version(repo, pid, v, "Todo");
+        repo.add_task_note(todo, "keep me").unwrap();
+        repo.update_task_status(done, Status::Done).unwrap();
+
+        repo.delete_done_tasks_by_version(v).unwrap();
+
+        assert!(
+            matches!(repo.get_task(done), Err(AppError::NotFound)),
+            "{name}"
+        );
+        let remaining = repo.get_task(todo).unwrap();
+        assert_eq!(remaining.status, Status::Todo, "{name}");
+        assert_eq!(repo.list_task_notes(todo).unwrap().len(), 1, "{name}");
+        assert_eq!(repo.list_tasks_by_version(v).unwrap().len(), 1, "{name}");
+    });
+}
+
+#[test]
+fn can_compact_rejects_in_progress_tasks() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let done = task_in_version(repo, pid, v, "Done");
+        let wip = task_in_version(repo, pid, v, "WIP");
+        repo.update_task_status(done, Status::Done).unwrap();
+        repo.update_task_status(wip, Status::InProgress).unwrap();
+        assert!(
+            matches!(repo.can_compact(v), Err(AppError::Validation(_))),
+            "{name}: in_progress must block compaction"
+        );
+    });
+}
+
+#[test]
+fn can_compact_rejects_only_todo_without_previous_summary() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        task_in_version(repo, pid, v, "A");
+        task_in_version(repo, pid, v, "B");
+        assert!(
+            matches!(repo.can_compact(v), Err(AppError::Validation(_))),
+            "{name}"
+        );
+    });
+}
+
+#[test]
+fn can_compact_accepts_mix_of_done_and_todo() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let done = task_in_version(repo, pid, v, "Done");
+        task_in_version(repo, pid, v, "Todo");
+        repo.update_task_status(done, Status::Done).unwrap();
+        assert!(repo.can_compact(v).is_ok(), "{name}");
+    });
+}
+
+#[test]
+fn build_compact_snapshot_contains_only_done_tasks_with_their_notes_and_deps() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let a = task_in_version(repo, pid, v, "A");
+        let b = task_in_version(repo, pid, v, "B");
+        let todo = task_in_version(repo, pid, v, "Todo");
+        repo.add_dependency(b, a).unwrap();
+        repo.add_dependency(todo, b).unwrap();
+        repo.add_task_note(a, "note A").unwrap();
+        repo.add_task_note(todo, "note todo").unwrap();
+        repo.update_task_status(a, Status::Done).unwrap();
+        repo.update_task_status(b, Status::Done).unwrap();
+
+        let snapshot = repo.build_compact_snapshot(v).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
+        let tasks = json["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 2, "{name}");
+        assert!(tasks.iter().all(|t| t["status"] == "done"), "{name}");
+        let notes = json["notes"].as_array().unwrap();
+        assert_eq!(notes.len(), 1, "{name}");
+        assert_eq!(notes[0]["task_id"], a, "{name}");
+        let deps = json["dependencies"].as_array().unwrap();
+        assert_eq!(deps.len(), 1, "{name}");
+        assert_eq!(deps[0]["task_id"], b, "{name}");
+        assert_eq!(deps[0]["depends_on_id"], a, "{name}");
+    });
+}
+
+#[test]
+fn create_version_summary_rejects_duplicate_for_same_version() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let a = task_in_version(repo, pid, v, "A");
+        repo.update_task_status(a, Status::Done).unwrap();
+        let snapshot = repo.build_compact_snapshot(v).unwrap();
+        repo.create_version_summary(v, "First", &snapshot).unwrap();
+        assert!(
+            matches!(
+                repo.create_version_summary(v, "Second", &snapshot),
+                Err(AppError::Validation(_))
+            ),
+            "{name}"
+        );
+    });
+}
+
+#[test]
+fn delete_version_summary_allows_recreate() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let a = task_in_version(repo, pid, v, "A");
+        repo.update_task_status(a, Status::Done).unwrap();
+        let snapshot = repo.build_compact_snapshot(v).unwrap();
+        let summary = repo.create_version_summary(v, "First", &snapshot).unwrap();
+        let id = summary.id.unwrap();
+
+        repo.delete_version_summary(id).unwrap();
+        assert!(
+            matches!(repo.get_version_summary(id), Err(AppError::NotFound)),
+            "{name}"
+        );
+
+        let recreated = repo.create_version_summary(v, "Second", &snapshot).unwrap();
+        assert_eq!(recreated.summary, "Second", "{name}");
+    });
+}
+
+#[test]
+fn compact_flow_preserves_unique_invariant() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let a = task_in_version(repo, pid, v, "A");
+        repo.update_task_status(a, Status::Done).unwrap();
+
+        let snapshot = repo.build_compact_snapshot(v).unwrap();
+        repo.delete_done_tasks_by_version(v).unwrap();
+        repo.create_version_summary(v, "Summary", &snapshot)
+            .unwrap();
+
+        let summaries = repo.list_version_summaries(v).unwrap();
+        assert_eq!(summaries.len(), 1, "{name}");
+        assert_eq!(summaries[0].summary, "Summary", "{name}");
+        assert_eq!(summaries[0].snapshot_json, snapshot, "{name}");
+    });
+}
+
+#[test]
+fn update_task_status_sets_and_clears_completed_at() {
+    for_each_repo(|name, repo| {
+        let task_id = create_task(repo);
+        let task = repo.get_task(task_id).unwrap();
+        assert_eq!(task.completed_at, None, "{name}");
+
+        let done = repo.update_task_status(task_id, Status::Done).unwrap();
+        assert_eq!(done.status, Status::Done, "{name}");
+        assert!(done.completed_at.is_some(), "{name}");
+
+        let reopened = repo.update_task_status(task_id, Status::Todo).unwrap();
+        assert_eq!(reopened.status, Status::Todo, "{name}");
+        assert_eq!(reopened.completed_at, None, "{name}");
+    });
+}
+
+#[test]
+fn update_task_sets_and_clears_completed_at() {
+    for_each_repo(|name, repo| {
+        let task_id = create_task(repo);
+        assert_eq!(repo.get_task(task_id).unwrap().completed_at, None, "{name}");
+
+        let done = repo
+            .update_task(task_id, "T", "", Status::Done, Priority::Medium)
+            .unwrap();
+        assert_eq!(done.status, Status::Done, "{name}");
+        let completed_at = done
+            .completed_at
+            .clone()
+            .unwrap_or_else(|| panic!("{name}: update_task did not set completed_at"));
+
+        // Saving the task again while it stays done keeps the original date.
+        let again = repo
+            .update_task(task_id, "T2", "", Status::Done, Priority::Medium)
+            .unwrap();
+        assert_eq!(
+            again.completed_at.as_deref(),
+            Some(completed_at.as_str()),
+            "{name}: completion date changed on a done task"
+        );
+
+        let reopened = repo
+            .update_task(task_id, "T2", "", Status::Todo, Priority::Medium)
+            .unwrap();
+        assert_eq!(reopened.status, Status::Todo, "{name}");
+        assert_eq!(reopened.completed_at, None, "{name}");
+    });
+}
+
+#[test]
+fn compact_version_replaces_summary_and_removes_only_done_tasks() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let a = task_in_version(repo, pid, v, "A");
+        let b = task_in_version(repo, pid, v, "B");
+        repo.update_task_status(a, Status::Done).unwrap();
+
+        let snapshot = repo.build_compact_snapshot(v).unwrap();
+        repo.compact_version(v, "First", &snapshot).unwrap();
+        assert!(
+            matches!(repo.get_task(a), Err(AppError::NotFound)),
+            "{name}"
+        );
+        assert!(repo.get_task(b).is_ok(), "todo task must stay: {name}");
+
+        repo.update_task_status(b, Status::Done).unwrap();
+        let snapshot = repo.build_compact_snapshot(v).unwrap();
+        repo.compact_version(v, "Second", &snapshot).unwrap();
+        let summaries = repo.list_version_summaries(v).unwrap();
+        assert_eq!(summaries.len(), 1, "{name}");
+        assert_eq!(summaries[0].summary, "Second", "{name}");
+    });
+}
+
+#[test]
+fn compact_version_on_unknown_version_changes_nothing() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let a = task_in_version(repo, pid, v, "A");
+        repo.update_task_status(a, Status::Done).unwrap();
+
+        assert!(repo.compact_version(9999, "X", "{}").is_err(), "{name}");
+        assert!(repo.get_task(a).is_ok(), "done task must survive: {name}");
+        assert!(repo.list_version_summaries(v).unwrap().is_empty(), "{name}");
+    });
+}
+
+fn two_tasks(repo: &dyn Repository) -> (i64, i64) {
+    let project = repo.create_project("P", "").unwrap();
+    let pid = project.id.unwrap();
+    let vid = repo.default_version_id(pid).unwrap();
+    let create = |name: &str| {
+        repo.create_task(pid, vid, name, "", Status::Todo, Priority::Medium)
+            .unwrap()
+            .id
+            .unwrap()
+    };
+    (create("A"), create("B"))
+}
+
+#[test]
+fn done_is_rejected_while_a_dependency_is_incomplete() {
+    for_each_repo(|name, repo| {
+        let (a, b) = two_tasks(repo);
+        repo.add_dependency(a, b).unwrap();
+
+        match repo.update_task_status(a, Status::Done) {
+            Err(AppError::Validation(message)) => {
+                assert!(message.contains("incomplete dependencies"), "{name}");
+            }
+            other => panic!("{name}: expected validation error, got {other:?}"),
+        }
+        assert_eq!(repo.get_task(a).unwrap().status, Status::Todo, "{name}");
+
+        let edit = repo.update_task(a, "A", "", Status::Done, Priority::Medium);
+        assert!(matches!(edit, Err(AppError::Validation(_))), "{name}");
+        assert_eq!(repo.get_task(a).unwrap().status, Status::Todo, "{name}");
+    });
+}
+
+#[test]
+fn done_is_allowed_once_dependencies_are_done() {
+    for_each_repo(|name, repo| {
+        let (a, b) = two_tasks(repo);
+        repo.add_dependency(a, b).unwrap();
+        repo.update_task_status(b, Status::Done).unwrap();
+        assert_eq!(
+            repo.update_task_status(a, Status::Done).unwrap().status,
+            Status::Done,
+            "{name}"
+        );
+    });
+}
+
+#[test]
+fn done_to_done_is_a_noop_even_with_incomplete_dependencies() {
+    for_each_repo(|name, repo| {
+        let (a, b) = two_tasks(repo);
+        // A is finished first; a blocker is added afterwards.
+        repo.update_task_status(a, Status::Done).unwrap();
+        repo.add_dependency(a, b).unwrap();
+
+        assert_eq!(
+            repo.update_task_status(a, Status::Done).unwrap().status,
+            Status::Done,
+            "{name}"
+        );
+        let edit = repo.update_task(a, "A", "", Status::Done, Priority::Medium);
+        assert!(edit.is_ok(), "{name}: {edit:?}");
     });
 }

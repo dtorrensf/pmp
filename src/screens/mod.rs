@@ -18,6 +18,7 @@ pub mod task_list_view;
 pub mod test_utils;
 pub mod version_dashboard;
 pub mod version_form;
+pub mod version_summary;
 
 pub use dashboard::ProjectDashboard;
 pub use project_form::ProjectForm;
@@ -25,6 +26,7 @@ pub use project_list::ProjectListScreen;
 pub use task_form::TaskForm;
 pub use version_dashboard::VersionDashboard;
 pub use version_form::VersionForm;
+pub use version_summary::VersionSummaryScreen;
 
 pub trait Component {
     fn init(&mut self) -> anyhow::Result<()> {
@@ -36,9 +38,6 @@ pub trait Component {
         self.init()
     }
     fn handle_event(&mut self, _event: &Event) -> Option<Action> {
-        None
-    }
-    fn update(&mut self, _action: Action) -> Option<Action> {
         None
     }
     fn render(&self, frame: &mut Frame, area: Rect);
@@ -72,6 +71,11 @@ pub enum Screen {
     VersionForm {
         project_id: i64,
         version_id: Option<i64>,
+    },
+    VersionSummary {
+        project_id: i64,
+        version_id: i64,
+        summary_id: i64,
     },
 }
 
@@ -134,12 +138,17 @@ pub enum Action {
         task_id: i64,
         content: String,
     },
+    ExportVersionSummary {
+        summary_id: i64,
+    },
     Refresh,
 }
 
 #[cfg(test)]
 pub mod tests {
-    use crate::db::repository::Repository;
+    use crate::db::repository::{
+        DependencyRepository, ProjectRepository, RepositoryPolicy, TaskRepository,
+    };
     use crate::db::stub::StubRepository;
     use crate::domain::task::{Priority, Status};
 

@@ -5,6 +5,7 @@ use serde::de;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::domain::error::AppError;
+use crate::domain::validation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -20,15 +21,6 @@ impl Status {
             Status::Todo => "todo",
             Status::InProgress => "in_progress",
             Status::Done => "done",
-        }
-    }
-
-    pub fn try_from_str(value: &str) -> Result<Self, AppError> {
-        match value {
-            "todo" => Ok(Status::Todo),
-            "in_progress" => Ok(Status::InProgress),
-            "done" => Ok(Status::Done),
-            _ => Err(AppError::Validation(format!("invalid status: {value}"))),
         }
     }
 
@@ -154,6 +146,25 @@ impl Priority {
     }
 }
 
+impl From<Status> for &'static str {
+    fn from(status: Status) -> Self {
+        status.as_str()
+    }
+}
+
+impl TryFrom<&str> for Status {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "todo" => Ok(Status::Todo),
+            "in_progress" => Ok(Status::InProgress),
+            "done" => Ok(Status::Done),
+            _ => Err(AppError::Validation(format!("invalid status: {value}"))),
+        }
+    }
+}
+
 impl From<Priority> for i64 {
     fn from(priority: Priority) -> Self {
         priority as i64
@@ -202,6 +213,7 @@ pub struct Task {
     pub status: Status,
     pub priority: Priority,
     pub created_at: String,
+    pub completed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -232,6 +244,7 @@ impl TaskNote {
                 "note content cannot be empty".to_string(),
             ));
         }
+        validation::validate_text("note", "content", content)?;
         Ok(TaskNote {
             id: None,
             task_id,
@@ -306,6 +319,7 @@ mod tests {
             status: Status::Todo,
             priority: Priority::Medium,
             created_at: "now".to_string(),
+            completed_at: None,
         };
         assert!(task.id.is_none());
         assert_eq!(task.project_id, 1);

@@ -7,10 +7,9 @@ use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::db::repository::Repository;
 use crate::domain::error::AppError;
-use crate::domain::task::Status;
 use crate::screens::{
     Action, Component, ProjectDashboard, ProjectForm, ProjectListScreen, Screen, TaskForm,
-    VersionDashboard, VersionForm,
+    VersionDashboard, VersionForm, VersionSummaryScreen,
 };
 
 pub struct App {
@@ -19,6 +18,8 @@ pub struct App {
     pub repo: Arc<dyn Repository>,
     pub action: Option<Action>,
     pub error: Option<String>,
+    /// Non-error notification banner (e.g. export path feedback).
+    notice: Option<String>,
     /// Newer pmp version reported by the background update check, if any.
     update_available: Option<String>,
     /// Whether the update banner is currently open.
@@ -38,6 +39,7 @@ struct Components {
     task_form: TaskForm,
     version_dashboard: VersionDashboard,
     version_form: VersionForm,
+    version_summary: VersionSummaryScreen,
 }
 
 impl App {
@@ -48,6 +50,7 @@ impl App {
             repo: repo.clone(),
             action: None,
             error: None,
+            notice: None,
             update_available: None,
             show_update: false,
             pending_update: None,
@@ -60,6 +63,7 @@ impl App {
                 task_form: TaskForm::new(repo.clone()),
                 version_dashboard: VersionDashboard::new(repo.clone()),
                 version_form: VersionForm::new(repo.clone()),
+                version_summary: VersionSummaryScreen::new(repo.clone()),
             },
         };
         if let Err(e) = app.init_screen(&Screen::ProjectList) {
@@ -108,6 +112,11 @@ impl App {
 
     pub fn update_version(&self) -> Option<&str> {
         self.update_available.as_deref()
+    }
+
+    /// Current non-error notification, if any.
+    pub fn notice(&self) -> Option<&str> {
+        self.notice.as_deref()
     }
 
     /// Returns the version compiled into the running binary, used in the
@@ -221,26 +230,6 @@ impl App {
                         return None;
                     }
                 };
-                // Block Done transition when dependencies are incomplete
-                // (only for existing tasks being edited, not new tasks).
-                if status == Status::Done
-                    && let Some(id) = task_id
-                {
-                    match self.repo.has_incomplete_dependencies(id) {
-                        Ok(true) => {
-                            self.error = Some(
-                                "cannot mark task as done: it has incomplete dependencies"
-                                    .to_string(),
-                            );
-                            return None;
-                        }
-                        Ok(false) => self.error = None,
-                        Err(e) => {
-                            self.error = Some(e.to_string());
-                            return None;
-                        }
-                    }
-                }
                 let result = match task_id {
                     Some(id) => self
                         .repo
@@ -289,23 +278,6 @@ impl App {
                     },
                     _ => return None,
                 };
-                // Block Done transition when dependencies are incomplete.
-                if new_status == Status::Done {
-                    match self.repo.has_incomplete_dependencies(task_id) {
-                        Ok(true) => {
-                            self.error = Some(
-                                "cannot mark task as done: it has incomplete dependencies"
-                                    .to_string(),
-                            );
-                            return None;
-                        }
-                        Ok(false) => self.error = None,
-                        Err(e) => {
-                            self.error = Some(e.to_string());
-                            return None;
-                        }
-                    }
-                }
                 match self.repo.update_task_status(task_id, new_status) {
                     Ok(_) => {
                         self.error = None;
@@ -449,6 +421,21 @@ impl App {
                     }
                 }
             }
+            Action::ExportVersionSummary { summary_id } => {
+                match crate::mcp::export::export_version_summary_markdown(
+                    self.repo.as_ref(),
+                    summary_id,
+                ) {
+                    Ok(path) => {
+                        self.error = None;
+                        self.notice = Some(format!("Exported to {}", path.display()));
+                    }
+                    Err(e) => {
+                        self.error = Some(e.to_string());
+                    }
+                }
+                None
+            }
             Action::Quit => None,
             Action::Noop => None,
         }
@@ -505,6 +492,16 @@ impl App {
                 self.components.version_form.set_version_id(*version_id);
                 self.components.version_form.init()
             }
+            Screen::VersionSummary {
+                project_id,
+                version_id,
+                summary_id,
+            } => {
+                self.components
+                    .version_summary
+                    .set_ids(*project_id, *version_id, *summary_id);
+                self.components.version_summary.init()
+            }
         }
     }
 
@@ -544,17 +541,31 @@ impl App {
                 self.components.version_form.set_version_id(*version_id);
                 &mut self.components.version_form
             }
+            Screen::VersionSummary {
+                project_id,
+                version_id,
+                summary_id,
+            } => {
+                self.components
+                    .version_summary
+                    .set_ids(*project_id, *version_id, *summary_id);
+                &mut self.components.version_summary
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::db::repository::RepositoryPolicy;
     use std::sync::Arc;
 
     use crossterm::event::KeyCode;
 
-    use crate::db::repository::Repository;
+    use crate::db::repository::{
+        DependencyRepository, NoteRepository, ProjectRepository, SummaryRepository, TaskRepository,
+        VersionRepository,
+    };
     use crate::db::stub::StubRepository;
     use crate::domain::task::{Priority, Status};
     use crate::domain::version::VersionStatus;
@@ -1750,5 +1761,64 @@ mod tests {
         });
         assert_eq!(next, None);
         assert_eq!(repo.get_task(task.id.unwrap()).unwrap().version_id, v1);
+    }
+
+    #[test]
+    fn export_version_summary_writes_file_and_sets_notice() {
+        let (repo, mut app) = setup_app();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let task = repo
+            .create_task(pid, v, "A", "", Status::Done, Priority::Low)
+            .unwrap();
+        repo.update_task_status(task.id.unwrap(), Status::Done)
+            .unwrap();
+        let snapshot = repo.build_compact_snapshot(v).unwrap();
+        let summary = repo
+            .create_version_summary(v, "Summary", &snapshot)
+            .unwrap();
+        let summary_id = summary.id.unwrap();
+
+        let next = app.dispatch(Action::ExportVersionSummary { summary_id });
+        assert_eq!(next, None);
+
+        let notice = app.notice().unwrap().to_string();
+        assert!(notice.starts_with("Exported to "));
+        let path = notice.trim_start_matches("Exported to ");
+        assert!(std::path::Path::new(path).exists());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn esc_from_version_summary_returns_to_version_dashboard() {
+        let (repo, mut app) = setup_app();
+        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let task = repo
+            .create_task(pid, v, "A", "", Status::Done, Priority::Low)
+            .unwrap();
+        repo.update_task_status(task.id.unwrap(), Status::Done)
+            .unwrap();
+        let snapshot = repo.build_compact_snapshot(v).unwrap();
+        let summary = repo
+            .create_version_summary(v, "Summary", &snapshot)
+            .unwrap();
+        let summary_id = summary.id.unwrap();
+
+        app.dispatch(Action::Navigate(Screen::VersionSummary {
+            project_id: pid,
+            version_id: v,
+            summary_id,
+        }));
+        let action = app
+            .active_component()
+            .handle_event(&key_event(KeyCode::Esc));
+        assert_eq!(
+            action,
+            Some(Action::Navigate(Screen::VersionDashboard {
+                project_id: pid,
+                version_id: v,
+            }))
+        );
     }
 }
