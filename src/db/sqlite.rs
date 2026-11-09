@@ -361,12 +361,26 @@ impl TaskRepository for SqliteRepository {
             self.has_incomplete_dependencies(id)
         })?;
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "UPDATE tasks
-             SET name = ?1, description = ?2, status = ?3, priority = ?4
-             WHERE id = ?5",
-            params![name, description, status.as_str(), i64::from(priority), id],
-        )?;
+        match status {
+            Status::Done => {
+                conn.execute(
+                    "UPDATE tasks
+                     SET name = ?1, description = ?2, status = ?3, priority = ?4,
+                         completed_at = COALESCE(completed_at, datetime('now'))
+                     WHERE id = ?5",
+                    params![name, description, status.as_str(), i64::from(priority), id],
+                )?;
+            }
+            _ => {
+                conn.execute(
+                    "UPDATE tasks
+                     SET name = ?1, description = ?2, status = ?3, priority = ?4,
+                         completed_at = NULL
+                     WHERE id = ?5",
+                    params![name, description, status.as_str(), i64::from(priority), id],
+                )?;
+            }
+        }
         drop(conn);
         self.get_task(id)
     }

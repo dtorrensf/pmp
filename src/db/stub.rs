@@ -371,6 +371,13 @@ impl TaskRepository for StubRepository {
         task.description = description.to_string();
         task.status = status;
         task.priority = priority;
+        task.completed_at = match status {
+            Status::Done => task
+                .completed_at
+                .clone()
+                .or_else(|| Some("now".to_string())),
+            _ => None,
+        };
         Ok(task.clone())
     }
 

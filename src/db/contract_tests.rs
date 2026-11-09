@@ -953,6 +953,39 @@ fn update_task_status_sets_and_clears_completed_at() {
 }
 
 #[test]
+fn update_task_sets_and_clears_completed_at() {
+    for_each_repo(|name, repo| {
+        let task_id = create_task(repo);
+        assert_eq!(repo.get_task(task_id).unwrap().completed_at, None, "{name}");
+
+        let done = repo
+            .update_task(task_id, "T", "", Status::Done, Priority::Medium)
+            .unwrap();
+        assert_eq!(done.status, Status::Done, "{name}");
+        let completed_at = done
+            .completed_at
+            .clone()
+            .unwrap_or_else(|| panic!("{name}: update_task did not set completed_at"));
+
+        // Saving the task again while it stays done keeps the original date.
+        let again = repo
+            .update_task(task_id, "T2", "", Status::Done, Priority::Medium)
+            .unwrap();
+        assert_eq!(
+            again.completed_at.as_deref(),
+            Some(completed_at.as_str()),
+            "{name}: completion date changed on a done task"
+        );
+
+        let reopened = repo
+            .update_task(task_id, "T2", "", Status::Todo, Priority::Medium)
+            .unwrap();
+        assert_eq!(reopened.status, Status::Todo, "{name}");
+        assert_eq!(reopened.completed_at, None, "{name}");
+    });
+}
+
+#[test]
 fn compact_version_replaces_summary_and_removes_only_done_tasks() {
     for_each_repo(|name, repo| {
         let pid = repo.create_project("P", "").unwrap().id.unwrap();
