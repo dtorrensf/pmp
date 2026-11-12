@@ -489,15 +489,7 @@ impl PmpServer {
             repo.get_project(params.project_id)?;
             let description = params.description.unwrap_or_default();
             validate_text("version", "description", &description)?;
-            let version = repo.create_version(params.project_id, &params.name, &description)?;
-            // Versions are created in Backlog, so any other status is applied
-            // afterwards.
-            match version.id {
-                Some(id) if version.status != status => {
-                    repo.update_version(id, &version.name, &version.description, status)
-                }
-                _ => Ok(version),
-            }
+            repo.create_version_with_status(params.project_id, &params.name, &description, status)
         })
         .await
     }
@@ -1299,7 +1291,13 @@ mod tests {
             Err(AppError::DbError(rusqlite::Error::InvalidQuery))
         }
 
-        fn create_version(&self, _: i64, _: &str, _: &str) -> Result<Version, AppError> {
+        fn create_version_with_status(
+            &self,
+            _: i64,
+            _: &str,
+            _: &str,
+            _: VersionStatus,
+        ) -> Result<Version, AppError> {
             unimplemented!()
         }
 

@@ -58,6 +58,16 @@ pub trait VersionRepository {
     /// `Backlog`, then `Released`; newest first within each group.
     fn list_versions_by_project(&self, project_id: i64) -> Result<Vec<Version>, AppError>;
 
+    /// Creates a version with an explicit status in a single write, so the
+    /// version never exists in an intermediate state.
+    fn create_version_with_status(
+        &self,
+        project_id: i64,
+        name: &str,
+        description: &str,
+        status: VersionStatus,
+    ) -> Result<Version, AppError>;
+
     /// Creates a version in `Backlog`, the planning state before it becomes
     /// `Open`.
     fn create_version(
@@ -65,7 +75,9 @@ pub trait VersionRepository {
         project_id: i64,
         name: &str,
         description: &str,
-    ) -> Result<Version, AppError>;
+    ) -> Result<Version, AppError> {
+        self.create_version_with_status(project_id, name, description, VersionStatus::Backlog)
+    }
 
     fn get_version(&self, id: i64) -> Result<Version, AppError>;
 

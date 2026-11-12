@@ -242,6 +242,24 @@ fn create_version_round_trips_and_defaults_to_backlog() {
 }
 
 #[test]
+fn create_version_with_status_stores_the_status_in_a_single_write() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let version = repo
+            .create_version_with_status(pid, "v1.0.0", "first", VersionStatus::Released)
+            .unwrap();
+        assert_eq!(version.status, VersionStatus::Released, "{name}");
+        // The persisted version already carries the requested status: no
+        // intermediate Backlog state was written.
+        assert_eq!(
+            repo.get_version(version.id.unwrap()).unwrap(),
+            version,
+            "{name}"
+        );
+    });
+}
+
+#[test]
 fn create_version_rejects_empty_and_duplicate_names() {
     for_each_repo(|name, repo| {
         let pid = repo.create_project("P", "").unwrap().id.unwrap();

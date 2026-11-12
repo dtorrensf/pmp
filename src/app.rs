@@ -304,20 +304,14 @@ impl App {
                 }
                 let result = match version_id {
                     Some(id) => self.repo.update_version(id, &name, &description, status),
-                    // `create_version` starts in Backlog, so the chosen status
-                    // is applied afterwards when it differs.
-                    None => self
-                        .repo
-                        .create_version(project_id, &name, &description)
-                        .and_then(|created| match created.id {
-                            Some(id) if created.status != status => self.repo.update_version(
-                                id,
-                                &created.name,
-                                &created.description,
-                                status,
-                            ),
-                            _ => Ok(created),
-                        }),
+                    // The version is created with the chosen status in a single
+                    // write, so it never exists in an intermediate state.
+                    None => self.repo.create_version_with_status(
+                        project_id,
+                        &name,
+                        &description,
+                        status,
+                    ),
                 };
                 match result {
                     Ok(_) => {

@@ -242,11 +242,12 @@ impl VersionRepository for StubRepository {
         Ok(versions)
     }
 
-    fn create_version(
+    fn create_version_with_status(
         &self,
         project_id: i64,
         name: &str,
         description: &str,
+        status: VersionStatus,
     ) -> Result<Version, AppError> {
         validation::validate_name("version", name)?;
         validation::validate_text("version", "description", description)?;
@@ -266,7 +267,7 @@ impl VersionRepository for StubRepository {
             project_id,
             name: name.to_string(),
             description: description.to_string(),
-            status: VersionStatus::Backlog,
+            status,
             created_at: "now".to_string(),
         };
         self.versions

@@ -153,11 +153,12 @@ impl VersionRepository for SqliteRepository {
         check_list_size(versions)
     }
 
-    fn create_version(
+    fn create_version_with_status(
         &self,
         project_id: i64,
         name: &str,
         description: &str,
+        status: VersionStatus,
     ) -> Result<Version, AppError> {
         validation::validate_name("version", name)?;
         validation::validate_text("version", "description", description)?;
@@ -165,12 +166,7 @@ impl VersionRepository for SqliteRepository {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO versions (project_id, name, description, status) VALUES (?1, ?2, ?3, ?4)",
-            params![
-                project_id,
-                name,
-                description,
-                VersionStatus::Backlog.as_str()
-            ],
+            params![project_id, name, description, status.as_str()],
         )
         .map_err(|e| version_write_error(e, name))?;
         let id = conn.last_insert_rowid();
