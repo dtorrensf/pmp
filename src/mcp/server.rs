@@ -135,7 +135,7 @@ pub struct CreateVersionParams {
     pub project_id: i64,
     pub name: String,
     pub description: Option<String>,
-    /// `open` (default) or `released`.
+    /// `backlog` (default), `open` or `released`.
     pub status: Option<VersionStatus>,
 }
 
@@ -146,7 +146,7 @@ pub struct UpdateVersionParams {
     pub name: String,
     /// New description. When omitted, the current description is kept.
     pub description: Option<String>,
-    /// New status: `open` or `released`. When omitted, the current status is kept.
+    /// New status: `backlog`, `open` or `released`. When omitted, the current status is kept.
     pub status: Option<VersionStatus>,
 }
 
@@ -462,7 +462,7 @@ impl PmpServer {
 
     #[tool(
         name = "list_versions",
-        description = "List the versions (release lines) of a project, open ones first. Use to find the version_id that tasks must be created in, or to check which versions are released."
+        description = "List the versions (release lines) of a project, open ones first, then backlog, then released. Use to find the version_id that tasks must be created in, or to check which versions are active or released."
     )]
     async fn list_versions(
         &self,
@@ -477,7 +477,7 @@ impl PmpServer {
 
     #[tool(
         name = "create_version",
-        description = "Create a version (release line) in a project. Use when starting a new release, for example v0.2.0. Name must be unique within the project and not empty. Status is open (default) or released."
+        description = "Create a version (release line) in a project. Use when planning a new release, for example v0.2.0. Name must be unique within the project and not empty. Status is backlog (default), open or released."
     )]
     async fn create_version(
         &self,
@@ -485,24 +485,18 @@ impl PmpServer {
     ) -> Result<CallToolResult, ErrorData> {
         run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
             validate_name("version", &params.name)?;
-            let status = params.status.unwrap_or(VersionStatus::Open);
+            let status = params.status.unwrap_or(VersionStatus::Backlog);
             repo.get_project(params.project_id)?;
             let description = params.description.unwrap_or_default();
             validate_text("version", "description", &description)?;
-            let version = repo.create_version(params.project_id, &params.name, &description)?;
-            match version.id {
-                Some(id) if status != VersionStatus::Open => {
-                    repo.update_version(id, &version.name, &version.description, status)
-                }
-                _ => Ok(version),
-            }
+            repo.create_version_with_status(params.project_id, &params.name, &description, status)
         })
         .await
     }
 
     #[tool(
         name = "update_version",
-        description = "Rename a version and/or change its description or status. Requires the version id and a non-empty name. Omit description or status to keep the current ones. Status is open or released. Fails when the name already exists in the same project. Use to edit version metadata instead of editing the database."
+        description = "Rename a version and/or change its description or status. Requires the version id and a non-empty name. Omit description or status to keep the current ones. Status is backlog, open or released. Fails when the name already exists in the same project. Use to edit version metadata instead of editing the database."
     )]
     async fn update_version(
         &self,
@@ -1297,7 +1291,13 @@ mod tests {
             Err(AppError::DbError(rusqlite::Error::InvalidQuery))
         }
 
-        fn create_version(&self, _: i64, _: &str, _: &str) -> Result<Version, AppError> {
+        fn create_version_with_status(
+            &self,
+            _: i64,
+            _: &str,
+            _: &str,
+            _: VersionStatus,
+        ) -> Result<Version, AppError> {
             unimplemented!()
         }
 
@@ -2753,6 +2753,8 @@ mod tests {
         let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
         let version = repo.create_version(pid, "v1.0.0", "").unwrap();
         let vid = version.id.unwrap();
+        repo.update_version(vid, "v1.0.0", "", VersionStatus::Open)
+            .unwrap();
         repo.create_task(pid, vid, "Done", "", Status::Done, Priority::Low)
             .unwrap();
 
@@ -3461,20 +3463,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_versions_returns_open_before_released() {
+    async fn list_versions_returns_open_then_backlog_then_released() {
         let (server, repo) = server();
         let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
         let released = repo.create_version(pid, "v0.1.0", "").unwrap().id.unwrap();
         repo.update_version(released, "v0.1.0", "", VersionStatus::Released)
             .unwrap();
-        repo.create_version(pid, "v0.2.0", "").unwrap();
+        let open = repo.create_version(pid, "v0.2.0", "").unwrap().id.unwrap();
+        repo.update_version(open, "v0.2.0", "", VersionStatus::Open)
+            .unwrap();
+        repo.create_version(pid, "v0.3.0", "").unwrap();
         let result = server
             .list_versions(Parameters(ListVersionsParams { project_id: pid }))
             .await
             .unwrap();
         let versions: Vec<Version> = serde_json::from_str(&tool_text(result)).unwrap();
         let names: Vec<&str> = versions.iter().map(|v| v.name.as_str()).collect();
-        assert_eq!(names, vec!["v0.2.0", "v0", "v0.1.0"]);
+        assert_eq!(names, vec!["v0.2.0", "v0.3.0", "v0", "v0.1.0"]);
     }
 
     #[tokio::test]
@@ -3489,10 +3494,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_version_defaults_to_open_and_accepts_released() {
+    async fn create_version_defaults_to_backlog_and_accepts_other_statuses() {
         let (server, repo) = server();
         let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
-        let open = server
+        let backlog = server
             .create_version(Parameters(CreateVersionParams {
                 project_id: pid,
                 name: "v0.1.0".to_string(),
@@ -3501,14 +3506,26 @@ mod tests {
             }))
             .await
             .unwrap();
+        let backlog: Version = serde_json::from_str(&tool_text(backlog)).unwrap();
+        assert_eq!(backlog.status, VersionStatus::Backlog);
+        assert_eq!(backlog.description, "First");
+
+        let open = server
+            .create_version(Parameters(CreateVersionParams {
+                project_id: pid,
+                name: "v0.2.0".to_string(),
+                description: None,
+                status: Some(VersionStatus::Open),
+            }))
+            .await
+            .unwrap();
         let open: Version = serde_json::from_str(&tool_text(open)).unwrap();
         assert_eq!(open.status, VersionStatus::Open);
-        assert_eq!(open.description, "First");
 
         let released = server
             .create_version(Parameters(CreateVersionParams {
                 project_id: pid,
-                name: "v0.2.0".to_string(),
+                name: "v0.3.0".to_string(),
                 description: None,
                 status: Some(VersionStatus::Released),
             }))
@@ -3579,7 +3596,7 @@ mod tests {
         .unwrap();
         assert_eq!(renamed.name, "v0.2.0");
         assert_eq!(renamed.description, "keep me");
-        assert_eq!(renamed.status, VersionStatus::Open);
+        assert_eq!(renamed.status, VersionStatus::Backlog);
 
         let described: Version = serde_json::from_str(&tool_text(
             server

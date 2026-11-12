@@ -86,10 +86,15 @@ impl ProjectRepository for SqliteRepository {
             [name, description],
         )?;
         let id = conn.last_insert_rowid();
-        // Every project starts with the default version, as the V3 backfill does.
+        // Every project starts with the default version in Backlog, as the V3
+        // backfill does for pre-existing projects.
         conn.execute(
-            "INSERT INTO versions (project_id, name) VALUES (?1, ?2)",
-            params![id, version::DEFAULT_VERSION_NAME],
+            "INSERT INTO versions (project_id, name, status) VALUES (?1, ?2, ?3)",
+            params![
+                id,
+                version::DEFAULT_VERSION_NAME,
+                VersionStatus::Backlog.as_str()
+            ],
         )?;
         drop(conn);
         self.get_project(id)
@@ -132,31 +137,36 @@ impl VersionRepository for SqliteRepository {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(&format!(
             "SELECT {VERSION_COLUMNS} FROM versions WHERE project_id = ?1
-                 ORDER BY CASE WHEN status = ?2 THEN 1 ELSE 0 END, id DESC
+                 ORDER BY CASE status WHEN ?2 THEN 0 WHEN ?3 THEN 1 ELSE 2 END, id DESC
                  LIMIT {LIST_LIMIT}"
         ))?;
         let versions = stmt
             .query_map(
-                params![project_id, VersionStatus::Released.as_str()],
+                params![
+                    project_id,
+                    VersionStatus::Open.as_str(),
+                    VersionStatus::Backlog.as_str()
+                ],
                 version_from_row,
             )?
             .collect::<Result<Vec<_>, _>>()?;
         check_list_size(versions)
     }
 
-    fn create_version(
+    fn create_version_with_status(
         &self,
         project_id: i64,
         name: &str,
         description: &str,
+        status: VersionStatus,
     ) -> Result<Version, AppError> {
         validation::validate_name("version", name)?;
         validation::validate_text("version", "description", description)?;
         self.get_project(project_id)?;
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "INSERT INTO versions (project_id, name, description) VALUES (?1, ?2, ?3)",
-            params![project_id, name, description],
+            "INSERT INTO versions (project_id, name, description, status) VALUES (?1, ?2, ?3, ?4)",
+            params![project_id, name, description, status.as_str()],
         )
         .map_err(|e| version_write_error(e, name))?;
         let id = conn.last_insert_rowid();
@@ -1423,11 +1433,16 @@ mod tests {
 
     #[test]
     fn every_version_status_is_accepted_by_the_schema() {
-        const ALL_STATUSES: [VersionStatus; 2] = [VersionStatus::Open, VersionStatus::Released];
+        const ALL_STATUSES: [VersionStatus; 3] = [
+            VersionStatus::Backlog,
+            VersionStatus::Open,
+            VersionStatus::Released,
+        ];
         fn status_slot(status: VersionStatus) -> usize {
             match status {
-                VersionStatus::Open => 0,
-                VersionStatus::Released => 1,
+                VersionStatus::Backlog => 0,
+                VersionStatus::Open => 1,
+                VersionStatus::Released => 2,
             }
         }
         for status in ALL_STATUSES {
@@ -1445,5 +1460,74 @@ mod tests {
             assert_eq!(updated.status, status);
             assert_eq!(repo.get_version(id).unwrap().status, status);
         }
+    }
+
+    #[test]
+    fn migrations_default_new_versions_to_backlog() {
+        let (_dir, repo) = setup();
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        // The TUI/MCP set the status explicitly, so the schema default covers
+        // rows inserted by any other path.
+        repo.conn
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .execute(
+                "INSERT INTO versions (project_id, name) VALUES (?1, 'v9.9.9')",
+                [pid],
+            )
+            .unwrap();
+        let versions = repo.list_versions_by_project(pid).unwrap();
+        let legacy = versions.iter().find(|v| v.name == "v9.9.9").unwrap();
+        assert_eq!(legacy.status, VersionStatus::Backlog);
+    }
+
+    #[test]
+    fn v6_migration_preserves_existing_versions_tasks_and_summaries()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use refinery::Target;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.db");
+        let mut conn = Connection::open(&path).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        // Stop at V5, the schema versions had before Backlog existed. Its
+        // versions CHECK only accepted open/released.
+        embedded::migrations::runner()
+            .set_target(Target::Version(5))
+            .run(&mut conn)
+            .unwrap();
+        conn.execute_batch(
+            "INSERT INTO projects (id, name) VALUES (1, 'P');
+             INSERT INTO versions (id, project_id, name, status) VALUES
+                 (1, 1, 'v0', 'open'),
+                 (2, 1, 'v1.0.0', 'released');
+             INSERT INTO version_summaries (id, version_id, summary, snapshot_json)
+                 VALUES (1, 2, 'frozen', '{}');
+             INSERT INTO tasks (id, project_id, version_id, name, status, priority, completed_at)
+                 VALUES (1, 1, 2, 'Done', 'done', 2, '2026-01-01 00:00:00');
+             INSERT INTO task_notes (id, task_id, content) VALUES (1, 1, 'note');
+             INSERT INTO tasks (id, project_id, version_id, name, status, priority)
+                 VALUES (2, 1, 2, 'Blocked', 'todo', 1);
+             INSERT INTO task_dependencies (task_id, depends_on_id) VALUES (2, 1);",
+        )
+        .unwrap();
+        drop(conn);
+
+        let repo = SqliteRepository::open(&path).unwrap();
+        let versions = repo.list_versions_by_project(1).unwrap();
+        let by_name = |name: &str| versions.iter().find(|v| v.name == name).unwrap();
+        assert_eq!(by_name("v0").status, VersionStatus::Open);
+        assert_eq!(by_name("v1.0.0").status, VersionStatus::Released);
+
+        let done = repo.get_task(1).unwrap();
+        assert_eq!(done.status, Status::Done);
+        assert_eq!(done.completed_at.as_deref(), Some("2026-01-01 00:00:00"));
+        assert_eq!(repo.get_dependencies(2).unwrap(), vec![1]);
+        assert_eq!(repo.list_task_notes(1).unwrap()[0].content, "note");
+        assert_eq!(repo.list_version_summaries(2).unwrap()[0].summary, "frozen");
+        // New versions are planned in Backlog after the migration.
+        let created = repo.create_version(1, "v2.0.0", "").unwrap();
+        assert_eq!(created.status, VersionStatus::Backlog);
+        Ok(())
     }
 }

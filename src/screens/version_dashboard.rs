@@ -295,8 +295,18 @@ mod tests {
             Priority::Medium,
         )
         .unwrap();
+        let version_id = repo.default_version_id(project_id).unwrap();
+        // Versions are created in Backlog; this fixture exercises an active one.
+        let version = repo.get_version(version_id).unwrap();
+        repo.update_version(
+            version_id,
+            &version.name,
+            &version.description,
+            VersionStatus::Open,
+        )
+        .unwrap();
         let mut screen = VersionDashboard::new(repo.clone());
-        screen.set_ids(project_id, repo.default_version_id(project_id).unwrap());
+        screen.set_ids(project_id, version_id);
         screen.init().unwrap();
         (repo, screen, project_id)
     }

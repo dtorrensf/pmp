@@ -50,7 +50,7 @@ impl VersionForm {
             version_id: None,
             name: String::new(),
             description: TextArea::default(),
-            status: VersionStatus::Open,
+            status: VersionStatus::Backlog,
             active_field: NAME,
             return_to: Screen::ProjectList,
         }
@@ -99,7 +99,7 @@ impl Component for VersionForm {
         } else {
             self.name = self.repo.next_version_name(self.project_id)?;
             self.description = TextArea::default();
-            self.status = VersionStatus::Open;
+            self.status = VersionStatus::Backlog;
         }
         self.active_field = NAME;
         Ok(())
@@ -126,7 +126,11 @@ impl Component for VersionForm {
                 self.active_field = next_field(self.active_field, 3);
                 None
             }
-            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if self.active_field == STATUS => {
+            KeyCode::Left if self.active_field == STATUS => {
+                self.status = self.status.prev();
+                None
+            }
+            KeyCode::Right | KeyCode::Char(' ') if self.active_field == STATUS => {
                 self.status = self.status.next();
                 None
             }
@@ -237,7 +241,7 @@ mod tests {
         form.set_project_id(project_id);
         form.init().unwrap();
         assert_eq!(form.name, "v0.2.0");
-        assert_eq!(form.status, VersionStatus::Open);
+        assert_eq!(form.status, VersionStatus::Backlog);
         assert_eq!(form.active_field, NAME);
     }
 
@@ -246,7 +250,7 @@ mod tests {
         let (form, _repo) = form_for_edit();
         assert_eq!(form.name, "v1.0.0");
         assert_eq!(form.description.lines().join("\n"), "Description");
-        assert_eq!(form.status, VersionStatus::Open);
+        assert_eq!(form.status, VersionStatus::Backlog);
         assert!(form.version_id.is_some());
     }
 
@@ -273,12 +277,29 @@ mod tests {
     }
 
     #[test]
-    fn arrows_toggle_status_when_status_field_active() {
+    fn arrows_cycle_status_when_status_field_active() {
         let mut form = form_for_create();
         form.active_field = STATUS;
         form.handle_event(&key_event(KeyCode::Right));
+        assert_eq!(form.status, VersionStatus::Open);
+        form.handle_event(&key_event(KeyCode::Right));
+        assert_eq!(form.status, VersionStatus::Released);
+        form.handle_event(&key_event(KeyCode::Right));
+        assert_eq!(form.status, VersionStatus::Backlog);
+        // The left arrow walks the cycle backwards.
+        form.handle_event(&key_event(KeyCode::Left));
         assert_eq!(form.status, VersionStatus::Released);
         form.handle_event(&key_event(KeyCode::Left));
+        assert_eq!(form.status, VersionStatus::Open);
+        form.handle_event(&key_event(KeyCode::Left));
+        assert_eq!(form.status, VersionStatus::Backlog);
+    }
+
+    #[test]
+    fn space_advances_status_when_status_field_active() {
+        let mut form = form_for_create();
+        form.active_field = STATUS;
+        form.handle_event(&char_event(' '));
         assert_eq!(form.status, VersionStatus::Open);
     }
 
@@ -330,7 +351,7 @@ mod tests {
                 project_id,
                 name: "v0.1.0".to_string(),
                 description: String::new(),
-                status: VersionStatus::Open,
+                status: VersionStatus::Backlog,
             })
         );
     }
@@ -339,6 +360,7 @@ mod tests {
     fn submit_emits_save_version_with_status_on_edit() {
         let (mut form, _repo) = form_for_edit();
         form.active_field = STATUS;
+        form.handle_event(&key_event(KeyCode::Right));
         form.handle_event(&key_event(KeyCode::Right));
         let action = form.handle_event(&ctrl_s_event());
         let Some(Action::SaveVersion {

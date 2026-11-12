@@ -304,7 +304,14 @@ impl App {
                 }
                 let result = match version_id {
                     Some(id) => self.repo.update_version(id, &name, &description, status),
-                    None => self.repo.create_version(project_id, &name, &description),
+                    // The version is created with the chosen status in a single
+                    // write, so it never exists in an intermediate state.
+                    None => self.repo.create_version_with_status(
+                        project_id,
+                        &name,
+                        &description,
+                        status,
+                    ),
                 };
                 match result {
                     Ok(_) => {
@@ -1557,6 +1564,38 @@ mod tests {
                 .iter()
                 .any(|v| v.name == "v0.1.0")
         );
+        let created = repo
+            .list_versions_by_project(project_id)
+            .unwrap()
+            .into_iter()
+            .find(|v| v.name == "v0.1.0")
+            .unwrap();
+        assert_eq!(created.status, VersionStatus::Open);
+    }
+
+    #[test]
+    fn save_version_creates_in_backlog_when_chosen() {
+        let repo = Arc::new(StubRepository::default());
+        let project_id = repo.create_project("P", "").unwrap().id.unwrap();
+        let mut app = App::new(repo.clone());
+        let next = app.dispatch(Action::SaveVersion {
+            version_id: None,
+            project_id,
+            name: "v0.2.0".to_string(),
+            description: String::new(),
+            status: VersionStatus::Backlog,
+        });
+        assert_eq!(
+            next,
+            Some(Action::Navigate(Screen::ProjectDashboard { project_id }))
+        );
+        let created = repo
+            .list_versions_by_project(project_id)
+            .unwrap()
+            .into_iter()
+            .find(|v| v.name == "v0.2.0")
+            .unwrap();
+        assert_eq!(created.status, VersionStatus::Backlog);
     }
 
     #[test]
