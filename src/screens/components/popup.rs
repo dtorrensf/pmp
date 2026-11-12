@@ -10,6 +10,8 @@ use ratatui::{
     widgets::{Block, Borders, Clear},
 };
 
+use crate::screens::components::theme;
+
 /// Returns the `width`x`height` rect centered inside `area`, clamped to
 /// `area` when the requested size exceeds it.
 pub fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
@@ -41,7 +43,10 @@ pub fn centered_rect_percent(percent: u16, area: Rect) -> Rect {
 /// returns the block's inner rect for the caller's content.
 pub fn render_popup_scaffold(frame: &mut Frame, area: Rect, title: &str) -> Rect {
     frame.render_widget(Clear, area);
-    let block = Block::default().title(title).borders(Borders::ALL);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(theme::theme().border_style());
     let inner = block.inner(area);
     frame.render_widget(block, area);
     inner

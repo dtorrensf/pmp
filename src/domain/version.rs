@@ -1,6 +1,5 @@
 // Copyright (C) 2026 Diego Torréns Farias
 // SPDX-License-Identifier: AGPL-3.0-or-later
-use ratatui::style::{Color, Style};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::error::AppError;
@@ -84,14 +83,6 @@ impl VersionStatus {
             VersionStatus::Backlog => "Backlog",
             VersionStatus::Open => "Open",
             VersionStatus::Released => "Released",
-        }
-    }
-
-    pub fn style(&self) -> Style {
-        match self {
-            VersionStatus::Backlog => Style::default().fg(Color::Magenta),
-            VersionStatus::Open => Style::default().fg(Color::Blue),
-            VersionStatus::Released => Style::default().fg(Color::Green),
         }
     }
 }
@@ -267,13 +258,6 @@ mod tests {
         assert_eq!(VersionStatus::Backlog.label(), "Backlog");
         assert_eq!(VersionStatus::Open.label(), "Open");
         assert_eq!(VersionStatus::Released.label(), "Released");
-    }
-
-    #[test]
-    fn version_status_style_returns_colored_style() {
-        assert_eq!(VersionStatus::Backlog.style().fg, Some(Color::Magenta));
-        assert_eq!(VersionStatus::Open.style().fg, Some(Color::Blue));
-        assert_eq!(VersionStatus::Released.style().fg, Some(Color::Green));
     }
 
     #[test]

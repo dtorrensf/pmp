@@ -3,8 +3,9 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
 use ratatui::widgets::Paragraph;
+
+use crate::screens::components::theme;
 
 pub fn render_footer(frame: &mut Frame, area: Rect, keys: &[(KeyEvent, &str)]) {
     let mut grouped: Vec<(Vec<String>, &str)> = Vec::new();
@@ -21,7 +22,7 @@ pub fn render_footer(frame: &mut Frame, area: Rect, keys: &[(KeyEvent, &str)]) {
         .map(|(events, label)| format!("{}: {}", events.join("/"), label))
         .collect::<Vec<_>>()
         .join("  ");
-    let paragraph = Paragraph::new(text).style(Style::default().fg(Color::DarkGray));
+    let paragraph = Paragraph::new(text).style(theme::theme().muted_style());
     frame.render_widget(paragraph, area);
 }
 
@@ -143,5 +144,20 @@ mod tests {
         ];
         let text = render_to_string(keys, 80, 1);
         assert!(text.contains("q/Esc: Quit"));
+    }
+
+    #[test]
+    fn footer_uses_the_muted_theme_color_for_contrast() {
+        let keys = &[(key_event(KeyCode::Char('q')), "Quit")];
+        let backend = TestBackend::new(80, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_footer(frame, frame.area(), keys))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 0)].fg, theme::theme().muted);
+        // DarkGray was too dim on light terminals.
+        assert_ne!(buffer[(0, 0)].fg, ratatui::style::Color::DarkGray);
     }
 }

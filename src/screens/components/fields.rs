@@ -8,11 +8,13 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 use ratatui_textarea::{TextArea, WrapMode};
 use unicode_width::UnicodeWidthStr;
+
+use crate::screens::components::theme;
 
 /// Renders an editable text field: red border on `error`, bold border when
 /// `active` (error takes precedence), plain otherwise.
@@ -25,7 +27,7 @@ pub fn render_field(
     error: bool,
 ) {
     let style = if error {
-        Style::default().fg(Color::Red)
+        theme::theme().danger_style()
     } else if active {
         Style::default().add_modifier(Modifier::BOLD)
     } else {
@@ -108,6 +110,7 @@ mod tests {
     use ratatui_textarea::TextArea;
 
     use crate::screens::Component;
+    use crate::screens::components::theme;
     use crate::screens::test_utils::render_to_string;
 
     use super::{field_cursor_x, render_description_field, render_field, render_readonly_field};
@@ -242,7 +245,7 @@ mod tests {
 
         let buffer = render_to_buffer(&stub, 20, 5);
 
-        assert_eq!(buffer[(0, 0)].fg, Color::Red);
+        assert_eq!(buffer[(0, 0)].fg, theme::theme().danger);
         assert!(!buffer[(0, 0)].modifier.contains(Modifier::BOLD));
     }
 

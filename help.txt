@@ -9,3 +9,7 @@ Options:
 Commands:
   mcp              Start the MCP server
   (no command)     Start the interactive TUI (default)
+
+Environment:
+  NO_COLOR         Disable colors (set to any non-empty value)
+  PMP_THEME        Palette to use: default, bright

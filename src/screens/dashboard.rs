@@ -7,7 +7,6 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
     text::{Line, Span, Text},
     widgets::{Bar, BarChart, BarGroup, Block, Borders, Gauge, List, ListItem, Paragraph, Wrap},
 };
@@ -24,6 +23,7 @@ use crate::screens::components::progress::{completion_percentage, percent};
 use crate::screens::components::scroll::{
     ListScroll, TextScroll, list_rows, render_list_scrollbar, wrapped_line_count,
 };
+use crate::screens::components::theme::{self, status_style, version_status_style};
 use crate::screens::{AUTO_REFRESH_INTERVAL, Action, Component, Screen};
 
 /// Width, in cells, of the stacked progress bar of each version.
@@ -58,20 +58,20 @@ impl VersionRow {
         let mut spans = vec![
             Span::styled(
                 pad_display(&self.name_column(), name_width),
-                self.version.status.style(),
+                version_status_style(self.version.status),
             ),
             Span::raw("  "),
         ];
         if self.total == 0 {
             spans.push(Span::styled(
                 "▱".repeat(VERSION_BAR_WIDTH),
-                Style::default().fg(Color::DarkGray),
+                theme::theme().muted_style(),
             ));
         } else {
             let cells = bar_segments([self.todo, self.in_progress, self.done], VERSION_BAR_WIDTH);
             for ((_, _, status), n) in parts.iter().zip(cells) {
                 if n > 0 {
-                    spans.push(Span::styled("█".repeat(n), status.style()));
+                    spans.push(Span::styled("█".repeat(n), status_style(*status)));
                 }
             }
         }
@@ -80,7 +80,10 @@ impl VersionRow {
             if i > 0 {
                 spans.push(Span::raw(" "));
             }
-            spans.push(Span::styled(format!("{label}({count})"), status.style()));
+            spans.push(Span::styled(
+                format!("{label}({count})"),
+                status_style(*status),
+            ));
         }
         Line::from(spans)
     }
@@ -341,15 +344,15 @@ impl Component for ProjectDashboard {
             Bar::default()
                 .value(counts[0])
                 .label(Line::from("Todo"))
-                .style(Status::Todo.style()),
+                .style(status_style(Status::Todo)),
             Bar::default()
                 .value(counts[1])
                 .label(Line::from("In Progress"))
-                .style(Status::InProgress.style()),
+                .style(status_style(Status::InProgress)),
             Bar::default()
                 .value(counts[2])
                 .label(Line::from("Done"))
-                .style(Status::Done.style()),
+                .style(status_style(Status::Done)),
         ];
         let status_chart = BarChart::default()
             .block(Block::default().title("Status").borders(Borders::ALL))

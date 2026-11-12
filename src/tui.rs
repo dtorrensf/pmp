@@ -13,7 +13,7 @@ use crossterm::terminal::{
 use crossterm::{ExecutableCommand, cursor};
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Modifier;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
@@ -23,6 +23,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::App;
 use crate::screens::Action;
 use crate::screens::components::popup::{centered_rect, render_popup_scaffold};
+use crate::screens::components::theme;
 use crate::screens::keybinding_footer::render_footer;
 use crate::update::update_command;
 
@@ -210,11 +211,7 @@ fn render_footer_row(
         .split(area);
     render_footer(frame, parts[0], keys);
     frame.render_widget(
-        Paragraph::new(hint).style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Paragraph::new(hint).style(theme::theme().warning_style().add_modifier(Modifier::BOLD)),
         parts[1],
     );
 }
@@ -235,7 +232,7 @@ fn render_error(frame: &mut Frame, error: &str, area: Rect) {
         .constraints([Constraint::Min(0), Constraint::Length(3)])
         .split(area)[1];
     let paragraph = Paragraph::new(error)
-        .style(Style::default().fg(Color::Red))
+        .style(theme::theme().danger_style())
         .block(Block::default().title("Error").borders(Borders::ALL))
         .wrap(Wrap { trim: true });
     frame.render_widget(paragraph, error_area);
@@ -247,7 +244,7 @@ fn render_notice(frame: &mut Frame, notice: &str, area: Rect) {
         .constraints([Constraint::Min(0), Constraint::Length(3)])
         .split(area)[1];
     let paragraph = Paragraph::new(notice)
-        .style(Style::default().fg(Color::Green))
+        .style(theme::theme().success_style())
         .block(Block::default().title("Info").borders(Borders::ALL))
         .wrap(Wrap { trim: true });
     frame.render_widget(paragraph, notice_area);

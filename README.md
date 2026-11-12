@@ -82,6 +82,20 @@ pmp
 
 Use the **arrow keys** to navigate, **Tab** to change statuses or jump between panels, and follow the on-screen keyboard shortcuts to manage your projects.
 
+#### Appearance
+
+PMP uses the terminal's own ANSI palette, so it adapts to light and dark themes without extra configuration. Two environment variables are available:
+
+| Variable | Effect |
+| --- | --- |
+| `NO_COLOR` | When set to a non-empty value, colors are disabled and only shapes and bold text are used. |
+| `PMP_THEME` | Selects a built-in palette: `default` or `bright` (the high-contrast ANSI variants). Unknown names fall back to `default`. |
+
+```bash
+NO_COLOR=1 pmp        # monochrome
+PMP_THEME=bright pmp  # high contrast
+```
+
 ### MCP Server
 
 If you want to integrate PMP with LLM-based assistants or other MCP-compatible applications, run:

@@ -4,7 +4,7 @@ use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap},
 };
 
@@ -16,6 +16,7 @@ use crate::screens::components::fields::{render_field, render_readonly_field};
 use crate::screens::components::list_navigation::move_selection;
 use crate::screens::components::popup::{centered_rect, render_popup_scaffold};
 use crate::screens::components::scroll::{ListScroll, list_rows, render_list_scrollbar};
+use crate::screens::components::theme::{self, priority_style, status_row_style, status_style};
 use crate::screens::{Action, Screen};
 
 #[derive(Debug, Clone)]
@@ -397,11 +398,8 @@ impl TaskListView {
             .max("ID".len()) as u16
             + 2;
 
-        let header = Row::new(vec!["ID", "Name", "Status", "Priority"]).style(
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        );
+        let header =
+            Row::new(vec!["ID", "Name", "Status", "Priority"]).style(theme::theme().header_style());
         let rows: Vec<Row> = self.tasks[range.clone()]
             .iter()
             .enumerate()
@@ -410,13 +408,13 @@ impl TaskListView {
                 let style = if i == self.selected {
                     Style::default().add_modifier(Modifier::REVERSED)
                 } else {
-                    task.status.row_style()
+                    status_row_style(task.status)
                 };
                 Row::new(vec![
                     Cell::from(task.id.map_or_else(|| "-".to_string(), |id| id.to_string())),
                     Cell::from(task.name.clone()),
-                    Cell::from(task.status.label()).style(task.status.style()),
-                    Cell::from(task.priority.label()).style(task.priority.style()),
+                    Cell::from(task.status.label()).style(status_style(task.status)),
+                    Cell::from(task.priority.label()).style(priority_style(task.priority)),
                 ])
                 .style(style)
             })
@@ -522,7 +520,7 @@ fn render_move_popup(state: &MoveTaskState, frame: &mut Frame, area: Rect) {
         "↑ ↓ choose  Enter move  Esc cancel"
     };
     let help_para = Paragraph::new(help)
-        .style(Style::default().fg(Color::DarkGray))
+        .style(theme::theme().muted_style())
         .alignment(Alignment::Center);
     frame.render_widget(help_para, chunks[1]);
 }
@@ -574,13 +572,17 @@ fn render_filter_popup(state: &FilterState, frame: &mut Frame, area: Rect) {
 
     let help = "Tab switch  ← → change  Enter apply  Esc cancel";
     let help_para = Paragraph::new(help)
-        .style(Style::default().fg(Color::DarkGray))
+        .style(theme::theme().muted_style())
         .alignment(Alignment::Center);
     frame.render_widget(help_para, chunks[3]);
 }
 
 #[cfg(test)]
 mod tests {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Modifier;
+
     use crate::db::stub::StubRepository;
 
     use super::*;
@@ -684,6 +686,26 @@ mod tests {
         assert!(rendered.contains("ID"), "missing ID header:\n{rendered}");
         assert!(rendered.contains("42"), "missing task id:\n{rendered}");
         assert!(rendered.contains("Beta"));
+    }
+
+    #[test]
+    fn header_row_uses_the_theme_instead_of_hardcoded_white() {
+        let mut view = TaskListView::new();
+        view.set_tasks(vec![task("Alpha", Status::Todo)]);
+
+        let backend = TestBackend::new(60, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| view.render(frame, frame.area()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+
+        // The "ID" header cell sits at the first column of the header row.
+        let header_cell = &buffer[(1, 1)];
+        assert_eq!(header_cell.fg, theme::theme().text);
+        // White is invisible on light terminals.
+        assert_ne!(header_cell.fg, ratatui::style::Color::White);
+        assert!(header_cell.modifier.contains(Modifier::BOLD));
     }
 
     #[test]

@@ -13,6 +13,8 @@ use ratatui::{
 };
 use ratatui_textarea::{CursorMove, TextArea};
 
+use crate::screens::components::theme;
+
 /// The code and modifiers of a key press, or `None` for any other event.
 pub fn key_press(event: &Event) -> Option<(KeyCode, KeyModifiers)> {
     match event {
@@ -89,7 +91,10 @@ pub fn handle_text_keys(target: TextTarget<'_>, code: KeyCode) -> bool {
 /// its inner rectangle, where the form lays out its fields.
 pub fn render_form_frame(frame: &mut Frame, area: Rect, title: &str) -> Rect {
     frame.render_widget(Clear, area);
-    let block = Block::default().title(title).borders(Borders::ALL);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(theme::theme().border_style());
     let inner = block.inner(area);
     frame.render_widget(block, area);
     inner

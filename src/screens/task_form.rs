@@ -7,7 +7,7 @@ use crossterm::event::{Event, KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 use ratatui_textarea::TextArea;
@@ -25,6 +25,7 @@ use crate::screens::components::popup::{centered_rect_percent, render_popup_scaf
 use crate::screens::components::scroll::{
     ListScroll, TextScroll, render_scrollbar, wrapped_line_count,
 };
+use crate::screens::components::theme::{self, status_style};
 use crate::screens::{Action, Component, Screen};
 
 pub struct TaskForm {
@@ -439,7 +440,7 @@ impl Component for TaskForm {
 
         if let Some(error) = &self.error {
             let error_para = Paragraph::new(error.as_str())
-                .style(Style::default().fg(Color::Red))
+                .style(theme::theme().danger_style())
                 .block(Block::default().borders(Borders::ALL))
                 .wrap(Wrap { trim: true });
             frame.render_widget(error_para, chunks[6]);
@@ -484,8 +485,7 @@ fn render_notes(form: &TaskForm, frame: &mut Frame, area: Rect) -> Vec<Rect> {
     let list_area = notes_chunks[0];
     if form.notes.is_empty() {
         form.notes_scroll.sync(0, list_area.height);
-        let placeholder =
-            Paragraph::new("No notes yet").style(Style::default().fg(Color::DarkGray));
+        let placeholder = Paragraph::new("No notes yet").style(theme::theme().muted_style());
         frame.render_widget(placeholder, list_area);
     } else {
         let rows: Vec<String> = form
@@ -535,7 +535,7 @@ fn render_dependencies(form: &TaskForm, frame: &mut Frame, area: Rect) {
     if form.selected_deps.is_empty() {
         let mut lines = vec![ratatui::text::Line::styled(
             "No dependencies",
-            Style::default().fg(Color::DarkGray),
+            theme::theme().muted_style(),
         )];
         if form.active_field == 4 {
             lines.push(ratatui::text::Line::from("[Enter: manage dependencies]"));
@@ -558,7 +558,7 @@ fn render_dependencies(form: &TaskForm, frame: &mut Frame, area: Rect) {
             let name = ratatui::text::Span::from(task.name.clone());
             let status = ratatui::text::Span::styled(
                 format!(" [{}]", task.status.label()),
-                task.status.style(),
+                status_style(task.status),
             );
             ratatui::text::Line::from(vec![name, status])
         })
@@ -592,8 +592,7 @@ fn render_dep_popup(form: &TaskForm, frame: &mut Frame, area: Rect) {
     frame.render_widget(filter_para, chunks[0]);
 
     if form.popup_filtered_tasks.is_empty() {
-        let placeholder =
-            Paragraph::new("No matching tasks").style(Style::default().fg(Color::DarkGray));
+        let placeholder = Paragraph::new("No matching tasks").style(theme::theme().muted_style());
         frame.render_widget(placeholder, chunks[1]);
         return;
     }
@@ -620,7 +619,7 @@ fn render_dep_popup(form: &TaskForm, frame: &mut Frame, area: Rect) {
             let name = ratatui::text::Span::from(format!("{} {}", marker, task.name));
             let status = ratatui::text::Span::styled(
                 format!(" [{}]", task.status.label()),
-                task.status.style(),
+                status_style(task.status),
             );
             let mut line = ratatui::text::Line::from(vec![name, status]);
             if i == form.popup_selected {
@@ -670,7 +669,6 @@ mod tests {
     };
     use crate::screens::{Component, Screen};
     use ratatui::buffer::Buffer;
-    use ratatui::style::Color;
 
     use super::*;
 
@@ -1052,7 +1050,11 @@ mod tests {
         let buffer = terminal.backend().buffer();
 
         let badge_style = find_status_badge_style(buffer, "In Progress");
-        assert_eq!(badge_style.fg, Some(Color::Blue));
+        assert_eq!(
+            badge_style.fg,
+            Some(theme::theme().status_in_progress),
+            "the badge must use the theme's in-progress color"
+        );
     }
 
     #[test]
@@ -1310,7 +1312,11 @@ mod tests {
         let buffer = terminal.backend().buffer();
 
         let badge_style = find_status_badge_style(buffer, "Todo");
-        assert_eq!(badge_style.fg, Some(Color::Yellow));
+        assert_eq!(
+            badge_style.fg,
+            Some(theme::theme().status_todo),
+            "the badge must use the theme's todo color"
+        );
     }
 
     fn find_status_badge_style(buffer: &Buffer, label: &str) -> ratatui::style::Style {
