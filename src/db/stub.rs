@@ -152,7 +152,7 @@ impl ProjectRepository for StubRepository {
                 project_id: project.id.unwrap(),
                 name: version::DEFAULT_VERSION_NAME.to_string(),
                 description: String::new(),
-                status: VersionStatus::Open,
+                status: VersionStatus::Backlog,
                 created_at: "now".to_string(),
             });
         Ok(project)
@@ -234,8 +234,9 @@ impl VersionRepository for StubRepository {
             .cloned()
             .collect();
         versions.sort_by(|a, b| {
-            (a.status == VersionStatus::Released)
-                .cmp(&(b.status == VersionStatus::Released))
+            a.status
+                .list_rank()
+                .cmp(&b.status.list_rank())
                 .then_with(|| b.id.cmp(&a.id))
         });
         Ok(versions)
@@ -265,7 +266,7 @@ impl VersionRepository for StubRepository {
             project_id,
             name: name.to_string(),
             description: description.to_string(),
-            status: VersionStatus::Open,
+            status: VersionStatus::Backlog,
             created_at: "now".to_string(),
         };
         self.versions

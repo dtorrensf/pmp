@@ -54,8 +54,12 @@ pub trait ProjectRepository {
 
 /// Version persistence: release lines of a project.
 pub trait VersionRepository {
+    /// Lists the versions of a project with active (`Open`) ones first, then
+    /// `Backlog`, then `Released`; newest first within each group.
     fn list_versions_by_project(&self, project_id: i64) -> Result<Vec<Version>, AppError>;
 
+    /// Creates a version in `Backlog`, the planning state before it becomes
+    /// `Open`.
     fn create_version(
         &self,
         project_id: i64,

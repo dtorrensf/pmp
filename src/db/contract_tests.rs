@@ -224,7 +224,7 @@ fn delete_task_cascades_notes() {
 }
 
 #[test]
-fn create_version_round_trips_and_defaults_to_open() {
+fn create_version_round_trips_and_defaults_to_backlog() {
     for_each_repo(|name, repo| {
         let project = repo.create_project("P", "").unwrap();
         let pid = project.id.unwrap();
@@ -232,7 +232,7 @@ fn create_version_round_trips_and_defaults_to_open() {
         assert!(version.id.is_some(), "{name}");
         assert_eq!(version.name, "v1.0.0", "{name}");
         assert_eq!(version.description, "first", "{name}");
-        assert_eq!(version.status, VersionStatus::Open, "{name}");
+        assert_eq!(version.status, VersionStatus::Backlog, "{name}");
         assert_eq!(
             repo.get_version(version.id.unwrap()).unwrap(),
             version,
@@ -274,13 +274,21 @@ fn new_project_has_default_version() {
 }
 
 #[test]
-fn list_versions_puts_open_before_released() {
+fn list_versions_orders_open_backlog_released_and_newest_first_within_each() {
     for_each_repo(|name, repo| {
         let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        // `v0` already exists as Backlog.
         let released = repo.create_version(pid, "v1.0.0", "").unwrap();
         repo.update_version(released.id.unwrap(), "v1.0.0", "", VersionStatus::Released)
             .unwrap();
-        repo.create_version(pid, "v1.1.0", "").unwrap();
+        let open_old = repo.create_version(pid, "v1.1.0", "").unwrap();
+        repo.update_version(open_old.id.unwrap(), "v1.1.0", "", VersionStatus::Open)
+            .unwrap();
+        repo.create_version(pid, "v1.2.0", "").unwrap();
+        let open_new = repo.create_version(pid, "v1.3.0", "").unwrap();
+        repo.update_version(open_new.id.unwrap(), "v1.3.0", "", VersionStatus::Open)
+            .unwrap();
+
         let names: Vec<String> = repo
             .list_versions_by_project(pid)
             .unwrap()
@@ -288,14 +296,9 @@ fn list_versions_puts_open_before_released() {
             .map(|v| v.name)
             .collect();
         assert_eq!(
-            names.last().map(String::as_str),
-            Some("v1.0.0"),
-            "{name}: {names:?}"
-        );
-        assert_eq!(
-            names.first().map(String::as_str),
-            Some("v1.1.0"),
-            "{name}: {names:?}"
+            names,
+            vec!["v1.3.0", "v1.1.0", "v1.2.0", "v0", "v1.0.0"],
+            "{name}"
         );
     });
 }

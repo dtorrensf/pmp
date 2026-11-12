@@ -494,6 +494,10 @@ mod tests {
             .id
             .unwrap();
         let v0 = repo.default_version_id(project_id).unwrap();
+        // Versions are created in Backlog; these fixtures exercise an active one.
+        let v0_row = repo.get_version(v0).unwrap();
+        repo.update_version(v0, &v0_row.name, &v0_row.description, VersionStatus::Open)
+            .unwrap();
         for (name, status) in [
             ("T1", Status::Todo),
             ("T2", Status::Todo),
@@ -508,6 +512,8 @@ mod tests {
             .create_version(project_id, "v0.1.0", "")
             .unwrap()
             .id
+            .unwrap();
+        repo.update_version(v1, "v0.1.0", "", VersionStatus::Open)
             .unwrap();
         repo.create_task(project_id, v1, "R1", "", Status::Done, Priority::Low)
             .unwrap();
@@ -615,7 +621,7 @@ mod tests {
         dashboard.init().unwrap();
         assert_eq!(
             plain(&dashboard.versions()[0].line(0)),
-            "v0 [Open]  ▱▱▱▱▱▱▱▱▱▱ (0%)  todo(0) in-progress(0) done(0)"
+            "v0 [Backlog]  ▱▱▱▱▱▱▱▱▱▱ (0%)  todo(0) in-progress(0) done(0)"
         );
     }
 
