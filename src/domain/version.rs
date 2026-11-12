@@ -52,6 +52,15 @@ impl VersionStatus {
         }
     }
 
+    /// Reverse wrapping cycle `Backlog <- Open <- Released <- Backlog`.
+    pub fn prev(self) -> VersionStatus {
+        match self {
+            VersionStatus::Backlog => VersionStatus::Released,
+            VersionStatus::Open => VersionStatus::Backlog,
+            VersionStatus::Released => VersionStatus::Open,
+        }
+    }
+
     pub fn all() -> [VersionStatus; 3] {
         [
             VersionStatus::Backlog,
@@ -219,6 +228,24 @@ mod tests {
         // The cycle returns to the starting point after every variant.
         let start = VersionStatus::Backlog;
         assert_eq!(start.next().next().next(), start);
+    }
+
+    #[test]
+    fn version_status_prev_cycles_backwards_through_all_variants() {
+        assert_eq!(VersionStatus::Open.prev(), VersionStatus::Backlog);
+        assert_eq!(VersionStatus::Released.prev(), VersionStatus::Open);
+        assert_eq!(VersionStatus::Backlog.prev(), VersionStatus::Released);
+        // The cycle returns to the starting point after every variant.
+        let start = VersionStatus::Backlog;
+        assert_eq!(start.prev().prev().prev(), start);
+    }
+
+    #[test]
+    fn version_status_prev_is_the_inverse_of_next() {
+        for status in VersionStatus::all() {
+            assert_eq!(status.prev().next(), status);
+            assert_eq!(status.next().prev(), status);
+        }
     }
 
     #[test]

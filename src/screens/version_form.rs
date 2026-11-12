@@ -126,7 +126,11 @@ impl Component for VersionForm {
                 self.active_field = next_field(self.active_field, 3);
                 None
             }
-            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if self.active_field == STATUS => {
+            KeyCode::Left if self.active_field == STATUS => {
+                self.status = self.status.prev();
+                None
+            }
+            KeyCode::Right | KeyCode::Char(' ') if self.active_field == STATUS => {
                 self.status = self.status.next();
                 None
             }
@@ -282,8 +286,20 @@ mod tests {
         assert_eq!(form.status, VersionStatus::Released);
         form.handle_event(&key_event(KeyCode::Right));
         assert_eq!(form.status, VersionStatus::Backlog);
-        // Both arrows advance the same cycle.
+        // The left arrow walks the cycle backwards.
         form.handle_event(&key_event(KeyCode::Left));
+        assert_eq!(form.status, VersionStatus::Released);
+        form.handle_event(&key_event(KeyCode::Left));
+        assert_eq!(form.status, VersionStatus::Open);
+        form.handle_event(&key_event(KeyCode::Left));
+        assert_eq!(form.status, VersionStatus::Backlog);
+    }
+
+    #[test]
+    fn space_advances_status_when_status_field_active() {
+        let mut form = form_for_create();
+        form.active_field = STATUS;
+        form.handle_event(&char_event(' '));
         assert_eq!(form.status, VersionStatus::Open);
     }
 
