@@ -9,11 +9,13 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem},
 };
 
 use crate::db::repository::Repository;
 use crate::screens::components::confirm_dialog::{ConfirmDialog, ConfirmState};
+use crate::screens::components::empty_state::EmptyState;
+use crate::screens::components::glyphs;
 use crate::screens::components::keys::key;
 use crate::screens::components::list_navigation::move_selection;
 use crate::screens::components::progress::completion_percentage;
@@ -116,9 +118,12 @@ impl Component for ProjectListScreen {
                 KeyCode::Char('d') => {
                     if let Some(project) = self.projects.get(self.selected) {
                         let project_id = project.id.unwrap_or(0);
+                        // The warning glyph is a single column wide: the
+                        // `⚠️` emoji measures two and misaligns the text.
                         let message = format!(
-                            "Delete project {}? This will remove all its tasks ⚠️. (y/N)",
-                            project.name
+                            "Delete project {}? This will remove all its tasks {}. (y/N)",
+                            project.name,
+                            glyphs::glyphs().warning
                         );
                         self.confirm.open(ConfirmDialog::new(
                             message,
@@ -158,10 +163,12 @@ impl Component for ProjectListScreen {
 fn render_list(screen: &ProjectListScreen, frame: &mut Frame, area: Rect) {
     let block = Block::default().title("Projects").borders(Borders::ALL);
     if screen.projects.is_empty() {
-        let paragraph = Paragraph::new("No projects yet. Create one? (press 'c')")
-            .block(block)
-            .wrap(Wrap { trim: true });
-        frame.render_widget(paragraph, area);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        EmptyState::new("No projects yet")
+            .with_icon(glyphs::glyphs().status_todo)
+            .with_hint("Press c to create one.")
+            .render(frame, inner);
         return;
     }
 
@@ -226,7 +233,7 @@ mod tests {
         let buffer = terminal.backend().buffer().clone();
         let text = buffer_to_string(&buffer);
         assert!(text.contains("No projects yet"));
-        assert!(text.contains("press 'c'"));
+        assert!(text.contains("Press c to create one."), "{text}");
     }
 
     #[test]
@@ -333,6 +340,23 @@ mod tests {
 
         screen.handle_event(&char_event('k'));
         assert_eq!(screen.selected, 1);
+    }
+
+    #[test]
+    fn delete_confirmation_avoids_the_two_column_warning_emoji() {
+        let repo = Arc::new(StubRepository::default());
+        repo.create_project("Alpha", "").unwrap();
+        let mut screen = ProjectListScreen::new(repo);
+        screen.init().unwrap();
+
+        screen.handle_event(&char_event('d'));
+        let text = render_to_string(&screen, 60, 20);
+
+        // The `⚠️` emoji measures two columns and misaligns the text; the
+        // plain warning sign is exactly one column wide.
+        assert!(!text.contains("⚠️"), "{text}");
+        assert!(text.contains('⚠'), "{text}");
+        assert!(text.contains("Delete project Alpha?"), "{text}");
     }
 
     #[test]

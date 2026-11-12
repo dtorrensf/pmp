@@ -90,10 +90,12 @@ PMP uses the terminal's own ANSI palette, so it adapts to light and dark themes 
 | --- | --- |
 | `NO_COLOR` | When set to a non-empty value, colors are disabled and only shapes and bold text are used. |
 | `PMP_THEME` | Selects a built-in palette: `default` or `bright` (the high-contrast ANSI variants). Unknown names fall back to `default`. |
+| `PMP_ASCII` | When set to a non-empty value, the ASCII glyph set replaces the Unicode one, for terminals without Unicode support. |
 
 ```bash
 NO_COLOR=1 pmp        # monochrome
 PMP_THEME=bright pmp  # high contrast
+PMP_ASCII=1 pmp        # ASCII glyphs
 ```
 
 ### MCP Server

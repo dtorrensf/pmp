@@ -14,6 +14,8 @@ use ratatui_textarea::TextArea;
 
 use crate::db::repository::Repository;
 use crate::domain::task::{Priority, Status, Task, TaskNote};
+use crate::screens::components::badge::Badge;
+use crate::screens::components::empty_state::hint_empty_state;
 use crate::screens::components::fields::{
     field_cursor_x, render_description_field, render_field, render_readonly_field,
 };
@@ -485,8 +487,7 @@ fn render_notes(form: &TaskForm, frame: &mut Frame, area: Rect) -> Vec<Rect> {
     let list_area = notes_chunks[0];
     if form.notes.is_empty() {
         form.notes_scroll.sync(0, list_area.height);
-        let placeholder = Paragraph::new("No notes yet").style(theme::theme().muted_style());
-        frame.render_widget(placeholder, list_area);
+        hint_empty_state("No notes yet").render(frame, list_area);
     } else {
         let rows: Vec<String> = form
             .notes
@@ -557,7 +558,7 @@ fn render_dependencies(form: &TaskForm, frame: &mut Frame, area: Rect) {
         .map(|task| {
             let name = ratatui::text::Span::from(task.name.clone());
             let status = ratatui::text::Span::styled(
-                format!(" [{}]", task.status.label()),
+                format!(" [{}]", Badge::status(task.status).text()),
                 status_style(task.status),
             );
             ratatui::text::Line::from(vec![name, status])
@@ -592,8 +593,7 @@ fn render_dep_popup(form: &TaskForm, frame: &mut Frame, area: Rect) {
     frame.render_widget(filter_para, chunks[0]);
 
     if form.popup_filtered_tasks.is_empty() {
-        let placeholder = Paragraph::new("No matching tasks").style(theme::theme().muted_style());
-        frame.render_widget(placeholder, chunks[1]);
+        hint_empty_state("No matching tasks").render(frame, chunks[1]);
         return;
     }
 
@@ -618,7 +618,7 @@ fn render_dep_popup(form: &TaskForm, frame: &mut Frame, area: Rect) {
             let marker = if checked { "[x]" } else { "[ ]" };
             let name = ratatui::text::Span::from(format!("{} {}", marker, task.name));
             let status = ratatui::text::Span::styled(
-                format!(" [{}]", task.status.label()),
+                format!(" [{}]", Badge::status(task.status).text()),
                 status_style(task.status),
             );
             let mut line = ratatui::text::Line::from(vec![name, status]);
@@ -664,6 +664,7 @@ mod tests {
     };
     use crate::db::stub::StubRepository;
     use crate::domain::task::{Priority, Status};
+    use crate::screens::components::glyphs;
     use crate::screens::test_utils::{
         buffer_to_string, char_event, ctrl_s_event, key_event, render_to_string,
     };
@@ -1321,7 +1322,15 @@ mod tests {
 
     fn find_status_badge_style(buffer: &Buffer, label: &str) -> ratatui::style::Style {
         let area = buffer.area();
-        let pattern = format!("[{label}]");
+        // The badge carries the status glyph before the label, e.g. `○ Todo`.
+        let pattern = format!(
+            "{} {label}",
+            glyphs::status_icon(match label {
+                "Todo" => Status::Todo,
+                "In Progress" => Status::InProgress,
+                _ => Status::Done,
+            })
+        );
         for y in area.y..area.y + area.height {
             for x in area.x..area.x + area.width {
                 let mut matched = true;
@@ -1337,7 +1346,7 @@ mod tests {
                 }
             }
         }
-        panic!("status badge [{label}] not found in buffer");
+        panic!("status badge {pattern:?} not found in buffer");
     }
 
     #[test]

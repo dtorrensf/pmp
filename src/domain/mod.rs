@@ -49,3 +49,57 @@ mod tests {
         );
     }
 }
+
+/// Every glyph of the app's icon set must come from the shared glyph module.
+///
+/// Screens used to hardcode their own icons, which made the UI inconsistent
+/// and broke the ASCII fallback. This guard keeps them in sync.
+#[cfg(test)]
+mod glyph_guard {
+    /// Glyphs that the shared set owns, so a screen may not spell them out.
+    const RESERVED: &[char] = &[
+        '○', '◐', '✔', '▲', '●', '▼', '▸', '⚠', '█', '░', '▌', '▏', '■', '□', '◆', '◇', '▪', '▫',
+        '◌', '∅',
+    ];
+
+    #[test]
+    fn screens_do_not_hardcode_glyphs() {
+        let sources = [
+            include_str!("../screens/project_list.rs"),
+            include_str!("../screens/task_list_view.rs"),
+            include_str!("../screens/dashboard.rs"),
+            include_str!("../screens/task_form.rs"),
+            include_str!("../screens/version_summary.rs"),
+            include_str!("../screens/version_dashboard.rs"),
+            include_str!("../screens/project_form.rs"),
+            include_str!("../screens/version_form.rs"),
+            include_str!("../screens/components/fields.rs"),
+        ];
+
+        let offenders: Vec<char> = sources
+            .iter()
+            .flat_map(|source| {
+                let code = production_code(source);
+                RESERVED
+                    .iter()
+                    .filter(move |glyph| code.contains(**glyph))
+                    .copied()
+            })
+            .collect();
+
+        assert!(
+            offenders.is_empty(),
+            "these glyphs must come from the shared glyph set: {offenders:?}"
+        );
+    }
+
+    /// The part of a source file that renders: comments and the test module
+    /// are excluded, since neither draws anything.
+    fn production_code(source: &str) -> String {
+        let code = source.split("#[cfg(test)]").next().unwrap_or(source);
+        code.lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}

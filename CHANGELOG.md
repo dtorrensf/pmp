@@ -6,6 +6,7 @@
 
 * Add version compaction: freeze a released version into a summary snapshot, review it from the TUI and export it as Markdown with Mermaid charts.
 * Add a semantic visual theme: a single source of truth for colors with `NO_COLOR` and `PMP_THEME` support.
+* Add shared visual primitives (glyph set, badges, progress bars and empty states) with an ASCII fallback via `PMP_ASCII`.
 
 ## [0.5.0](https://github.com/dtorrensf/pmp/compare/pmp-v0.4.1...pmp-v0.5.0) (2026-10-25)
 

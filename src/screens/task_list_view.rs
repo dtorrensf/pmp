@@ -11,8 +11,11 @@ use ratatui::{
 use crate::db::repository::Repository;
 use crate::domain::task::{Priority, Status, Task};
 use crate::domain::version::Version;
+use crate::screens::components::badge::Badge;
 use crate::screens::components::confirm_dialog::ConfirmDialog;
+use crate::screens::components::empty_state::EmptyState;
 use crate::screens::components::fields::{render_field, render_readonly_field};
+use crate::screens::components::glyphs;
 use crate::screens::components::list_navigation::move_selection;
 use crate::screens::components::popup::{centered_rect, render_popup_scaffold};
 use crate::screens::components::scroll::{ListScroll, list_rows, render_list_scrollbar};
@@ -374,10 +377,10 @@ impl TaskListView {
 
     fn render_table(&self, frame: &mut Frame, area: Rect) {
         if self.tasks.is_empty() {
-            let paragraph = Paragraph::new("No tasks. Press c to create one.")
-                .alignment(Alignment::Center)
-                .wrap(Wrap { trim: true });
-            frame.render_widget(paragraph, area);
+            EmptyState::new("No tasks")
+                .with_icon(glyphs::glyphs().status_todo)
+                .with_hint("Press c to create one.")
+                .render(frame, area);
             return;
         }
 
@@ -413,8 +416,9 @@ impl TaskListView {
                 Row::new(vec![
                     Cell::from(task.id.map_or_else(|| "-".to_string(), |id| id.to_string())),
                     Cell::from(task.name.clone()),
-                    Cell::from(task.status.label()).style(status_style(task.status)),
-                    Cell::from(task.priority.label()).style(priority_style(task.priority)),
+                    Cell::from(Badge::status(task.status).text()).style(status_style(task.status)),
+                    Cell::from(Badge::priority(task.priority).text())
+                        .style(priority_style(task.priority)),
                 ])
                 .style(style)
             })
@@ -686,6 +690,17 @@ mod tests {
         assert!(rendered.contains("ID"), "missing ID header:\n{rendered}");
         assert!(rendered.contains("42"), "missing task id:\n{rendered}");
         assert!(rendered.contains("Beta"));
+    }
+
+    #[test]
+    fn status_and_priority_cells_carry_their_glyph() {
+        let mut view = TaskListView::new();
+        view.set_tasks(vec![task("Alpha", Status::InProgress)]);
+
+        let rendered = render_view(&view, 60, 10);
+
+        // The state is not communicated by color alone.
+        assert!(rendered.contains("◐ In Progress"), "{rendered}");
     }
 
     #[test]

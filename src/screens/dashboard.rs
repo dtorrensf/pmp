@@ -17,6 +17,8 @@ use crate::domain::project::Project;
 use crate::domain::task::{Status, Task};
 use crate::domain::version::Version;
 use crate::screens::components::confirm_dialog::{ConfirmDialog, ConfirmState};
+use crate::screens::components::empty_state::EmptyState;
+use crate::screens::components::glyphs;
 use crate::screens::components::keys::key;
 use crate::screens::components::list_navigation::move_selection;
 use crate::screens::components::progress::{completion_percentage, percent};
@@ -64,14 +66,17 @@ impl VersionRow {
         ];
         if self.total == 0 {
             spans.push(Span::styled(
-                "▱".repeat(VERSION_BAR_WIDTH),
+                glyphs::glyphs().bar_empty.repeat(VERSION_BAR_WIDTH),
                 theme::theme().muted_style(),
             ));
         } else {
             let cells = bar_segments([self.todo, self.in_progress, self.done], VERSION_BAR_WIDTH);
             for ((_, _, status), n) in parts.iter().zip(cells) {
                 if n > 0 {
-                    spans.push(Span::styled("█".repeat(n), status_style(*status)));
+                    spans.push(Span::styled(
+                        glyphs::glyphs().bar_full.repeat(n),
+                        status_style(*status),
+                    ));
                 }
             }
         }
@@ -340,6 +345,8 @@ impl Component for ProjectDashboard {
         frame.render_widget(desc, chunks[0]);
 
         let counts = status_counts(&self.all_tasks);
+        // The labels stay plain: this chart is replaced by a full-width
+        // stacked bar in VIS-7, where the labels cannot be truncated.
         let status_bars = vec![
             Bar::default()
                 .value(counts[0])
@@ -386,10 +393,12 @@ impl ProjectDashboard {
         }
         let block = Block::default().title("Versions").borders(Borders::ALL);
         if self.versions.is_empty() {
-            let paragraph = Paragraph::new("No versions yet. Press c to create one.")
-                .block(block)
-                .wrap(Wrap { trim: true });
-            frame.render_widget(paragraph, area);
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            EmptyState::new("No versions yet")
+                .with_icon(glyphs::glyphs().status_todo)
+                .with_hint("Press c to create one.")
+                .render(frame, inner);
             return;
         }
         // Rows that fit inside the top and bottom borders.
@@ -405,7 +414,11 @@ impl ProjectDashboard {
                 let i = range.start + offset;
                 // A marker in front of the selected version; the same width
                 // on the others keeps the columns aligned.
-                let marker = if i == self.selected { "> " } else { "  " };
+                let marker = if i == self.selected {
+                    format!("{} ", glyphs::glyphs().selection)
+                } else {
+                    "  ".to_string()
+                };
                 let mut line = line.clone();
                 line.spans.insert(0, Span::raw(marker));
                 ListItem::new(line)
@@ -624,7 +637,7 @@ mod tests {
         dashboard.init().unwrap();
         assert_eq!(
             plain(&dashboard.versions()[0].line(0)),
-            "v0 [Backlog]  ▱▱▱▱▱▱▱▱▱▱ (0%)  todo(0) in-progress(0) done(0)"
+            "v0 [Backlog]  ░░░░░░░░░░ (0%)  todo(0) in-progress(0) done(0)"
         );
     }
 
@@ -638,7 +651,7 @@ mod tests {
             .map(|line| {
                 plain(line)
                     .chars()
-                    .position(|c| c == '█' || c == '▱')
+                    .position(|c| c == '█' || c == '░')
                     .unwrap()
             })
             .collect();
@@ -814,7 +827,9 @@ mod tests {
         repo.delete_version(dashboard.versions()[0].version.id.unwrap())
             .unwrap();
         dashboard.refresh().unwrap();
-        assert!(render_text(&dashboard).contains("No versions yet. Press c to create one."));
+        let text = render_text(&dashboard);
+        assert!(text.contains("No versions yet"), "{text}");
+        assert!(text.contains("Press c to create one."), "{text}");
     }
 
     #[test]

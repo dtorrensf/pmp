@@ -9,6 +9,8 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
+    style::Style,
+    text::{Line, Span, Text},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
@@ -17,9 +19,15 @@ use crate::domain::snapshot::CompactSnapshot;
 use crate::domain::task::{Priority, Status};
 use crate::domain::version::Version;
 use crate::domain::version_summary::VersionSummary;
+use crate::screens::components::glyphs;
 use crate::screens::components::keys::key;
+use crate::screens::components::progress_bar::ProgressBar;
 use crate::screens::components::scroll::{clamp_text_scroll, wrapped_line_count};
+use crate::screens::components::theme::{self, priority_style, status_style};
 use crate::screens::{Action, Component, Screen};
+
+/// Width, in cells, of the bars of the distribution chart.
+const CHART_BAR_WIDTH: usize = 20;
 
 pub struct VersionSummaryScreen {
     repo: Arc<dyn Repository>,
@@ -28,7 +36,7 @@ pub struct VersionSummaryScreen {
     summary_id: i64,
     version: Option<Version>,
     summary: Option<VersionSummary>,
-    chart: Vec<String>,
+    chart: Vec<Line<'static>>,
     scroll: Cell<u16>,
 }
 
@@ -152,11 +160,11 @@ impl Component for VersionSummaryScreen {
         let chart_block = Block::default().title("Distribution").borders(Borders::ALL);
         let chart_inner = chart_block.inner(chunks[1]);
         frame.render_widget(chart_block, chunks[1]);
-        frame.render_widget(Paragraph::new(self.chart.join("\n")), chart_inner);
+        frame.render_widget(Paragraph::new(Text::from(self.chart.clone())), chart_inner);
     }
 }
 
-fn render_chart(snapshot: &CompactSnapshot) -> Vec<String> {
+fn render_chart(snapshot: &CompactSnapshot) -> Vec<Line<'static>> {
     let done = count_status(snapshot, Status::Done);
     let todo = count_status(snapshot, Status::Todo);
     let in_progress = count_status(snapshot, Status::InProgress);
@@ -164,14 +172,59 @@ fn render_chart(snapshot: &CompactSnapshot) -> Vec<String> {
     let medium = count_priority(snapshot, Priority::Medium);
     let low = count_priority(snapshot, Priority::Low);
 
+    // The bars share one scale: the widest bar is the biggest count.
+    let max = [done, todo, in_progress, high, medium, low]
+        .into_iter()
+        .max()
+        .unwrap_or(0);
+
+    let status_line = |label: &str, count: usize, status: Status| {
+        chart_line(
+            &format!("{label:<13}"),
+            count,
+            max,
+            glyphs::status_icon(status),
+            status_style(status),
+        )
+    };
+    let priority_line = |label: &str, count: usize, priority: Priority| {
+        chart_line(
+            &format!("{label:<13}"),
+            count,
+            max,
+            glyphs::priority_icon(priority),
+            priority_style(priority),
+        )
+    };
+
     vec![
-        format!("done         {done} {}", bar(done)),
-        format!("todo         {todo} {}", bar(todo)),
-        format!("in_progress  {in_progress} {}", bar(in_progress)),
-        format!("high         {high} {}", bar(high)),
-        format!("medium       {medium} {}", bar(medium)),
-        format!("low          {low} {}", bar(low)),
+        status_line("done", done, Status::Done),
+        status_line("todo", todo, Status::Todo),
+        status_line("in_progress", in_progress, Status::InProgress),
+        priority_line("high", high, Priority::High),
+        priority_line("medium", medium, Priority::Medium),
+        priority_line("low", low, Priority::Low),
     ]
+}
+
+/// One row of the distribution chart: glyph, label, count and bar.
+fn chart_line(label: &str, count: usize, max: usize, icon: &str, style: Style) -> Line<'static> {
+    let ratio = if max == 0 {
+        0.0
+    } else {
+        count as f64 / max as f64
+    };
+    let bar = ProgressBar::new(ratio, CHART_BAR_WIDTH)
+        .with_filled_style(style)
+        .with_empty_style(theme::theme().muted_style());
+
+    let mut spans = vec![
+        Span::styled(format!("{icon} "), style),
+        Span::raw(label.to_string()),
+        Span::raw(format!("{count:>3} ")),
+    ];
+    spans.extend(bar.line().spans);
+    Line::from(spans)
 }
 
 fn count_status(snapshot: &CompactSnapshot, status: Status) -> usize {
@@ -184,10 +237,6 @@ fn count_priority(snapshot: &CompactSnapshot, priority: Priority) -> usize {
         .iter()
         .filter(|t| t.priority == priority)
         .count()
-}
-
-fn bar(count: usize) -> String {
-    "#".repeat(count.min(40))
 }
 
 #[cfg(test)]

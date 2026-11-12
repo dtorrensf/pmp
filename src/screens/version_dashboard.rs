@@ -383,7 +383,8 @@ mod tests {
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let text = buffer_to_string(&buffer);
-        assert!(text.contains("No tasks. Press c to create one."));
+        assert!(text.contains("No tasks"), "{text}");
+        assert!(text.contains("Press c to create one."), "{text}");
     }
 
     #[test]
@@ -417,7 +418,8 @@ mod tests {
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let text = buffer_to_string(&buffer);
-        assert!(text.contains("No tasks. Press c to create one."));
+        assert!(text.contains("No tasks"), "{text}");
+        assert!(text.contains("Press c to create one."), "{text}");
     }
 
     #[test]

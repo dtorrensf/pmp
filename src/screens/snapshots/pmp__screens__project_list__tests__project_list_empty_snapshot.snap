@@ -1,11 +1,11 @@
 ---
 source: src/screens/project_list.rs
-expression: render_to_string(&screen)
+expression: "render_to_string(&screen, 60, 20)"
 ---
 ┌Projects──────────────────────────────────────────────────┐
-│No projects yet. Create one? (press 'c')                  │
-│                                                          │
-│                                                          │
+│                             ○                            │
+│                      No projects yet                     │
+│                  Press c to create one.                  │
 │                                                          │
 │                                                          │
 │                                                          │

@@ -5,11 +5,11 @@ expression: "render_to_string(&screen, 60, 24)"
 ┌Alpha · v0 · Released · 1 summaries───────────────────────┐
 │┌Tasks───────────────────────────────────────────────────┐│
 ││ID   Name                 Status         Priority       ││
-││3    T3                   Done           High           ││
-││2    T2                   Done           Medium         ││
-││5    T5                   Done           Medium         ││
-││1    T1                   Done           Low            ││
-││4    T4                   Done           Low            ││
+││3    T3                   ✔ Done         ▲ High         ││
+││2    T2                   ✔ Done         ● Medium       ││
+││5    T5                   ✔ Done         ● Medium       ││
+││1    T1                   ✔ Done         ▼ Low          ││
+││4    T4                   ✔ Done         ▼ Low          ││
 ││                                                        ││
 ││                                                        ││
 ││                                                        ││
