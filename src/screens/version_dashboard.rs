@@ -428,7 +428,7 @@ mod tests {
         screen
             .view
             .set_mode(TaskListMode::ConfirmDelete(ConfirmDialog::new(
-                "Delete task Leaf? (y/N)",
+                "Delete task Leaf?",
                 Action::DeleteTask { task_id: 1 },
             )));
 
@@ -439,7 +439,9 @@ mod tests {
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let text = buffer_to_string(&buffer);
-        assert!(text.contains("? (y/N)"));
+        assert!(text.contains("Delete task Leaf?"));
+        assert!(text.contains("[y] Confirm"));
+        assert!(text.contains("[n/Esc] Cancel"));
         assert!(!text.contains("dependency links"));
     }
 
@@ -449,7 +451,7 @@ mod tests {
         screen
             .view
             .set_mode(TaskListMode::ConfirmDelete(ConfirmDialog::new(
-                "Deleting will remove 3 dependency links. Continue? (y/N)",
+                "Deleting will remove 3 dependency links. Continue?",
                 Action::DeleteTask { task_id: 1 },
             )));
 
@@ -750,6 +752,26 @@ mod tests {
     }
 
     #[test]
+    fn esc_cancels_confirm_mode() {
+        let (_repo, mut screen, _id) = setup_with_tasks();
+        screen.handle_event(&key_event(KeyCode::Char('d')));
+        let action = screen.handle_event(&key_event(KeyCode::Esc));
+        assert_eq!(action, None);
+        assert!(matches!(screen.view.mode(), TaskListMode::Browsing));
+    }
+
+    #[test]
+    fn other_keys_keep_the_confirm_dialog_open() {
+        let (_repo, mut screen, _id) = setup_with_tasks();
+        screen.handle_event(&key_event(KeyCode::Char('d')));
+        for code in [KeyCode::Enter, KeyCode::Char('x'), KeyCode::Char('Y')] {
+            let action = screen.handle_event(&key_event(code));
+            assert_eq!(action, None);
+            assert!(matches!(screen.view.mode(), TaskListMode::ConfirmDelete(_)));
+        }
+    }
+
+    #[test]
     fn long_task_list_scrolls_to_selected_task() {
         let repo = Arc::new(StubRepository::default());
         let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
@@ -833,7 +855,7 @@ mod tests {
         screen
             .view
             .set_mode(TaskListMode::ConfirmDelete(ConfirmDialog::new(
-                format!("Delete task {}? (y/N)", screen.tasks()[0].name),
+                format!("Delete task {}?", screen.tasks()[0].name),
                 Action::DeleteTask { task_id: 1 },
             )));
         insta::assert_snapshot!(render_to_string(&screen, 60, 24));
@@ -845,7 +867,7 @@ mod tests {
         screen
             .view
             .set_mode(TaskListMode::ConfirmDelete(ConfirmDialog::new(
-                "Deleting will remove 1 dependency links. Continue? (y/N)",
+                "Deleting will remove 1 dependency links. Continue?",
                 Action::DeleteTask { task_id: 1 },
             )));
         insta::assert_snapshot!(render_to_string(&screen, 60, 24));

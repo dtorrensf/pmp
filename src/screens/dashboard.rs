@@ -279,13 +279,13 @@ impl Component for ProjectDashboard {
                 let row = self.selected_row()?;
                 let version_id = row.version.id?;
                 let message = format!(
-                    "Delete version {}? Its tasks will be removed. (y/N)",
+                    "Delete version {}? Its tasks will be removed.",
                     row.version.name
                 );
-                self.confirm_delete.open(ConfirmDialog::new(
-                    message,
-                    Action::DeleteVersion { version_id },
-                ));
+                self.confirm_delete.open(
+                    ConfirmDialog::new(message, Action::DeleteVersion { version_id })
+                        .with_title("Delete version"),
+                );
                 None
             }
             KeyCode::Char('r') => {
@@ -387,10 +387,15 @@ impl Component for ProjectDashboard {
 
 impl ProjectDashboard {
     fn render_versions(&self, frame: &mut Frame, area: Rect) {
+        self.render_versions_list(frame, area);
+        // The list stays visible, dimmed, behind the confirmation modal, which
+        // is centered on the whole screen rather than on the versions list.
         if let Some(dialog) = self.confirm_delete.dialog() {
-            dialog.render(frame, area);
-            return;
+            dialog.render(frame, frame.area());
         }
+    }
+
+    fn render_versions_list(&self, frame: &mut Frame, area: Rect) {
         let block = Block::default().title("Versions").borders(Borders::ALL);
         if self.versions.is_empty() {
             let inner = block.inner(area);
@@ -774,12 +779,21 @@ mod tests {
     }
 
     #[test]
-    fn d_then_other_key_cancels_delete() {
+    fn d_then_n_cancels_delete() {
         let (_repo, mut dashboard, _id) = setup_with_tasks();
         dashboard.handle_event(&key_event(KeyCode::Char('d')));
         let action = dashboard.handle_event(&key_event(KeyCode::Char('n')));
         assert_eq!(action, None);
         assert!(!dashboard.is_confirming_delete());
+    }
+
+    #[test]
+    fn d_then_other_key_keeps_confirming_delete() {
+        let (_repo, mut dashboard, _id) = setup_with_tasks();
+        dashboard.handle_event(&key_event(KeyCode::Char('d')));
+        let action = dashboard.handle_event(&key_event(KeyCode::Char('x')));
+        assert_eq!(action, None);
+        assert!(dashboard.is_confirming_delete());
     }
 
     #[test]

@@ -7,6 +7,8 @@
 use ratatui::{
     Frame,
     layout::Rect,
+    style::Style,
+    text::Line,
     widgets::{Block, Borders, Clear},
 };
 
@@ -42,11 +44,28 @@ pub fn centered_rect_percent(percent: u16, area: Rect) -> Rect {
 /// Clears `area`, draws a `Borders::ALL` block titled `title` over it and
 /// returns the block's inner rect for the caller's content.
 pub fn render_popup_scaffold(frame: &mut Frame, area: Rect, title: &str) -> Rect {
+    render_popup_scaffold_with(
+        frame,
+        area,
+        Line::from(title.to_string()),
+        theme::theme().border_style(),
+    )
+}
+
+/// Same as [`render_popup_scaffold`], but the caller supplies the styled title
+/// line and the border style. Used by popups whose severity is semantic, such
+/// as the destructive confirmation dialog.
+pub fn render_popup_scaffold_with(
+    frame: &mut Frame,
+    area: Rect,
+    title: Line<'static>,
+    border_style: Style,
+) -> Rect {
     frame.render_widget(Clear, area);
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(theme::theme().border_style());
+        .border_style(border_style);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     inner

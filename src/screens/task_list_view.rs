@@ -12,7 +12,7 @@ use crate::db::repository::Repository;
 use crate::domain::task::{Priority, Status, Task};
 use crate::domain::version::Version;
 use crate::screens::components::badge::Badge;
-use crate::screens::components::confirm_dialog::ConfirmDialog;
+use crate::screens::components::confirm_dialog::{ConfirmAnswer, ConfirmDialog};
 use crate::screens::components::empty_state::EmptyState;
 use crate::screens::components::fields::{render_field, render_readonly_field};
 use crate::screens::components::glyphs;
@@ -225,16 +225,16 @@ impl TaskListView {
                     let dependents_count = repo.get_dependents(task_id).unwrap_or_default().len();
                     let message = if dependents_count > 0 {
                         format!(
-                            "Deleting will remove {} dependency links. Continue? (y/N)",
+                            "Deleting will remove {} dependency links. Continue?",
                             dependents_count
                         )
                     } else {
-                        format!("Delete task {}? (y/N)", task_name)
+                        format!("Delete task {}?", task_name)
                     };
-                    self.mode = TaskListMode::ConfirmDelete(ConfirmDialog::new(
-                        message,
-                        Action::DeleteTask { task_id },
-                    ));
+                    self.mode = TaskListMode::ConfirmDelete(
+                        ConfirmDialog::new(message, Action::DeleteTask { task_id })
+                            .with_title("Delete task"),
+                    );
                 }
                 None
             }
@@ -251,14 +251,23 @@ impl TaskListView {
         }
     }
 
-    /// Keys in the delete confirmation: the dialog decides, then browsing resumes.
+    /// Keys in the delete confirmation: `y` confirms, `n`/`Esc` cancel and
+    /// any other key keeps the dialog open.
     fn handle_confirm_delete_key(&mut self, code: KeyCode) -> Option<Action> {
-        let TaskListMode::ConfirmDelete(dialog) = &mut self.mode else {
+        let TaskListMode::ConfirmDelete(dialog) = &self.mode else {
             return None;
         };
-        let action = dialog.handle_key(code);
-        self.mode = TaskListMode::Browsing;
-        action
+        match dialog.handle_key(code) {
+            ConfirmAnswer::Confirmed(action) => {
+                self.mode = TaskListMode::Browsing;
+                Some(action)
+            }
+            ConfirmAnswer::Cancelled => {
+                self.mode = TaskListMode::Browsing;
+                None
+            }
+            ConfirmAnswer::Ignored => None,
+        }
     }
 
     /// Keys in the move-to-version popup.
@@ -365,11 +374,16 @@ impl TaskListView {
         }
     }
 
-    /// Render the task table (browsing) or the active modal popup.
+    /// Render the task table (browsing) or the active modal popup. The table
+    /// stays visible, dimmed, behind the delete confirmation.
     pub fn render(&self, frame: &mut Frame, area: Rect) {
         match &self.mode {
             TaskListMode::Browsing => self.render_table(frame, area),
-            TaskListMode::ConfirmDelete(dialog) => dialog.render(frame, area),
+            TaskListMode::ConfirmDelete(dialog) => {
+                self.render_table(frame, area);
+                // Center the modal on the whole screen, not just on the table.
+                dialog.render(frame, frame.area());
+            }
             TaskListMode::Filtering(state) => render_filter_popup(state, frame, area),
             TaskListMode::MovingTask(state) => render_move_popup(state, frame, area),
         }

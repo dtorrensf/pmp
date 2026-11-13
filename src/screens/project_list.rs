@@ -118,17 +118,14 @@ impl Component for ProjectListScreen {
                 KeyCode::Char('d') => {
                     if let Some(project) = self.projects.get(self.selected) {
                         let project_id = project.id.unwrap_or(0);
-                        // The warning glyph is a single column wide: the
-                        // `⚠️` emoji measures two and misaligns the text.
                         let message = format!(
-                            "Delete project {}? This will remove all its tasks {}. (y/N)",
-                            project.name,
-                            glyphs::glyphs().warning
+                            "Delete project {}? This will remove all its tasks.",
+                            project.name
                         );
-                        self.confirm.open(ConfirmDialog::new(
-                            message,
-                            Action::DeleteProject { project_id },
-                        ));
+                        self.confirm.open(
+                            ConfirmDialog::new(message, Action::DeleteProject { project_id })
+                                .with_title("Delete project"),
+                        );
                     }
                     None
                 }
@@ -153,9 +150,10 @@ impl Component for ProjectListScreen {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect) {
-        match self.confirm.dialog() {
-            Some(dialog) => dialog.render(frame, area),
-            None => render_list(self, frame, area),
+        // The list stays visible, dimmed, behind the confirmation modal.
+        render_list(self, frame, area);
+        if let Some(dialog) = self.confirm.dialog() {
+            dialog.render(frame, area);
         }
     }
 }
