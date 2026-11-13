@@ -13,10 +13,10 @@ use crate::screens::components::theme;
 const SEPARATOR: &str = "  ";
 /// Text of the overflow indicator, shown when not every shortcut fits.
 const HELP_HINT_KEY: &str = "?";
-const HELP_HINT_LABEL: &str = " ayuda";
+const HELP_HINT_LABEL: &str = " help";
 
 /// Renders the shortcut footer. Entries that do not fit are dropped from the
-/// end. When `help_hint` is set and something was dropped, a `? ayuda`
+/// end. When `help_hint` is set and something was dropped, a `? help`
 /// indicator is drawn at the right so the full list stays discoverable.
 pub fn render_footer(frame: &mut Frame, area: Rect, keys: &[(KeyEvent, &str)], help_hint: bool) {
     let line = footer_line(keys, area.width as usize, help_hint);
@@ -264,7 +264,7 @@ mod tests {
             (key_event(KeyCode::Char('q')), "Quit"),
         ];
         let text = render_to_string(keys, 80, 1);
-        assert!(!text.contains("ayuda"));
+        assert!(!text.contains("help"));
     }
 
     #[test]
@@ -275,7 +275,7 @@ mod tests {
             (key_event(KeyCode::Char('q')), "Quit"),
         ];
         let text = render_to_string(keys, 30, 1);
-        assert!(text.trim_end().ends_with("? ayuda"), "{text:?}");
+        assert!(text.trim_end().ends_with("? help"), "{text:?}");
         assert!(text.trim_end().chars().count() <= 30);
     }
 
@@ -292,7 +292,7 @@ mod tests {
             .draw(|frame| render_footer(frame, frame.area(), keys, false))
             .unwrap();
         let text = buffer_to_string(terminal.backend().buffer());
-        assert!(!text.contains("ayuda"));
+        assert!(!text.contains("help"));
         assert!(text.starts_with("Enter: Open"));
     }
 
@@ -303,8 +303,8 @@ mod tests {
             (key_event(KeyCode::Char('c')), "Create"),
             (key_event(KeyCode::Char('q')), "Quit"),
         ];
-        // "Enter: Open  ? ayuda" fits in 20 columns, "c: Create" does not.
+        // "Enter: Open  ? help" fits in 20 columns, "c: Create" does not.
         let text = render_to_string(keys, 20, 1);
-        assert_eq!(text.trim_end(), "Enter: Open  ? ayuda");
+        assert_eq!(text.trim_end(), "Enter: Open  ? help");
     }
 }

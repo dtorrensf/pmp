@@ -92,7 +92,7 @@ impl Component for ProjectListScreen {
         Ok(())
     }
 
-    /// Projects are the subject here, so create/edit/delete go under Proyectos.
+    /// Projects are the subject here, so create/edit/delete go under Projects.
     fn help_sections(&self) -> Vec<HelpSection> {
         help::sections(self.keybindings(), |label| match label {
             "Down" | "Up" | "Open" => help::NAVIGATION,

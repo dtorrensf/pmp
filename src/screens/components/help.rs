@@ -20,11 +20,11 @@ use crate::screens::components::popup::{centered_rect, dim_area, render_popup_sc
 use crate::screens::components::theme;
 use crate::screens::keybinding_footer::group_keys;
 
-pub const NAVIGATION: &str = "Navegación";
-pub const PROJECTS: &str = "Proyectos";
-pub const TASKS: &str = "Tareas";
-pub const VERSIONS: &str = "Versiones";
-pub const APPLICATION: &str = "Aplicación";
+pub const NAVIGATION: &str = "Navigation";
+pub const PROJECTS: &str = "Projects";
+pub const TASKS: &str = "Tasks";
+pub const VERSIONS: &str = "Versions";
+pub const APPLICATION: &str = "Application";
 
 /// Display order of the sections.
 const SECTION_ORDER: [&str; 5] = [NAVIGATION, PROJECTS, TASKS, VERSIONS, APPLICATION];
@@ -33,7 +33,7 @@ const SECTION_ORDER: [&str; 5] = [NAVIGATION, PROJECTS, TASKS, VERSIONS, APPLICA
 const MAX_WIDTH: u16 = 76;
 /// Narrowest width of one column; below twice this the overlay uses one column.
 const COLUMN_MIN_WIDTH: u16 = 26;
-const CLOSE_HINT: &str = "? o Esc: cerrar";
+const CLOSE_HINT: &str = "? or Esc: close";
 
 /// One shortcut row: the joined key names and the action label.
 #[derive(Debug, Clone, PartialEq)]
@@ -93,7 +93,7 @@ pub fn render_overlay(frame: &mut Frame, area: Rect, sections: &[HelpSection]) {
     // Border (2) plus the close hint line.
     let height = (content_height + 3).min(area.height);
     let popup = centered_rect(width, height, area);
-    let inner = render_popup_scaffold(frame, popup, "Atajos");
+    let inner = render_popup_scaffold(frame, popup, "Shortcuts");
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -247,12 +247,12 @@ mod tests {
             .unwrap();
         let text = crate::screens::test_utils::buffer_to_string(terminal.backend().buffer());
 
-        assert!(text.contains("Atajos"));
-        assert!(text.contains("Navegación"));
-        assert!(text.contains("Tareas"));
+        assert!(text.contains("Shortcuts"));
+        assert!(text.contains("Navigation"));
+        assert!(text.contains("Tasks"));
         assert!(text.contains("j"));
         assert!(text.contains("Delete"));
-        assert!(text.contains("? o Esc: cerrar"));
+        assert!(text.contains("? or Esc: close"));
     }
 
     #[test]

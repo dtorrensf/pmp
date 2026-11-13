@@ -137,7 +137,7 @@ impl Component for VersionDashboard {
         self.load_tasks()
     }
 
-    /// Tasks are the subject here, so task actions go under Tareas.
+    /// Tasks are the subject here, so task actions go under Tasks.
     fn help_sections(&self) -> Vec<HelpSection> {
         help::sections(self.keybindings(), |label| match label {
             "Down" | "Up" => help::NAVIGATION,

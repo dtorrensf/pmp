@@ -464,9 +464,9 @@ mod tests {
 
         let text = render_app_to_string(&mut app);
 
-        assert!(text.contains("Atajos"), "{text}");
-        assert!(text.contains("Navegación"), "{text}");
-        assert!(text.contains("Proyectos"), "{text}");
+        assert!(text.contains("Shortcuts"), "{text}");
+        assert!(text.contains("Navigation"), "{text}");
+        assert!(text.contains("Projects"), "{text}");
     }
 
     #[test]
