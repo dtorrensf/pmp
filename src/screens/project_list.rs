@@ -11,22 +11,28 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::db::repository::Repository;
+use crate::domain::task::Status;
 use crate::screens::components::confirm_dialog::{ConfirmDialog, ConfirmState};
 use crate::screens::components::empty_state::EmptyState;
 use crate::screens::components::glyphs;
 use crate::screens::components::help::{self, HelpSection};
 use crate::screens::components::keys::key;
 use crate::screens::components::list_navigation::move_selection;
-use crate::screens::components::progress::completion_percentage;
+use crate::screens::components::progress::percent;
+use crate::screens::components::progress_bar::ProgressBar;
 use crate::screens::components::scroll::{ListScroll, list_rows, render_list_scrollbar};
+use crate::screens::components::stacked_bar::status_counts;
+use crate::screens::components::theme::{self, status_style};
 use crate::screens::{AUTO_REFRESH_INTERVAL, Action, Component, Screen};
 
 pub struct ProjectListScreen {
     repo: Arc<dyn Repository>,
     projects: Vec<crate::domain::project::Project>,
-    progress: Vec<u64>,
+    /// Tasks per status for each project, see `status_counts`.
+    task_counts: Vec<[u64; 3]>,
     version_counts: Vec<usize>,
     selected: usize,
     scroll: ListScroll,
@@ -49,7 +55,7 @@ impl ProjectListScreen {
         Self {
             repo,
             projects: Vec::new(),
-            progress: Vec::new(),
+            task_counts: Vec::new(),
             version_counts: Vec::new(),
             selected: 0,
             scroll: ListScroll::new(),
@@ -65,7 +71,7 @@ impl ProjectListScreen {
 impl Component for ProjectListScreen {
     fn init(&mut self) -> anyhow::Result<()> {
         self.projects = self.repo.list_projects()?;
-        self.progress = self
+        self.task_counts = self
             .projects
             .iter()
             .map(|project| {
@@ -74,7 +80,7 @@ impl Component for ProjectListScreen {
                     .repo
                     .list_tasks_by_project(project_id)
                     .unwrap_or_default();
-                completion_percentage(&tasks)
+                status_counts(&tasks)
             })
             .collect();
         self.version_counts = self
@@ -186,6 +192,14 @@ fn render_list(screen: &ProjectListScreen, frame: &mut Frame, area: Rect) {
         .scroll
         .visible_range(screen.projects.len(), screen.selected, row_height);
 
+    // The name column is padded to the longest name so the bars line up.
+    let name_width = screen
+        .projects
+        .iter()
+        .map(|p| p.name.width())
+        .max()
+        .unwrap_or(0);
+
     let items: Vec<ListItem> = screen.projects[range.clone()]
         .iter()
         .enumerate()
@@ -196,22 +210,38 @@ fn render_list(screen: &ProjectListScreen, frame: &mut Frame, area: Rect) {
             } else {
                 Style::default()
             };
-            let progress = screen.progress.get(i).copied().unwrap_or(0);
+            let counts = screen.task_counts.get(i).copied().unwrap_or([0; 3]);
+            let tasks: u64 = counts.iter().sum();
+            let percentage = percent(counts[2], tasks);
             let versions = screen.version_counts.get(i).copied().unwrap_or(0);
-            let label = format!(
-                "{} ({} {} · {}%)",
-                p.name,
-                versions,
+            let bar = ProgressBar::new(percentage as f64 / 100.0, PROGRESS_BAR_WIDTH)
+                .with_filled_style(status_style(Status::Done))
+                .with_empty_style(theme::theme().muted_style());
+
+            let mut spans = vec![Span::raw(pad_display(&p.name, name_width)), Span::raw("  ")];
+            spans.extend(bar.line().spans);
+            spans.push(Span::raw(format!(" {percentage:>3}%  ")));
+            spans.push(Span::raw(format!(
+                "{tasks} {} · {versions} {}",
+                if tasks == 1 { "task" } else { "tasks" },
                 if versions == 1 { "version" } else { "versions" },
-                progress
-            );
-            ListItem::new(Line::from(Span::styled(label, style)))
+            )));
+            ListItem::new(Line::from(spans).style(style))
         })
         .collect();
     let list = List::new(items).block(block);
     frame.render_widget(list, area);
 
     render_list_scrollbar(frame, area, 0, screen.projects.len(), range.start);
+}
+
+/// Width, in cells, of the progress bar of each project.
+const PROGRESS_BAR_WIDTH: usize = 10;
+
+/// Right-pads `text` with spaces to `width` terminal columns.
+fn pad_display(text: &str, width: usize) -> String {
+    let fill = width.saturating_sub(text.width());
+    format!("{text}{}", " ".repeat(fill))
 }
 
 #[cfg(test)]
@@ -224,6 +254,7 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     use crate::db::stub::StubRepository;
+    use crate::domain::task::{Priority, Status};
     use crate::screens::test_utils::{buffer_to_string, char_event, key_event, render_to_string};
     use crate::screens::{Component, Screen};
 
@@ -410,5 +441,56 @@ mod tests {
         let repo = Arc::new(StubRepository::default());
         let screen = ProjectListScreen::new(repo);
         insta::assert_snapshot!(render_to_string(&screen, 60, 20));
+    }
+
+    #[test]
+    fn rows_show_progress_bar_and_task_count() {
+        let repo = Arc::new(StubRepository::default());
+        let project = repo.create_project("Alpha", "").unwrap();
+        let pid = project.id.unwrap();
+        let vid = repo.default_version_id(pid).unwrap();
+        repo.create_task(pid, vid, "A", "", Status::Done, Priority::Low)
+            .unwrap();
+        repo.create_task(pid, vid, "B", "", Status::Todo, Priority::Low)
+            .unwrap();
+        let mut screen = ProjectListScreen::new(repo);
+        screen.init().unwrap();
+        let backend = TestBackend::new(70, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| screen.render(frame, frame.area()))
+            .unwrap();
+        let text = buffer_to_string(terminal.backend().buffer());
+        assert!(text.contains("█████░░░░░  50%  2 tasks"), "{text}");
+    }
+
+    #[test]
+    fn project_without_tasks_shows_empty_bar() {
+        let repo = Arc::new(StubRepository::default());
+        repo.create_project("Empty", "").unwrap();
+        let mut screen = ProjectListScreen::new(repo);
+        screen.init().unwrap();
+        let backend = TestBackend::new(70, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| screen.render(frame, frame.area()))
+            .unwrap();
+        let text = buffer_to_string(terminal.backend().buffer());
+        assert!(text.contains("░░░░░░░░░░   0%  0 tasks"), "{text}");
+    }
+
+    #[test]
+    fn narrow_rows_do_not_panic() {
+        let repo = Arc::new(StubRepository::default());
+        repo.create_project("A very long project name", "").unwrap();
+        let mut screen = ProjectListScreen::new(repo);
+        screen.init().unwrap();
+        for width in [1, 5, 12] {
+            let backend = TestBackend::new(width, 4);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| screen.render(frame, frame.area()))
+                .unwrap();
+        }
     }
 }

@@ -613,7 +613,7 @@ mod tests {
 
         let text = render_app_to_string(&mut app);
         assert!(
-            text.contains("Alpha (1 version · 67%)"),
+            text.contains("67%") && text.contains("· 1 version"),
             "project progress should be refreshed"
         );
     }

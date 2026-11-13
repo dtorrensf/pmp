@@ -13,5 +13,6 @@ pub mod popup;
 pub mod progress;
 pub mod progress_bar;
 pub mod scroll;
+pub mod stacked_bar;
 pub mod theme;
 pub mod toast;

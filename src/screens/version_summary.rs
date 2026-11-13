@@ -24,7 +24,8 @@ use crate::screens::components::help::{self, HelpSection};
 use crate::screens::components::keys::key;
 use crate::screens::components::progress_bar::ProgressBar;
 use crate::screens::components::scroll::{clamp_text_scroll, wrapped_line_count};
-use crate::screens::components::theme::{self, priority_style, status_style};
+use crate::screens::components::stacked_bar::{legend, stacked_bar};
+use crate::screens::components::theme::{self, priority_style};
 use crate::screens::{Action, Component, Screen};
 
 /// Width, in cells, of the bars of the distribution chart.
@@ -173,54 +174,49 @@ impl Component for VersionSummaryScreen {
 }
 
 fn render_chart(snapshot: &CompactSnapshot) -> Vec<Line<'static>> {
-    let done = count_status(snapshot, Status::Done);
-    let todo = count_status(snapshot, Status::Todo);
-    let in_progress = count_status(snapshot, Status::InProgress);
-    let high = count_priority(snapshot, Priority::High);
-    let medium = count_priority(snapshot, Priority::Medium);
-    let low = count_priority(snapshot, Priority::Low);
+    let total = snapshot.tasks.len();
+    let counts = [Status::Todo, Status::InProgress, Status::Done]
+        .map(|status| count_status(snapshot, status));
 
-    // The bars share one scale: the widest bar is the biggest count.
-    let max = [done, todo, in_progress, high, medium, low]
-        .into_iter()
-        .max()
-        .unwrap_or(0);
-
-    let status_line = |label: &str, count: usize, status: Status| {
-        chart_line(
-            &format!("{label:<13}"),
-            count,
-            max,
-            glyphs::status_icon(status),
-            status_style(status),
-        )
-    };
+    // The status bar and the priority rows share one scale: a full bar is
+    // every task of the version, the same as the dashboard's status bar.
+    let mut lines = vec![
+        stacked_bar(counts.map(|c| c as u64), CHART_BAR_WIDTH),
+        legend(counts.map(|c| c as u64)),
+    ];
     let priority_line = |label: &str, count: usize, priority: Priority| {
         chart_line(
-            &format!("{label:<13}"),
+            &format!("{label:<8}"),
             count,
-            max,
+            total,
             glyphs::priority_icon(priority),
             priority_style(priority),
         )
     };
-
-    vec![
-        status_line("done", done, Status::Done),
-        status_line("todo", todo, Status::Todo),
-        status_line("in_progress", in_progress, Status::InProgress),
-        priority_line("high", high, Priority::High),
-        priority_line("medium", medium, Priority::Medium),
-        priority_line("low", low, Priority::Low),
-    ]
+    lines.push(priority_line(
+        "high",
+        count_priority(snapshot, Priority::High),
+        Priority::High,
+    ));
+    lines.push(priority_line(
+        "medium",
+        count_priority(snapshot, Priority::Medium),
+        Priority::Medium,
+    ));
+    lines.push(priority_line(
+        "low",
+        count_priority(snapshot, Priority::Low),
+        Priority::Low,
+    ));
+    lines
 }
 
-/// One row of the distribution chart: glyph, label, count and bar.
-fn chart_line(label: &str, count: usize, max: usize, icon: &str, style: Style) -> Line<'static> {
-    let ratio = if max == 0 {
+/// One priority row: glyph, label, count and a bar of its share of the tasks.
+fn chart_line(label: &str, count: usize, total: usize, icon: &str, style: Style) -> Line<'static> {
+    let ratio = if total == 0 {
         0.0
     } else {
-        count as f64 / max as f64
+        count as f64 / total as f64
     };
     let bar = ProgressBar::new(ratio, CHART_BAR_WIDTH)
         .with_filled_style(style)
@@ -290,7 +286,7 @@ mod tests {
             screen.summary.as_ref().unwrap().summary,
             "Release summary prose"
         );
-        assert_eq!(screen.chart.len(), 6);
+        assert_eq!(screen.chart.len(), 5);
     }
 
     #[test]
@@ -323,7 +319,7 @@ mod tests {
         assert!(text.contains("v1.0.0 · Summary"));
         assert!(text.contains("Release summary prose"));
         assert!(text.contains("Distribution"));
-        assert!(text.contains("done"));
+        assert!(text.contains("Done"));
         assert!(text.contains("high"));
     }
 

@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span, Text},
-    widgets::{Bar, BarChart, BarGroup, Block, Borders, Gauge, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Wrap},
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -26,7 +26,10 @@ use crate::screens::components::progress::{completion_percentage, percent};
 use crate::screens::components::scroll::{
     ListScroll, TextScroll, list_rows, render_list_scrollbar, wrapped_line_count,
 };
-use crate::screens::components::theme::{self, status_style, version_status_style};
+use crate::screens::components::stacked_bar::{
+    legend, stacked_bar, stacked_bar_spans, status_counts,
+};
+use crate::screens::components::theme::{status_style, version_status_style};
 use crate::screens::{AUTO_REFRESH_INTERVAL, Action, Component, Screen};
 
 /// Width, in cells, of the stacked progress bar of each version.
@@ -65,22 +68,10 @@ impl VersionRow {
             ),
             Span::raw("  "),
         ];
-        if self.total == 0 {
-            spans.push(Span::styled(
-                glyphs::glyphs().bar_empty.repeat(VERSION_BAR_WIDTH),
-                theme::theme().muted_style(),
-            ));
-        } else {
-            let cells = bar_segments([self.todo, self.in_progress, self.done], VERSION_BAR_WIDTH);
-            for ((_, _, status), n) in parts.iter().zip(cells) {
-                if n > 0 {
-                    spans.push(Span::styled(
-                        glyphs::glyphs().bar_full.repeat(n),
-                        status_style(*status),
-                    ));
-                }
-            }
-        }
+        spans.extend(stacked_bar_spans(
+            [self.todo, self.in_progress, self.done],
+            VERSION_BAR_WIDTH,
+        ));
         spans.push(Span::raw(format!(" ({}%)  ", self.percentage)));
         for (i, (label, count, status)) in parts.iter().enumerate() {
             if i > 0 {
@@ -336,7 +327,7 @@ impl Component for ProjectDashboard {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(3),
-                Constraint::Length(9),
+                Constraint::Length(4),
                 Constraint::Length(3),
                 Constraint::Min(0),
             ])
@@ -355,27 +346,16 @@ impl Component for ProjectDashboard {
         frame.render_widget(desc, chunks[0]);
 
         let counts = status_counts(&self.all_tasks);
-        // The labels stay plain: this chart is replaced by a full-width
-        // stacked bar in VIS-7, where the labels cannot be truncated.
-        let status_bars = vec![
-            Bar::default()
-                .value(counts[0])
-                .label(Line::from("Todo"))
-                .style(status_style(Status::Todo)),
-            Bar::default()
-                .value(counts[1])
-                .label(Line::from("In Progress"))
-                .style(status_style(Status::InProgress)),
-            Bar::default()
-                .value(counts[2])
-                .label(Line::from("Done"))
-                .style(status_style(Status::Done)),
+        let status_block = Block::default().title("Status").borders(Borders::ALL);
+        let status_inner = status_block.inner(chunks[1]);
+        frame.render_widget(status_block, chunks[1]);
+        // The bar spans the full width; the legend under it names each
+        // segment with its count, so no label is ever cut off.
+        let status_lines = vec![
+            stacked_bar(counts, status_inner.width as usize),
+            legend(counts),
         ];
-        let status_chart = BarChart::default()
-            .block(Block::default().title("Status").borders(Borders::ALL))
-            .data(BarGroup::default().bars(&status_bars))
-            .bar_width(10);
-        frame.render_widget(status_chart, chunks[1]);
+        frame.render_widget(Paragraph::new(Text::from(status_lines)), status_inner);
 
         let total = self.all_tasks.len() as u64;
         let done = counts[2];
@@ -388,6 +368,7 @@ impl Component for ProjectDashboard {
         let gauge = Gauge::default()
             .block(Block::default().title("Progress").borders(Borders::ALL))
             .ratio(ratio)
+            .use_unicode(true)
             .label(format!("{done}/{total} tasks ({percentage}%)"));
         frame.render_widget(gauge, chunks[2]);
 
@@ -445,18 +426,6 @@ impl ProjectDashboard {
     }
 }
 
-fn status_counts<'a>(tasks: impl IntoIterator<Item = &'a Task>) -> [u64; 3] {
-    let mut counts = [0u64; 3];
-    for task in tasks {
-        match task.status {
-            Status::Todo => counts[0] += 1,
-            Status::InProgress => counts[1] += 1,
-            Status::Done => counts[2] += 1,
-        }
-    }
-    counts
-}
-
 /// Right-pads `text` with spaces to `width` terminal columns.
 fn pad_display(text: &str, width: usize) -> String {
     let fill = width.saturating_sub(text.width());
@@ -472,31 +441,6 @@ fn version_lines(rows: &[VersionRow]) -> Vec<Line<'static>> {
         .max()
         .unwrap_or(0);
     rows.iter().map(|row| row.line(name_width)).collect()
-}
-
-/// Splits `width` cells among the three status counts, proportionally, using
-/// the largest-remainder method so the segments always add up to `width`.
-/// Returns zeros when there are no tasks.
-fn bar_segments(counts: [u64; 3], width: usize) -> [usize; 3] {
-    let total: u64 = counts.iter().sum();
-    if total == 0 {
-        return [0; 3];
-    }
-    let width = width as u64;
-    let mut cells = [0u64; 3];
-    let mut remainders = [0u64; 3];
-    for i in 0..3 {
-        let exact = counts[i] * width;
-        cells[i] = exact / total;
-        remainders[i] = exact % total;
-    }
-    let mut order = [0usize, 1, 2];
-    order.sort_by_key(|&i| std::cmp::Reverse(remainders[i]));
-    let missing = width - cells.iter().sum::<u64>();
-    for &i in order.iter().take(missing as usize) {
-        cells[i] += 1;
-    }
-    cells.map(|c| c as usize)
 }
 
 #[cfg(test)]
@@ -625,25 +569,6 @@ mod tests {
     }
 
     #[test]
-    fn bar_segments_split_proportionally() {
-        assert_eq!(bar_segments([3, 1, 1], 10), [6, 2, 2]);
-        assert_eq!(bar_segments([0, 0, 4], 10), [0, 0, 10]);
-    }
-
-    #[test]
-    fn bar_segments_always_fill_the_width() {
-        // 1/3 each: the leftover cell goes to the first segment on a tie.
-        assert_eq!(bar_segments([1, 1, 1], 10), [4, 3, 3]);
-        assert_eq!(bar_segments([1, 2, 4], 10).iter().sum::<usize>(), 10);
-        assert_eq!(bar_segments([7, 0, 3], 10).iter().sum::<usize>(), 10);
-    }
-
-    #[test]
-    fn bar_segments_are_zero_without_tasks() {
-        assert_eq!(bar_segments([0, 0, 0], 10), [0, 0, 0]);
-    }
-
-    #[test]
     fn version_without_tasks_shows_empty_bar() {
         let repo = Arc::new(StubRepository::default());
         let project_id = repo.create_project("Empty", "").unwrap().id.unwrap();
@@ -684,6 +609,26 @@ mod tests {
     fn gauge_shows_done_over_total_across_versions() {
         let (_repo, dashboard, _id) = setup_with_tasks();
         assert!(render_text(&dashboard).contains("2/6 tasks (33%)"));
+    }
+
+    #[test]
+    fn status_bar_has_a_legend_with_counts() {
+        let (_repo, dashboard, _id) = setup_with_tasks();
+        let text = render_text(&dashboard);
+        assert!(text.contains("Todo 3"), "{text}");
+        assert!(text.contains("In Progress 1"), "{text}");
+        assert!(text.contains("Done 2"), "{text}");
+        assert!(!text.contains("In Progres "), "{text}");
+    }
+
+    #[test]
+    fn status_bar_survives_narrow_widths() {
+        let (_repo, dashboard, _id) = setup_with_tasks();
+        let backend = TestBackend::new(12, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| dashboard.render(frame, frame.area()))
+            .unwrap();
     }
 
     #[test]
