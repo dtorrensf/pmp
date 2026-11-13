@@ -80,7 +80,7 @@ To open the interactive interface, simply run:
 pmp
 ```
 
-Use the **arrow keys** to navigate, **Tab** to change statuses or jump between panels, and follow the on-screen keyboard shortcuts to manage your projects.
+Use the **arrow keys** to navigate, **Tab** to change statuses or jump between panels, and follow the on-screen keyboard shortcuts to manage your projects. Press **?** on any screen to see the full list of shortcuts.
 
 #### Appearance
 

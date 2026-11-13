@@ -16,6 +16,7 @@ use crate::db::repository::Repository;
 use crate::screens::components::confirm_dialog::{ConfirmDialog, ConfirmState};
 use crate::screens::components::empty_state::EmptyState;
 use crate::screens::components::glyphs;
+use crate::screens::components::help::{self, HelpSection};
 use crate::screens::components::keys::key;
 use crate::screens::components::list_navigation::move_selection;
 use crate::screens::components::progress::completion_percentage;
@@ -89,6 +90,15 @@ impl Component for ProjectListScreen {
         self.selected = self.selected.min(self.projects.len().saturating_sub(1));
         self.confirm.close();
         Ok(())
+    }
+
+    /// Projects are the subject here, so create/edit/delete go under Proyectos.
+    fn help_sections(&self) -> Vec<HelpSection> {
+        help::sections(self.keybindings(), |label| match label {
+            "Down" | "Up" | "Open" => help::NAVIGATION,
+            "Create" | "Edit" | "Delete" => help::PROJECTS,
+            _ => help::APPLICATION,
+        })
     }
 
     fn keybindings(&self) -> &'static [(KeyEvent, &'static str)] {

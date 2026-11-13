@@ -20,7 +20,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::screens::Action;
 use crate::screens::components::glyphs;
-use crate::screens::components::popup::{centered_rect, render_popup_scaffold_with};
+use crate::screens::components::popup::{centered_rect, dim_area, render_popup_scaffold_with};
 use crate::screens::components::theme;
 
 /// Default title of the confirmation modal.
@@ -94,7 +94,7 @@ impl ConfirmDialog {
 
     /// Dims the background and draws the modal centered in `area`.
     pub fn render(&self, frame: &mut Frame, area: Rect) {
-        dim_background(frame);
+        dim_area(frame);
 
         let (width, height) = self.geometry(area);
         let modal_area = centered_rect(width, height, area);
@@ -162,18 +162,6 @@ fn actions_line() -> Line<'static> {
         Span::styled("[n/Esc]", theme.muted_style()),
         Span::raw(" Cancel"),
     ])
-}
-
-/// Adds `Modifier::DIM` to every cell of the frame, so the screen drawn
-/// behind the modal recedes without losing its content.
-fn dim_background(frame: &mut Frame) {
-    let area = frame.area();
-    let buffer = frame.buffer_mut();
-    for y in area.y..area.bottom() {
-        for x in area.x..area.right() {
-            buffer[(x, y)].modifier.insert(Modifier::DIM);
-        }
-    }
 }
 
 /// Number of terminal lines `text` needs when word-wrapped at `width`.

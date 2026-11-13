@@ -16,6 +16,7 @@ use crate::db::repository::Repository;
 use crate::domain::task::{Priority, Status, Task};
 use crate::domain::version::{Version, VersionStatus};
 use crate::domain::version_summary::VersionSummary;
+use crate::screens::components::help::{self, HelpSection};
 use crate::screens::components::keys::key;
 use crate::screens::task_list_view::TaskListView;
 pub use crate::screens::task_list_view::{FilterField, FilterState, TaskListMode};
@@ -134,6 +135,16 @@ impl Component for VersionDashboard {
 
     fn refresh(&mut self) -> anyhow::Result<()> {
         self.load_tasks()
+    }
+
+    /// Tasks are the subject here, so task actions go under Tareas.
+    fn help_sections(&self) -> Vec<HelpSection> {
+        help::sections(self.keybindings(), |label| match label {
+            "Down" | "Up" => help::NAVIGATION,
+            "New" | "Edit" | "Cycle" | "Delete" | "Filter" | "Move" => help::TASKS,
+            "Summary" | "Export" => help::VERSIONS,
+            _ => help::APPLICATION,
+        })
     }
 
     fn keybindings(&self) -> &'static [(KeyEvent, &'static str)] {

@@ -22,6 +22,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 use crate::screens::Action;
+use crate::screens::components::help;
 use crate::screens::components::popup::{centered_rect, render_popup_scaffold};
 use crate::screens::components::theme;
 use crate::screens::keybinding_footer::render_footer;
@@ -137,7 +138,9 @@ where
                 if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
                     break;
                 }
-                if !app.handle_update_key(key.code, key.modifiers) {
+                if !app.handle_update_key(key.code, key.modifiers)
+                    && !app.handle_help_key(key.code, key.modifiers)
+                {
                     let mut next = app.active_component().handle_event(&Event::Key(key));
                     while let Some(action) = next {
                         if matches!(action, Action::Quit) {
@@ -176,9 +179,14 @@ fn render_app_frame(app: &mut App, frame: &mut Frame) {
         .split(area);
     let keys = app.active_component().keybindings();
     app.active_component().render(frame, chunks[0]);
-    render_footer_row(frame, chunks[1], keys, app.update_version());
+    let help_hint = !app.screen.accepts_text_input();
+    render_footer_row(frame, chunks[1], keys, app.update_version(), help_hint);
     if let (true, Some(version)) = (app.is_update_banner_open(), app.update_version()) {
         render_update_banner(frame, version, app.current_version(), area);
+    }
+    if app.is_help_open() {
+        let sections = app.active_component().help_sections();
+        help::render_overlay(frame, area, &sections);
     }
     if let Some(error) = &app.error {
         render_error(frame, error, area);
@@ -194,13 +202,14 @@ fn render_footer_row(
     area: Rect,
     keys: &[(crossterm::event::KeyEvent, &str)],
     update_version: Option<&str>,
+    help_hint: bool,
 ) {
     let Some(version) = update_version else {
-        render_footer(frame, area, keys);
+        render_footer(frame, area, keys, help_hint);
         return;
     };
     if area.width < UPDATE_HINT_MIN_WIDTH {
-        render_footer(frame, area, keys);
+        render_footer(frame, area, keys, help_hint);
         return;
     }
     let hint = format!("⬆ New v{version} (u)");
@@ -209,7 +218,7 @@ fn render_footer_row(
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(0), Constraint::Length(hint_width)])
         .split(area);
-    render_footer(frame, parts[0], keys);
+    render_footer(frame, parts[0], keys, help_hint);
     frame.render_widget(
         Paragraph::new(hint).style(theme::theme().warning_style().add_modifier(Modifier::BOLD)),
         parts[1],
@@ -422,6 +431,42 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(app.screen, Screen::ProjectList);
+    }
+
+    #[test]
+    fn question_mark_opens_help_and_swallows_keys_until_closed() {
+        let (_repo, mut app) = setup_app_with_project();
+        // `q` would quit, but while the overlay is open it must be swallowed.
+        let events = vec![char_event('?'), char_event('q')];
+
+        run_with_events(&mut app, events).unwrap();
+
+        assert!(app.is_help_open());
+        assert_eq!(app.screen, Screen::ProjectList);
+    }
+
+    #[test]
+    fn esc_closes_help_without_reaching_the_screen() {
+        let (_repo, mut app) = setup_app_with_project();
+        let events = vec![char_event('?'), key_event(KeyCode::Esc), char_event('q')];
+
+        let result = run_with_events(&mut app, events);
+
+        // The final `q` quits, proving the overlay closed on Esc.
+        assert!(result.is_ok());
+        assert!(!app.is_help_open());
+    }
+
+    #[test]
+    fn help_overlay_lists_the_active_screen_sections() {
+        let (_repo, mut app) = setup_app_with_project();
+        run_with_events(&mut app, vec![char_event('?')]).unwrap();
+
+        let text = render_app_to_string(&mut app);
+
+        assert!(text.contains("Atajos"), "{text}");
+        assert!(text.contains("Navegación"), "{text}");
+        assert!(text.contains("Proyectos"), "{text}");
     }
 
     #[test]

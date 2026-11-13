@@ -24,6 +24,9 @@ pub struct App {
     update_available: Option<String>,
     /// Whether the update banner is currently open.
     show_update: bool,
+    /// Whether the `?` shortcut overlay is open. While it is, every key goes
+    /// to the overlay, so the screen behind it does not react.
+    show_help: bool,
     pending_update: Option<Arc<OnceLock<String>>>,
     update_check_cancel: Option<Arc<AtomicBool>>,
     /// Version compiled into the running binary, used in the update banner.
@@ -53,6 +56,7 @@ impl App {
             notice: None,
             update_available: None,
             show_update: false,
+            show_help: false,
             pending_update: None,
             update_check_cancel: None,
             current_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -150,6 +154,30 @@ impl App {
             && !self.screen.accepts_text_input()
         {
             self.open_update_banner();
+            return true;
+        }
+        false
+    }
+
+    /// Returns `true` when the `?` shortcut overlay is open.
+    pub fn is_help_open(&self) -> bool {
+        self.show_help
+    }
+
+    /// Handles the keys of the `?` overlay. `?` opens it on screens without a
+    /// text field (on forms it is typed text). While it is open, `?` and `Esc`
+    /// close it and every other key is swallowed. Returns `true` when the key
+    /// was consumed.
+    pub fn handle_help_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+        if self.show_help {
+            if matches!(code, KeyCode::Char('?') | KeyCode::Esc) {
+                self.show_help = false;
+            }
+            return true;
+        }
+        let plain_or_shift = modifiers == KeyModifiers::NONE || modifiers == KeyModifiers::SHIFT;
+        if code == KeyCode::Char('?') && plain_or_shift && !self.screen.accepts_text_input() {
+            self.show_help = true;
             return true;
         }
         false
@@ -1700,6 +1728,39 @@ mod tests {
             Some(Action::Navigate(Screen::ProjectDashboard { project_id }))
         );
         assert!(repo.get_version(version_id).is_err());
+    }
+
+    #[test]
+    fn question_mark_opens_help_only_outside_text_forms() {
+        let repo = Arc::new(StubRepository::default());
+        let project_id = repo.create_project("P", "").unwrap().id.unwrap();
+        let mut app = App::new(repo);
+
+        assert!(app.handle_help_key(KeyCode::Char('?'), KeyModifiers::SHIFT));
+        assert!(app.is_help_open());
+        // Esc closes it; `?` closes it too.
+        assert!(app.handle_help_key(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.is_help_open());
+        assert!(app.handle_help_key(KeyCode::Char('?'), KeyModifiers::NONE));
+        assert!(app.handle_help_key(KeyCode::Char('?'), KeyModifiers::NONE));
+        assert!(!app.is_help_open());
+
+        app.dispatch(Action::Navigate(Screen::ProjectForm { project_id: None }));
+        assert!(!app.handle_help_key(KeyCode::Char('?'), KeyModifiers::NONE));
+        assert!(!app.is_help_open());
+
+        app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id }));
+        assert!(app.handle_help_key(KeyCode::Char('?'), KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn help_swallows_keys_with_ctrl_modifiers_too() {
+        let repo = Arc::new(StubRepository::default());
+        let mut app = App::new(repo);
+        app.handle_help_key(KeyCode::Char('?'), KeyModifiers::NONE);
+
+        assert!(app.handle_help_key(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(app.is_help_open());
     }
 
     #[test]

@@ -5,6 +5,8 @@ use std::time::Duration;
 use crossterm::event::{Event, KeyEvent};
 use ratatui::{Frame, layout::Rect};
 
+use crate::screens::components::help::{self, HelpSection};
+
 pub const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 pub mod components;
@@ -43,6 +45,12 @@ pub trait Component {
     fn render(&self, frame: &mut Frame, area: Rect);
     fn keybindings(&self) -> &'static [(KeyEvent, &'static str)] {
         &[]
+    }
+    /// Shortcuts grouped for the `?` overlay. By default every shortcut goes
+    /// under the application section; screens override it to place their
+    /// actions in the right section.
+    fn help_sections(&self) -> Vec<HelpSection> {
+        help::sections(self.keybindings(), |_| help::APPLICATION)
     }
     /// Interval at which this component refreshes itself automatically when
     /// idle, or `None` if it never auto-refreshes.

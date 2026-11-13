@@ -6,6 +6,7 @@ pub mod empty_state;
 pub mod fields;
 pub mod form;
 pub mod glyphs;
+pub mod help;
 pub mod keys;
 pub mod list_navigation;
 pub mod popup;

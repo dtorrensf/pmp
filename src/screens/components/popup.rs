@@ -7,7 +7,7 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::Style,
+    style::{Modifier, Style},
     text::Line,
     widgets::{Block, Borders, Clear},
 };
@@ -38,6 +38,18 @@ pub fn centered_rect_percent(percent: u16, area: Rect) -> Rect {
         y: area.y + area.height.saturating_sub(popup_height) / 2,
         width: popup_width,
         height: popup_height,
+    }
+}
+
+/// Adds `Modifier::DIM` to every cell of the frame, so the screen drawn
+/// behind a modal recedes without losing its content.
+pub fn dim_area(frame: &mut Frame) {
+    let area = frame.area();
+    let buffer = frame.buffer_mut();
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            buffer[(x, y)].modifier.insert(Modifier::DIM);
+        }
     }
 }
 

@@ -19,6 +19,7 @@ use crate::domain::version::Version;
 use crate::screens::components::confirm_dialog::{ConfirmDialog, ConfirmState};
 use crate::screens::components::empty_state::EmptyState;
 use crate::screens::components::glyphs;
+use crate::screens::components::help::{self, HelpSection};
 use crate::screens::components::keys::key;
 use crate::screens::components::list_navigation::move_selection;
 use crate::screens::components::progress::{completion_percentage, percent};
@@ -208,6 +209,15 @@ impl Component for ProjectDashboard {
 
     fn refresh(&mut self) -> anyhow::Result<()> {
         self.load()
+    }
+
+    fn help_sections(&self) -> Vec<HelpSection> {
+        help::sections(self.keybindings(), |label| match label {
+            "Down" | "Up" | "Open" | "Scroll description" => help::NAVIGATION,
+            "Edit Project" => help::PROJECTS,
+            "New Version" | "Edit Version" | "Delete" | "Cycle Status" => help::VERSIONS,
+            _ => help::APPLICATION,
+        })
     }
 
     fn keybindings(&self) -> &'static [(KeyEvent, &'static str)] {

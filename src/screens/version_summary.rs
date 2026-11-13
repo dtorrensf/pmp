@@ -20,6 +20,7 @@ use crate::domain::task::{Priority, Status};
 use crate::domain::version::Version;
 use crate::domain::version_summary::VersionSummary;
 use crate::screens::components::glyphs;
+use crate::screens::components::help::{self, HelpSection};
 use crate::screens::components::keys::key;
 use crate::screens::components::progress_bar::ProgressBar;
 use crate::screens::components::scroll::{clamp_text_scroll, wrapped_line_count};
@@ -91,6 +92,13 @@ impl Component for VersionSummaryScreen {
 
     fn refresh(&mut self) -> anyhow::Result<()> {
         self.load()
+    }
+
+    fn help_sections(&self) -> Vec<HelpSection> {
+        help::sections(self.keybindings(), |label| match label {
+            "Down" | "Up" => help::NAVIGATION,
+            _ => help::APPLICATION,
+        })
     }
 
     fn keybindings(&self) -> &'static [(KeyEvent, &'static str)] {
