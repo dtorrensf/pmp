@@ -14,3 +14,4 @@ pub mod progress;
 pub mod progress_bar;
 pub mod scroll;
 pub mod theme;
+pub mod toast;

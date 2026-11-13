@@ -47,6 +47,12 @@ pub struct Glyphs {
     pub selection: &'static str,
     /// Warning marker.
     pub warning: &'static str,
+    /// Marker of an informational message.
+    pub info: &'static str,
+    /// Marker of a successful operation.
+    pub success: &'static str,
+    /// Marker of a failed operation.
+    pub error: &'static str,
     /// Filled cell of a progress bar.
     pub bar_full: &'static str,
     /// Empty cell of a progress bar.
@@ -70,6 +76,9 @@ impl Glyphs {
             version_released: "✔",
             selection: "▸",
             warning: "⚠",
+            info: "»",
+            success: "✓",
+            error: "✗",
             bar_full: "█",
             bar_empty: "░",
             bar_half: "▌",
@@ -90,6 +99,9 @@ impl Glyphs {
             version_released: "x",
             selection: ">",
             warning: "!",
+            info: ">",
+            success: "+",
+            error: "x",
             bar_full: "#",
             bar_empty: ".",
             bar_half: "=",
@@ -98,7 +110,7 @@ impl Glyphs {
 
     /// Every glyph of the set, in a fixed order.
     #[cfg(test)]
-    fn all(&self) -> [&'static str; 14] {
+    fn all(&self) -> [&'static str; 17] {
         [
             self.status_todo,
             self.status_in_progress,
@@ -111,6 +123,9 @@ impl Glyphs {
             self.version_released,
             self.selection,
             self.warning,
+            self.info,
+            self.success,
+            self.error,
             self.bar_full,
             self.bar_empty,
             self.bar_half,

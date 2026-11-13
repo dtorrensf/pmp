@@ -14,7 +14,7 @@ use crossterm::{ExecutableCommand, cursor};
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Modifier;
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
@@ -25,6 +25,7 @@ use crate::screens::Action;
 use crate::screens::components::help;
 use crate::screens::components::popup::{centered_rect, render_popup_scaffold};
 use crate::screens::components::theme;
+use crate::screens::components::toast;
 use crate::screens::keybinding_footer::render_footer;
 use crate::update::update_command;
 
@@ -129,6 +130,7 @@ where
 
     while !stop.load(Ordering::Relaxed) {
         app.poll_update();
+        app.tick();
         terminal.draw(|frame| render_app_frame(app, frame))?;
 
         let event = events.next_event(EVENT_TIMEOUT)?;
@@ -140,6 +142,7 @@ where
                 }
                 if !app.handle_update_key(key.code, key.modifiers)
                     && !app.handle_help_key(key.code, key.modifiers)
+                    && !app.handle_toast_key(key.code)
                 {
                     let mut next = app.active_component().handle_event(&Event::Key(key));
                     while let Some(action) = next {
@@ -188,10 +191,9 @@ fn render_app_frame(app: &mut App, frame: &mut Frame) {
         let sections = app.active_component().help_sections();
         help::render_overlay(frame, area, &sections);
     }
-    if let Some(error) = &app.error {
-        render_error(frame, error, area);
-    } else if let Some(notice) = app.notice() {
-        render_notice(frame, notice, area);
+    if let Some(toast) = app.toasts().current() {
+        let queued = app.toasts().len();
+        toast::render(frame, toast, queued, chunks[0]);
     }
 }
 
@@ -233,30 +235,6 @@ fn render_update_banner(frame: &mut Frame, version: &str, current_version: &str,
         "New version: v{version} (current: v{current_version})\n\nUpdate with:\n{command}\n\nEsc: close"
     );
     frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), inner);
-}
-
-fn render_error(frame: &mut Frame, error: &str, area: Rect) {
-    let error_area = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(3)])
-        .split(area)[1];
-    let paragraph = Paragraph::new(error)
-        .style(theme::theme().danger_style())
-        .block(Block::default().title("Error").borders(Borders::ALL))
-        .wrap(Wrap { trim: true });
-    frame.render_widget(paragraph, error_area);
-}
-
-fn render_notice(frame: &mut Frame, notice: &str, area: Rect) {
-    let notice_area = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(3)])
-        .split(area)[1];
-    let paragraph = Paragraph::new(notice)
-        .style(theme::theme().success_style())
-        .block(Block::default().title("Info").borders(Borders::ALL))
-        .wrap(Wrap { trim: true });
-    frame.render_widget(paragraph, notice_area);
 }
 
 trait EventSource {
@@ -431,6 +409,31 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(app.screen, Screen::ProjectList);
+    }
+
+    #[test]
+    fn error_toast_is_drawn_above_the_footer() {
+        let (_repo, mut app) = setup_app_with_project();
+        app.dispatch(Action::SaveProject {
+            project_id: None,
+            name: "   ".to_string(),
+            description: String::new(),
+        });
+
+        let text = render_app_to_string(&mut app);
+        let lines: Vec<&str> = text.lines().collect();
+        let footer = lines.last().unwrap();
+        let toast_row = lines
+            .iter()
+            .position(|line| line.contains("Project name cannot be empty"))
+            .expect("toast message is drawn");
+
+        assert!(lines[toast_row - 1].contains("Error"), "{text}");
+        assert!(
+            toast_row < lines.len() - 1,
+            "toast must not cover the footer"
+        );
+        assert!(footer.contains("Quit"), "footer stays visible: {footer:?}");
     }
 
     #[test]

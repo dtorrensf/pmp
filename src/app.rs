@@ -2,24 +2,30 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::db::repository::Repository;
 use crate::domain::error::AppError;
+use crate::screens::components::toast::{Severity, Toasts};
 use crate::screens::{
     Action, Component, ProjectDashboard, ProjectForm, ProjectListScreen, Screen, TaskForm,
     VersionDashboard, VersionForm, VersionSummaryScreen,
 };
+
+/// Returns the current time. Boxed so tests can substitute their own clock.
+type Clock = Box<dyn Fn() -> Instant + Send>;
 
 pub struct App {
     pub screen: Screen,
     pub previous_screen: Option<Screen>,
     pub repo: Arc<dyn Repository>,
     pub action: Option<Action>,
-    pub error: Option<String>,
-    /// Non-error notification banner (e.g. export path feedback).
-    notice: Option<String>,
+    /// Feedback messages shown above the footer. See [`Toasts`].
+    toasts: Toasts,
+    /// Source of the current time for toast expiry. Overridable from tests.
+    clock: Clock,
     /// Newer pmp version reported by the background update check, if any.
     update_available: Option<String>,
     /// Whether the update banner is currently open.
@@ -52,8 +58,8 @@ impl App {
             previous_screen: None,
             repo: repo.clone(),
             action: None,
-            error: None,
-            notice: None,
+            toasts: Toasts::default(),
+            clock: Box::new(Instant::now),
             update_available: None,
             show_update: false,
             show_help: false,
@@ -71,7 +77,7 @@ impl App {
             },
         };
         if let Err(e) = app.init_screen(&Screen::ProjectList) {
-            app.error = Some(e.to_string());
+            app.push_error(e.to_string());
         }
         app
     }
@@ -118,9 +124,51 @@ impl App {
         self.update_available.as_deref()
     }
 
-    /// Current non-error notification, if any.
-    pub fn notice(&self) -> Option<&str> {
-        self.notice.as_deref()
+    /// The toast queue, for rendering and inspection.
+    pub fn toasts(&self) -> &Toasts {
+        &self.toasts
+    }
+
+    /// Text of the most recent error still on the queue, if any.
+    pub fn error(&self) -> Option<&str> {
+        self.toasts.error()
+    }
+
+    /// Replaces the clock used for toast expiry. Lets tests advance time
+    /// without sleeping.
+    pub fn set_clock(&mut self, clock: impl Fn() -> Instant + Send + 'static) {
+        self.clock = Box::new(clock);
+    }
+
+    /// Drops the toasts whose time is up. Called once per event-loop tick.
+    pub fn tick(&mut self) {
+        let now = (self.clock)();
+        self.toasts.tick(now);
+    }
+
+    /// Handles `Esc` while an error toast is on screen: closes it and consumes
+    /// the key, so the screen behind does not also go back. Returns `true`
+    /// when the key was consumed.
+    pub fn handle_toast_key(&mut self, code: KeyCode) -> bool {
+        let showing_error = self
+            .toasts
+            .current()
+            .is_some_and(|toast| toast.severity == Severity::Error);
+        if code == KeyCode::Esc && showing_error {
+            self.toasts.dismiss_current();
+            return true;
+        }
+        false
+    }
+
+    fn push_error(&mut self, message: impl Into<String>) {
+        let now = (self.clock)();
+        self.toasts.push(Severity::Error, message, now);
+    }
+
+    fn push_success(&mut self, message: impl Into<String>) {
+        let now = (self.clock)();
+        self.toasts.push(Severity::Success, message, now);
     }
 
     /// Returns the version compiled into the running binary, used in the
@@ -184,6 +232,11 @@ impl App {
     }
 
     pub fn dispatch(&mut self, action: Action) -> Option<Action> {
+        // A real action supersedes the previous failure. Refresh is exempt: it
+        // runs on a timer and must not hide an error the user has not read.
+        if !matches!(action, Action::Refresh | Action::Noop | Action::Quit) {
+            self.toasts.clear_errors();
+        }
         match action {
             Action::Navigate(screen) => {
                 let previous = self.screen.clone();
@@ -200,10 +253,9 @@ impl App {
                         }
                         self.previous_screen = Some(previous);
                         self.screen = screen;
-                        self.error = None;
                     }
                     Err(e) => {
-                        self.error = Some(e.to_string());
+                        self.push_error(e.to_string());
                         self.screen = self.previous_screen.take().unwrap_or(Screen::ProjectList);
                     }
                 }
@@ -215,7 +267,7 @@ impl App {
                 description,
             } => {
                 if name.trim().is_empty() {
-                    self.error = Some("Project name cannot be empty".to_string());
+                    self.push_error("Project name cannot be empty");
                     return None;
                 }
                 let result = match project_id {
@@ -224,7 +276,7 @@ impl App {
                 };
                 match result {
                     Ok(project) => {
-                        self.error = None;
+                        self.push_success("Project saved");
                         Some(Action::Navigate(match project_id {
                             Some(_) => self.components.project_form.return_to().clone(),
                             None => Screen::ProjectDashboard {
@@ -233,7 +285,7 @@ impl App {
                         }))
                     }
                     Err(e) => {
-                        self.error = Some(e.to_string());
+                        self.push_error(e.to_string());
                         None
                     }
                 }
@@ -248,13 +300,13 @@ impl App {
                 depends_on_ids,
             } => {
                 if name.trim().is_empty() {
-                    self.error = Some("Task name cannot be empty".to_string());
+                    self.push_error("Task name cannot be empty");
                     return None;
                 }
                 let project_id = match self.repo.get_version(version_id) {
                     Ok(version) => version.project_id,
                     Err(e) => {
-                        self.error = Some(e.to_string());
+                        self.push_error(e.to_string());
                         return None;
                     }
                 };
@@ -275,16 +327,16 @@ impl App {
                     Ok(task) => {
                         let saved_id = task.id.unwrap_or(0);
                         if let Err(e) = self.sync_dependencies(saved_id, &depends_on_ids) {
-                            self.error = Some(e.to_string());
+                            self.push_error(e.to_string());
                             return None;
                         }
-                        self.error = None;
+                        self.push_success("Task saved");
                         Some(Action::Navigate(
                             self.components.task_form.return_to().clone(),
                         ))
                     }
                     Err(e) => {
-                        self.error = Some(e.to_string());
+                        self.push_error(e.to_string());
                         None
                     }
                 }
@@ -308,13 +360,13 @@ impl App {
                 };
                 match self.repo.update_task_status(task_id, new_status) {
                     Ok(_) => {
-                        self.error = None;
+                        self.push_success(format!("Status set to {}", new_status.label()));
                         // Refresh the source screen so init_screen re-runs its init()
                         // and the cached task list is updated in place.
                         Some(Action::Navigate(refresh))
                     }
                     Err(e) => {
-                        self.error = Some(e.to_string());
+                        self.push_error(e.to_string());
                         None
                     }
                 }
@@ -327,7 +379,7 @@ impl App {
                 status,
             } => {
                 if name.trim().is_empty() {
-                    self.error = Some("Version name cannot be empty".to_string());
+                    self.push_error("Version name cannot be empty");
                     return None;
                 }
                 let result = match version_id {
@@ -343,11 +395,11 @@ impl App {
                 };
                 match result {
                     Ok(_) => {
-                        self.error = None;
+                        self.push_success("Version saved");
                         Some(Action::Navigate(Screen::ProjectDashboard { project_id }))
                     }
                     Err(e) => {
-                        self.error = Some(e.to_string());
+                        self.push_error(e.to_string());
                         None
                     }
                 }
@@ -356,28 +408,28 @@ impl App {
                 let project_id = match self.repo.get_version(version_id) {
                     Ok(version) => version.project_id,
                     Err(e) => {
-                        self.error = Some(e.to_string());
+                        self.push_error(e.to_string());
                         return None;
                     }
                 };
                 match self.repo.delete_version(version_id) {
                     Ok(()) => {
-                        self.error = None;
+                        self.push_success("Version deleted");
                         Some(Action::Navigate(Screen::ProjectDashboard { project_id }))
                     }
                     Err(e) => {
-                        self.error = Some(e.to_string());
+                        self.push_error(e.to_string());
                         None
                     }
                 }
             }
             Action::DeleteProject { project_id } => match self.repo.delete_project(project_id) {
                 Ok(()) => {
-                    self.error = None;
+                    self.push_success("Project deleted");
                     Some(Action::Navigate(Screen::ProjectList))
                 }
                 Err(e) => {
-                    self.error = Some(e.to_string());
+                    self.push_error(e.to_string());
                     None
                 }
             },
@@ -397,12 +449,12 @@ impl App {
                 };
                 match self.repo.move_task(task_id, version_id) {
                     Ok(_) => {
-                        self.error = None;
+                        self.push_success("Task moved");
                         // Re-running init reloads the list without the moved task.
                         Some(Action::Navigate(refresh))
                     }
                     Err(e) => {
-                        self.error = Some(e.to_string());
+                        self.push_error(e.to_string());
                         None
                     }
                 }
@@ -423,35 +475,33 @@ impl App {
                 };
                 match self.repo.delete_task(task_id) {
                     Ok(()) => {
-                        self.error = None;
+                        self.push_success("Task deleted");
                         Some(Action::Navigate(refresh))
                     }
                     Err(e) => {
-                        self.error = Some(e.to_string());
+                        self.push_error(e.to_string());
                         None
                     }
                 }
             }
             Action::Refresh => {
                 if let Err(e) = self.active_component().refresh() {
-                    self.error = Some(e.to_string());
-                } else {
-                    self.error = None;
+                    self.push_error(e.to_string());
                 }
                 None
             }
             Action::AddTaskNote { task_id, content } => {
                 match self.repo.add_task_note(task_id, &content) {
                     Ok(_) => {
-                        self.error = None;
+                        self.push_success("Note added");
                         Some(Action::Refresh)
                     }
                     Err(AppError::Validation(_)) => {
-                        self.error = Some("Note content cannot be empty".to_string());
+                        self.push_error("Note content cannot be empty");
                         None
                     }
                     Err(e) => {
-                        self.error = Some(e.to_string());
+                        self.push_error(e.to_string());
                         None
                     }
                 }
@@ -462,11 +512,10 @@ impl App {
                     summary_id,
                 ) {
                     Ok(path) => {
-                        self.error = None;
-                        self.notice = Some(format!("Exported to {}", path.display()));
+                        self.push_success(format!("Exported to {}", path.display()));
                     }
                     Err(e) => {
-                        self.error = Some(e.to_string());
+                        self.push_error(e.to_string());
                     }
                 }
                 None
@@ -619,7 +668,7 @@ mod tests {
     fn app_starts_at_entry_screen() {
         let (_repo, app) = setup_app();
         assert_eq!(app.screen, Screen::ProjectList);
-        assert!(app.error.is_none());
+        assert!(app.error().is_none());
     }
 
     #[test]
@@ -630,7 +679,7 @@ mod tests {
         app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id }));
         assert_eq!(app.screen, Screen::ProjectDashboard { project_id });
         assert_eq!(app.previous_screen, Some(Screen::ProjectList));
-        assert!(app.error.is_none());
+        assert!(app.error().is_none());
     }
 
     #[test]
@@ -640,7 +689,7 @@ mod tests {
             project_id: 99,
         }));
         assert_eq!(app.screen, Screen::ProjectList);
-        assert!(app.error.is_some());
+        assert!(app.error().is_some());
     }
 
     #[test]
@@ -675,7 +724,7 @@ mod tests {
             description: "".to_string(),
         });
         assert_eq!(next, None);
-        assert_eq!(app.error, Some("Project name cannot be empty".to_string()));
+        assert_eq!(app.error(), Some("Project name cannot be empty"));
         assert_eq!(app.screen, Screen::ProjectList);
     }
 
@@ -720,7 +769,7 @@ mod tests {
             depends_on_ids: vec![],
         });
         assert_eq!(next, None);
-        assert_eq!(app.error, Some("Task name cannot be empty".to_string()));
+        assert_eq!(app.error(), Some("Task name cannot be empty"));
     }
 
     #[test]
@@ -757,8 +806,8 @@ mod tests {
             new_status: Status::Done,
         });
         assert_eq!(
-            app.error,
-            Some("cannot mark task as done: it has incomplete dependencies".to_string())
+            app.error(),
+            Some("cannot mark task as done: it has incomplete dependencies")
         );
 
         // transition was blocked — task stays Todo
@@ -788,7 +837,7 @@ mod tests {
             task_id: a.id.unwrap(),
             new_status: Status::Done,
         });
-        assert!(app.error.is_none());
+        assert!(app.error().is_none());
     }
 
     // SC3: cycling a task's status must refresh the dashboard's cached list.
@@ -843,7 +892,7 @@ mod tests {
         );
         // selection preserved across refresh
         assert_eq!(app.components.version_dashboard.selected_task(), 0);
-        assert!(app.error.is_none());
+        assert!(app.error().is_none());
     }
 
     #[test]
@@ -967,8 +1016,8 @@ mod tests {
         });
 
         assert_eq!(
-            app.error,
-            Some("cannot mark task as done: it has incomplete dependencies".to_string())
+            app.error(),
+            Some("cannot mark task as done: it has incomplete dependencies")
         );
         // transition was blocked — task stays Todo
         let task = repo.get_task(a_id).unwrap();
@@ -1162,7 +1211,7 @@ mod tests {
                 version_id: app.repo.default_version_id(project_id).unwrap()
             }
         );
-        assert!(app.error.is_none());
+        assert!(app.error().is_none());
         assert_eq!(app.components.version_dashboard.tasks().len(), 1);
     }
 
@@ -1197,7 +1246,7 @@ mod tests {
         app.dispatch(Action::Refresh);
 
         assert_eq!(app.components.project_list.projects().len(), 1);
-        assert!(app.error.is_none());
+        assert!(app.error().is_none());
     }
 
     #[test]
@@ -1223,7 +1272,7 @@ mod tests {
         app.dispatch(Action::Refresh);
 
         assert_eq!(app.components.version_dashboard.tasks().len(), 1);
-        assert!(app.error.is_none());
+        assert!(app.error().is_none());
     }
 
     #[test]
@@ -1249,7 +1298,7 @@ mod tests {
         app.dispatch(Action::Refresh);
 
         assert_eq!(app.components.version_dashboard.tasks().len(), 1);
-        assert!(app.error.is_none());
+        assert!(app.error().is_none());
     }
 
     #[test]
@@ -1280,7 +1329,7 @@ mod tests {
         });
 
         assert_eq!(next, Some(Action::Refresh));
-        assert!(app.error.is_none());
+        assert!(app.error().is_none());
         assert_eq!(repo.list_task_notes(task_id).unwrap().len(), 1);
         assert_eq!(app.components.task_form.return_to(), &expected_return_to);
     }
@@ -1308,7 +1357,7 @@ mod tests {
         });
 
         assert_eq!(next, None);
-        assert_eq!(app.error, Some("Note content cannot be empty".to_string()));
+        assert_eq!(app.error(), Some("Note content cannot be empty"));
     }
 
     #[test]
@@ -1566,7 +1615,7 @@ mod tests {
             status: VersionStatus::Open,
         });
         assert!(next.is_none());
-        assert!(app.error.is_some());
+        assert!(app.error().is_some());
         assert_eq!(repo.list_versions_by_project(project_id).unwrap().len(), 1);
     }
 
@@ -1678,7 +1727,7 @@ mod tests {
             description: "new".to_string(),
             status: VersionStatus::Released,
         });
-        assert!(app.error.is_none());
+        assert!(app.error().is_none());
         assert_eq!(
             next,
             Some(Action::Navigate(Screen::ProjectDashboard { project_id }))
@@ -1708,7 +1757,7 @@ mod tests {
             status: VersionStatus::Open,
         });
         assert_eq!(next, None);
-        assert!(app.error.is_some());
+        assert!(app.error().is_some());
         assert_eq!(repo.get_version(version_id).unwrap().name, "v1.0.0");
     }
 
@@ -1805,7 +1854,7 @@ mod tests {
             }))
         );
         assert_eq!(repo.get_task(task.id.unwrap()).unwrap().version_id, v2);
-        assert!(app.error.is_none());
+        assert!(app.error().is_none());
     }
 
     #[test]
@@ -1834,12 +1883,7 @@ mod tests {
             version_id: v2,
         });
         assert_eq!(next, None);
-        assert!(
-            app.error
-                .as_deref()
-                .unwrap()
-                .contains("dependencies or dependents")
-        );
+        assert!(app.error().unwrap().contains("dependencies or dependents"));
         assert_eq!(repo.get_task(b).unwrap().version_id, v1);
     }
 
@@ -1882,7 +1926,8 @@ mod tests {
         let next = app.dispatch(Action::ExportVersionSummary { summary_id });
         assert_eq!(next, None);
 
-        let notice = app.notice().unwrap().to_string();
+        let notice = app.toasts().current().unwrap().message.clone();
+        assert_eq!(app.toasts().current().unwrap().severity, Severity::Success);
         assert!(notice.starts_with("Exported to "));
         let path = notice.trim_start_matches("Exported to ");
         assert!(std::path::Path::new(path).exists());
@@ -1920,5 +1965,148 @@ mod tests {
                 version_id: v,
             }))
         );
+    }
+
+    /// Replaces the app clock with one the test moves by hand.
+    fn manual_clock(app: &mut App) -> Arc<std::sync::atomic::AtomicU64> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let base = Instant::now();
+        let millis = Arc::new(AtomicU64::new(0));
+        let handle = millis.clone();
+        app.set_clock(move || {
+            base + std::time::Duration::from_millis(handle.load(Ordering::SeqCst))
+        });
+        millis
+    }
+
+    fn set_millis(millis: &Arc<std::sync::atomic::AtomicU64>, value: u64) {
+        millis.store(value, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn blank_project_save() -> Action {
+        Action::SaveProject {
+            project_id: None,
+            name: "   ".to_string(),
+            description: String::new(),
+        }
+    }
+
+    #[test]
+    fn success_toast_expires_after_three_seconds() {
+        let (_repo, mut app) = setup_app();
+        let clock = manual_clock(&mut app);
+        app.dispatch(Action::SaveProject {
+            project_id: None,
+            name: "Beta".to_string(),
+            description: String::new(),
+        });
+        let shown = app.toasts().current().unwrap();
+        assert_eq!(shown.severity, Severity::Success);
+        assert_eq!(shown.message, "Project saved");
+
+        set_millis(&clock, 2_999);
+        app.tick();
+        assert!(app.toasts().current().is_some());
+
+        set_millis(&clock, 3_000);
+        app.tick();
+        assert!(app.toasts().current().is_none());
+    }
+
+    #[test]
+    fn error_toast_stays_until_the_next_action() {
+        let (_repo, mut app) = setup_app();
+        let clock = manual_clock(&mut app);
+        app.dispatch(blank_project_save());
+
+        set_millis(&clock, 60_000);
+        app.tick();
+        assert_eq!(app.error(), Some("Project name cannot be empty"));
+
+        app.dispatch(Action::Navigate(Screen::ProjectList));
+        assert_eq!(app.error(), None);
+    }
+
+    #[test]
+    fn auto_refresh_does_not_hide_an_unread_error() {
+        let (_repo, mut app) = setup_app();
+        app.dispatch(blank_project_save());
+
+        app.dispatch(Action::Refresh);
+
+        assert_eq!(app.error(), Some("Project name cannot be empty"));
+    }
+
+    #[test]
+    fn esc_closes_an_error_toast_and_consumes_the_key() {
+        let (_repo, mut app) = setup_app();
+        app.dispatch(blank_project_save());
+
+        assert!(app.handle_toast_key(KeyCode::Esc));
+        assert_eq!(app.error(), None);
+        assert!(!app.handle_toast_key(KeyCode::Esc));
+    }
+
+    #[test]
+    fn esc_passes_through_when_the_toast_is_not_an_error() {
+        let (_repo, mut app) = setup_app();
+        app.dispatch(Action::SaveProject {
+            project_id: None,
+            name: "Beta".to_string(),
+            description: String::new(),
+        });
+
+        assert!(!app.handle_toast_key(KeyCode::Esc));
+        assert!(app.toasts().current().is_some());
+    }
+
+    #[test]
+    fn successful_actions_emit_a_confirmation() {
+        let (repo, mut app) = setup_app();
+        let project_id = repo.create_project("P", "").unwrap().id.unwrap();
+        let version_id = repo
+            .create_version(project_id, "v1", "")
+            .unwrap()
+            .id
+            .unwrap();
+        let task = repo
+            .create_task(
+                project_id,
+                version_id,
+                "T",
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
+            .unwrap();
+
+        app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id }));
+        app.dispatch(Action::UpdateTaskStatus {
+            task_id: task.id.unwrap(),
+            new_status: Status::Done,
+        });
+        assert_eq!(
+            app.toasts().current().unwrap().message,
+            format!("Status set to {}", Status::Done.label())
+        );
+        app.dispatch(Action::DeleteTask {
+            task_id: task.id.unwrap(),
+        });
+        // Queued behind the earlier confirmation: the queue is first-in, first-out.
+        let last = app.toasts().iter().last().unwrap();
+        assert_eq!(last.message, "Task deleted");
+    }
+
+    #[test]
+    fn repeated_failures_do_not_pile_up() {
+        let (_repo, mut app) = setup_app();
+        for _ in 0..10 {
+            app.dispatch(Action::Refresh);
+            app.dispatch(Action::Noop);
+        }
+        app.dispatch(blank_project_save());
+        app.dispatch(Action::Noop);
+        app.dispatch(blank_project_save());
+        assert_eq!(app.toasts().len(), 1);
     }
 }
