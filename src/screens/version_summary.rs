@@ -24,7 +24,7 @@ use crate::screens::components::help::{self, HelpSection};
 use crate::screens::components::keys::key;
 use crate::screens::components::progress_bar::ProgressBar;
 use crate::screens::components::scroll::{clamp_text_scroll, wrapped_line_count};
-use crate::screens::components::stacked_bar::{legend, stacked_bar};
+use crate::screens::components::stacked_bar::status_rows;
 use crate::screens::components::theme::{self, priority_style};
 use crate::screens::{Action, Component, Screen};
 
@@ -178,12 +178,9 @@ fn render_chart(snapshot: &CompactSnapshot) -> Vec<Line<'static>> {
     let counts = [Status::Todo, Status::InProgress, Status::Done]
         .map(|status| count_status(snapshot, status));
 
-    // The status bar and the priority rows share one scale: a full bar is
-    // every task of the version, the same as the dashboard's status bar.
-    let mut lines = vec![
-        stacked_bar(counts.map(|c| c as u64), CHART_BAR_WIDTH),
-        legend(counts.map(|c| c as u64)),
-    ];
+    // Status rows and priority rows share one scale: a full bar is every
+    // task of the version, the same as the dashboard's status rows.
+    let mut lines = status_rows(counts.map(|c| c as u64), CHART_BAR_WIDTH);
     let priority_line = |label: &str, count: usize, priority: Priority| {
         chart_line(
             &format!("{label:<8}"),
@@ -286,7 +283,7 @@ mod tests {
             screen.summary.as_ref().unwrap().summary,
             "Release summary prose"
         );
-        assert_eq!(screen.chart.len(), 5);
+        assert_eq!(screen.chart.len(), 6);
     }
 
     #[test]

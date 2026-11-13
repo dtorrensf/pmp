@@ -10,6 +10,8 @@ use ratatui::text::{Line, Span};
 
 use crate::domain::task::{Status, Task};
 use crate::screens::components::glyphs;
+use crate::screens::components::progress::percent;
+use crate::screens::components::progress_bar::ProgressBar;
 use crate::screens::components::theme::{self, status_style};
 
 /// The statuses in the order they are drawn, left to right.
@@ -72,25 +74,48 @@ pub fn stacked_bar_spans(counts: [u64; 3], width: usize) -> Vec<Span<'static>> {
         .collect()
 }
 
-/// The stacked bar as a single line.
-pub fn stacked_bar(counts: [u64; 3], width: usize) -> Line<'static> {
-    Line::from(stacked_bar_spans(counts, width))
+/// One row per status: label, a bar of its share of all tasks, the count and
+/// the percentage, e.g. `Todo         ███████░░░░░   3  ( 50%)`. Every row uses the
+/// same scale (the total of tasks), so the rows compare at a glance.
+/// `bar_width` is the width of the bar in cells, without the label and the
+/// count; see `STATUS_ROW_OVERHEAD`.
+pub fn status_rows(counts: [u64; 3], bar_width: usize) -> Vec<Line<'static>> {
+    let total: u64 = counts.iter().sum();
+    let muted = theme::theme().muted_style();
+    STATUS_ORDER
+        .iter()
+        .zip(counts)
+        .map(|(status, count)| {
+            let ratio = if total == 0 {
+                0.0
+            } else {
+                count as f64 / total as f64
+            };
+            let bar = ProgressBar::new(ratio, bar_width)
+                .with_filled_style(status_style(*status))
+                .with_empty_style(muted);
+            let mut spans = vec![Span::raw(format!(
+                "{:<width$}",
+                status_label(*status),
+                width = STATUS_LABEL_WIDTH
+            ))];
+            spans.extend(bar.line().spans);
+            spans.push(Span::raw(format!(
+                "  {count:>3}  ({:>3}%)",
+                percent(count, total)
+            )));
+            Line::from(spans)
+        })
+        .collect()
 }
 
-/// Legend under the bar: one coloured square and count per status, e.g.
-/// `█ Todo 3   █ In Progress 1   █ Done 2`.
-pub fn legend(counts: [u64; 3]) -> Line<'static> {
-    let glyphs = glyphs::glyphs();
-    let mut spans = Vec::new();
-    for (i, (status, count)) in STATUS_ORDER.iter().zip(counts).enumerate() {
-        if i > 0 {
-            spans.push(Span::raw("   "));
-        }
-        spans.push(Span::styled(glyphs.bar_full, status_style(*status)));
-        spans.push(Span::raw(format!(" {} {count}", status_label(*status))));
-    }
-    Line::from(spans)
-}
+/// Columns used by a status row besides its bar: the label and the count with
+/// the percentage.
+pub const STATUS_ROW_OVERHEAD: usize = STATUS_LABEL_WIDTH + STATUS_SUFFIX_WIDTH;
+
+const STATUS_LABEL_WIDTH: usize = 12;
+/// `"  {count:>3}  ({pct:>3}%)"`: the count and the percentage after the bar.
+const STATUS_SUFFIX_WIDTH: usize = 13;
 
 fn status_label(status: Status) -> &'static str {
     match status {
@@ -139,9 +164,22 @@ mod tests {
     }
 
     #[test]
-    fn legend_names_every_status_with_its_count() {
-        let line = legend([3, 1, 2]);
-        let plain: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(plain, "█ Todo 3   █ In Progress 1   █ Done 2");
+    fn status_rows_have_label_bar_count_and_percentage() {
+        let rows = status_rows([3, 1, 2], 10);
+        let plain: Vec<String> = rows
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(plain[0], "Todo        █████░░░░░    3  ( 50%)");
+        assert_eq!(plain[1], "In Progress █▌░░░░░░░░    1  ( 17%)");
+        assert_eq!(plain[2], "Done        ███▌░░░░░░    2  ( 33%)");
+    }
+
+    #[test]
+    fn status_rows_without_tasks_are_empty() {
+        let rows = status_rows([0, 0, 0], 4);
+        assert_eq!(rows.len(), 3);
+        let first: String = rows[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(first, "Todo        ░░░░    0  (  0%)");
     }
 }

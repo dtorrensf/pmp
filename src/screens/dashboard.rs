@@ -27,7 +27,7 @@ use crate::screens::components::scroll::{
     ListScroll, TextScroll, list_rows, render_list_scrollbar, wrapped_line_count,
 };
 use crate::screens::components::stacked_bar::{
-    legend, stacked_bar, stacked_bar_spans, status_counts,
+    STATUS_ROW_OVERHEAD, stacked_bar_spans, status_counts, status_rows,
 };
 use crate::screens::components::theme::{status_style, version_status_style};
 use crate::screens::{AUTO_REFRESH_INTERVAL, Action, Component, Screen};
@@ -327,7 +327,7 @@ impl Component for ProjectDashboard {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(3),
-                Constraint::Length(4),
+                Constraint::Length(5),
                 Constraint::Length(3),
                 Constraint::Min(0),
             ])
@@ -349,13 +349,13 @@ impl Component for ProjectDashboard {
         let status_block = Block::default().title("Status").borders(Borders::ALL);
         let status_inner = status_block.inner(chunks[1]);
         frame.render_widget(status_block, chunks[1]);
-        // The bar spans the full width; the legend under it names each
-        // segment with its count, so no label is ever cut off.
-        let status_lines = vec![
-            stacked_bar(counts, status_inner.width as usize),
-            legend(counts),
-        ];
-        frame.render_widget(Paragraph::new(Text::from(status_lines)), status_inner);
+        // One row per status; the bar takes the width left by the label and
+        // the count, so narrow terminals shorten the bar, never the text.
+        let bar_width = (status_inner.width as usize).saturating_sub(STATUS_ROW_OVERHEAD);
+        frame.render_widget(
+            Paragraph::new(Text::from(status_rows(counts, bar_width))),
+            status_inner,
+        );
 
         let total = self.all_tasks.len() as u64;
         let done = counts[2];
@@ -612,13 +612,21 @@ mod tests {
     }
 
     #[test]
-    fn status_bar_has_a_legend_with_counts() {
+    fn status_rows_show_each_status_with_count_and_share() {
         let (_repo, dashboard, _id) = setup_with_tasks();
         let text = render_text(&dashboard);
-        assert!(text.contains("Todo 3"), "{text}");
-        assert!(text.contains("In Progress 1"), "{text}");
-        assert!(text.contains("Done 2"), "{text}");
-        assert!(!text.contains("In Progres "), "{text}");
+        assert!(
+            text.contains("Todo") && text.contains("  3  ( 50%)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("In Progress") && text.contains("  1  ( 17%)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Done") && text.contains("  2  ( 33%)"),
+            "{text}"
+        );
     }
 
     #[test]
