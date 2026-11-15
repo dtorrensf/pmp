@@ -43,6 +43,54 @@ pub struct MoveTaskState {
     pub selected: usize,
 }
 
+/// Order of the visible task list. `Priority` keeps the order given by the
+/// repository; the ID modes sort in memory by the numeric task id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SortMode {
+    #[default]
+    Priority,
+    IdAsc,
+    IdDesc,
+}
+
+impl SortMode {
+    /// The next mode in the cycle Priority -> IdAsc -> IdDesc -> Priority.
+    pub fn next(self) -> Self {
+        match self {
+            SortMode::Priority => SortMode::IdAsc,
+            SortMode::IdAsc => SortMode::IdDesc,
+            SortMode::IdDesc => SortMode::Priority,
+        }
+    }
+
+    /// Direction arrow shown in the table title, `None` for the default order.
+    pub fn arrow(self) -> Option<&'static str> {
+        let glyphs = glyphs::glyphs();
+        match self {
+            SortMode::Priority => None,
+            SortMode::IdAsc => Some(glyphs.sort_asc),
+            SortMode::IdDesc => Some(glyphs.sort_desc),
+        }
+    }
+}
+
+/// Sorts `tasks` by id for the ID modes. Tasks without an id go last in both
+/// directions so the order is total. The priority mode leaves the list as is.
+fn sort_by_id(tasks: &mut [Task], mode: SortMode) {
+    let descending = match mode {
+        SortMode::Priority => return,
+        SortMode::IdAsc => false,
+        SortMode::IdDesc => true,
+    };
+    tasks.sort_by(|a, b| match (a.id, b.id) {
+        (None, None) => std::cmp::Ordering::Equal,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (Some(x), Some(y)) if descending => y.cmp(&x),
+        (Some(x), Some(y)) => x.cmp(&y),
+    });
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterField {
     Title,
@@ -71,6 +119,7 @@ pub struct FilterState {
 /// - `Tab`: cycle the selected task's status
 /// - `d`: delete the selected task (with confirmation)
 /// - `f`: filter the list
+/// - `o`: cycle the sort order (priority, then id ascending and descending)
 ///
 /// The move popup is opened by the embedding screen through
 /// [`TaskListView::open_move`] because only the screen knows the other
@@ -83,6 +132,7 @@ pub struct TaskListView {
     filter_status: Option<Status>,
     filter_priority: Option<Priority>,
     filter_title: Option<String>,
+    sort_mode: SortMode,
     mode: TaskListMode,
     /// Dependency summary of each task, keyed by task id.
     dependency_summaries: HashMap<i64, DependencySummary>,
@@ -98,6 +148,7 @@ impl TaskListView {
             filter_status: None,
             filter_priority: None,
             filter_title: None,
+            sort_mode: SortMode::default(),
             mode: TaskListMode::Browsing,
             dependency_summaries: HashMap::new(),
         }
@@ -133,6 +184,10 @@ impl TaskListView {
 
     pub fn filter_title(&self) -> Option<&str> {
         self.filter_title.as_deref()
+    }
+
+    pub fn sort_mode(&self) -> SortMode {
+        self.sort_mode
     }
 
     pub fn mode(&self) -> &TaskListMode {
@@ -174,7 +229,7 @@ impl TaskListView {
     }
 
     fn apply_filter(&mut self) {
-        self.tasks = self
+        let mut tasks: Vec<Task> = self
             .all_tasks
             .iter()
             .filter(|task| {
@@ -190,6 +245,8 @@ impl TaskListView {
             })
             .cloned()
             .collect();
+        sort_by_id(&mut tasks, self.sort_mode);
+        self.tasks = tasks;
         self.selected = self.selected.min(self.tasks.len().saturating_sub(1));
     }
 
@@ -210,12 +267,28 @@ impl TaskListView {
         }
     }
 
+    /// Advances the sort mode and keeps the same task selected, found by id.
+    fn cycle_sort(&mut self) {
+        let selected_id = self.tasks.get(self.selected).and_then(|task| task.id);
+        self.sort_mode = self.sort_mode.next();
+        self.apply_filter();
+        if let Some(index) =
+            selected_id.and_then(|id| self.tasks.iter().position(|task| task.id == Some(id)))
+        {
+            self.selected = index;
+        }
+    }
+
     /// Keys while browsing the table: move the selection, open, change status,
-    /// delete, or start filtering.
+    /// delete, filter, or change the sort order.
     fn handle_browsing_key(&mut self, code: KeyCode, repo: &dyn Repository) -> Option<Action> {
         match code {
             KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j') => {
                 move_selection(&mut self.selected, self.tasks.len(), code);
+                None
+            }
+            KeyCode::Char('o') => {
+                self.cycle_sort();
                 None
             }
             KeyCode::Enter => self.tasks.get(self.selected).map(|task| {
@@ -442,11 +515,14 @@ impl TaskListView {
             Constraint::Percentage(26),
             Constraint::Percentage(26),
         ];
-        let title = task_list_title(
+        let mut title = task_list_title(
             self.filter_title.as_deref(),
             self.filter_status,
             self.filter_priority,
         );
+        if let Some(arrow) = self.sort_mode.arrow() {
+            title = format!("{title} · ID {arrow}");
+        }
         let block = Block::default().title(title).borders(Borders::ALL);
         // Width of the name column, so long names can be cut to fit it.
         let name_width = Layout::horizontal(widths)
@@ -1062,5 +1138,176 @@ mod tests {
         assert_eq!(view.tasks().len(), 3);
         assert!(view.tasks().iter().all(|t| t.status == Status::Todo));
         assert!(view.selected() < view.tasks().len());
+    }
+
+    fn task_with_id(id: Option<i64>, name: &str, status: Status, priority: Priority) -> Task {
+        Task {
+            id,
+            priority,
+            ..task(name, status)
+        }
+    }
+
+    fn ids(view: &TaskListView) -> Vec<Option<i64>> {
+        view.tasks().iter().map(|task| task.id).collect()
+    }
+
+    /// Five tasks in repository order (priority, as the repo returns them),
+    /// one of them without id.
+    fn sortable_view() -> TaskListView {
+        let mut view = TaskListView::new();
+        view.set_tasks(vec![
+            task_with_id(Some(12), "Twelve", Status::Done, Priority::High),
+            task_with_id(None, "Unsaved", Status::Todo, Priority::High),
+            task_with_id(Some(3), "Three", Status::Todo, Priority::Low),
+            task_with_id(Some(7), "Seven", Status::InProgress, Priority::Medium),
+            task_with_id(Some(5), "Five", Status::Todo, Priority::Low),
+        ]);
+        view
+    }
+
+    #[test]
+    fn sort_mode_cycles_priority_then_id_asc_then_id_desc() {
+        let repo = StubRepository::default();
+        let mut view = TaskListView::new();
+        assert_eq!(view.sort_mode(), SortMode::Priority);
+
+        view.handle_key(KeyCode::Char('o'), &repo);
+        assert_eq!(view.sort_mode(), SortMode::IdAsc);
+        view.handle_key(KeyCode::Char('o'), &repo);
+        assert_eq!(view.sort_mode(), SortMode::IdDesc);
+        view.handle_key(KeyCode::Char('o'), &repo);
+        assert_eq!(view.sort_mode(), SortMode::Priority);
+    }
+
+    #[test]
+    fn default_priority_mode_keeps_repository_order() {
+        let view = sortable_view();
+        assert_eq!(ids(&view), vec![Some(12), None, Some(3), Some(7), Some(5)]);
+    }
+
+    #[test]
+    fn id_asc_orders_by_id_and_puts_tasks_without_id_last() {
+        let repo = StubRepository::default();
+        let mut view = sortable_view();
+        view.handle_key(KeyCode::Char('o'), &repo);
+
+        assert_eq!(ids(&view), vec![Some(3), Some(5), Some(7), Some(12), None]);
+    }
+
+    #[test]
+    fn id_desc_orders_by_id_descending_and_still_puts_missing_ids_last() {
+        let repo = StubRepository::default();
+        let mut view = sortable_view();
+        view.handle_key(KeyCode::Char('o'), &repo);
+        view.handle_key(KeyCode::Char('o'), &repo);
+
+        assert_eq!(ids(&view), vec![Some(12), Some(7), Some(5), Some(3), None]);
+    }
+
+    #[test]
+    fn id_sort_does_not_move_done_tasks_to_the_end() {
+        let repo = StubRepository::default();
+        let mut view = sortable_view();
+        view.handle_key(KeyCode::Char('o'), &repo);
+
+        // Twelve is Done but keeps its place by id, not at the bottom.
+        assert_eq!(view.tasks()[3].name, "Twelve");
+    }
+
+    #[test]
+    fn id_sort_combines_with_status_filter() {
+        let repo = StubRepository::default();
+        let mut view = sortable_view();
+        view.handle_key(KeyCode::Char('o'), &repo);
+
+        view.handle_key(KeyCode::Char('f'), &repo);
+        view.handle_key(KeyCode::Right, &repo); // status -> Todo
+        view.handle_key(KeyCode::Enter, &repo);
+
+        assert_eq!(ids(&view), vec![Some(3), Some(5), None]);
+    }
+
+    #[test]
+    fn id_sort_combines_with_title_filter() {
+        let repo = StubRepository::default();
+        let mut view = sortable_view();
+        view.handle_key(KeyCode::Char('o'), &repo);
+        view.handle_key(KeyCode::Char('o'), &repo);
+
+        view.handle_key(KeyCode::Char('f'), &repo);
+        view.handle_key(KeyCode::Tab, &repo);
+        view.handle_key(KeyCode::Tab, &repo);
+        for character in "e".chars() {
+            view.handle_key(KeyCode::Char(character), &repo);
+        }
+        view.handle_key(KeyCode::Enter, &repo);
+
+        // Every name contains "e"; the list is still ordered by id descending.
+        assert_eq!(ids(&view), vec![Some(12), Some(7), Some(5), Some(3), None]);
+        view.handle_key(KeyCode::Char('o'), &repo); // back to priority order
+        assert_eq!(ids(&view), vec![Some(12), None, Some(3), Some(7), Some(5)]);
+    }
+
+    #[test]
+    fn cycling_sort_keeps_the_same_task_selected() {
+        let repo = StubRepository::default();
+        let mut view = sortable_view();
+        // Select "Seven", which is at index 3 in priority order.
+        view.set_selected(3);
+        assert_eq!(view.tasks()[view.selected()].id, Some(7));
+
+        view.handle_key(KeyCode::Char('o'), &repo); // IdAsc: Seven is at index 2
+        assert_eq!(view.tasks()[view.selected()].id, Some(7));
+        assert_eq!(view.selected(), 2);
+
+        view.handle_key(KeyCode::Char('o'), &repo); // IdDesc: Seven is at index 1
+        assert_eq!(view.tasks()[view.selected()].id, Some(7));
+        assert_eq!(view.selected(), 1);
+    }
+
+    #[test]
+    fn sort_key_is_ignored_while_filter_popup_is_open() {
+        let repo = StubRepository::default();
+        let mut view = sortable_view();
+        view.handle_key(KeyCode::Char('f'), &repo);
+        view.handle_key(KeyCode::Tab, &repo);
+        view.handle_key(KeyCode::Tab, &repo);
+
+        view.handle_key(KeyCode::Char('o'), &repo);
+
+        assert_eq!(view.sort_mode(), SortMode::Priority);
+        match view.mode() {
+            TaskListMode::Filtering(state) => assert_eq!(state.filter_title, "o"),
+            other => panic!("expected filter popup, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sort_mode_survives_data_reload() {
+        let repo = StubRepository::default();
+        let mut view = sortable_view();
+        view.handle_key(KeyCode::Char('o'), &repo);
+
+        view.set_tasks(vec![
+            task_with_id(Some(9), "Nine", Status::Todo, Priority::Low),
+            task_with_id(Some(1), "One", Status::Todo, Priority::Low),
+        ]);
+
+        assert_eq!(view.sort_mode(), SortMode::IdAsc);
+        assert_eq!(ids(&view), vec![Some(1), Some(9)]);
+    }
+
+    #[test]
+    fn table_title_shows_the_active_id_direction() {
+        let repo = StubRepository::default();
+        let mut view = sortable_view();
+        assert!(!render_view(&view, 60, 10).contains("ID ↑"));
+
+        view.handle_key(KeyCode::Char('o'), &repo);
+        assert!(render_view(&view, 60, 10).contains("Tasks · ID ↑"));
+
+        view.handle_key(KeyCode::Char('o'), &repo);
+        assert!(render_view(&view, 60, 10).contains("Tasks · ID ↓"));
     }
 }

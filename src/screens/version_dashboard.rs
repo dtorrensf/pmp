@@ -43,6 +43,7 @@ impl VersionDashboard {
         (key(KeyCode::Char('d')), "Delete"),
         (key(KeyCode::Char('r')), "Refresh"),
         (key(KeyCode::Char('f')), "Filter"),
+        (key(KeyCode::Char('o')), "Sort"),
         (key(KeyCode::Char('m')), "Move"),
         (key(KeyCode::Char('s')), "Summary"),
         (key(KeyCode::Char('e')), "Export"),
@@ -164,7 +165,7 @@ impl Component for VersionDashboard {
     fn help_sections(&self) -> Vec<HelpSection> {
         help::sections(self.keybindings(), |label| match label {
             "Down" | "Up" => help::NAVIGATION,
-            "New" | "Edit" | "Cycle" | "Delete" | "Filter" | "Move" => help::TASKS,
+            "New" | "Edit" | "Cycle" | "Delete" | "Filter" | "Sort" | "Move" => help::TASKS,
             "Summary" | "Export" => help::VERSIONS,
             _ => help::APPLICATION,
         })
@@ -363,6 +364,7 @@ mod tests {
                 (KeyCode::Char('d'), "Delete"),
                 (KeyCode::Char('r'), "Refresh"),
                 (KeyCode::Char('f'), "Filter"),
+                (KeyCode::Char('o'), "Sort"),
                 (KeyCode::Char('m'), "Move"),
                 (KeyCode::Char('s'), "Summary"),
                 (KeyCode::Char('e'), "Export"),

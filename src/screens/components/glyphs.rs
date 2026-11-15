@@ -61,6 +61,10 @@ pub struct Glyphs {
     pub bar_empty: &'static str,
     /// Half-filled cell of a progress bar.
     pub bar_half: &'static str,
+    /// Ascending sort direction, shown next to the ID sort.
+    pub sort_asc: &'static str,
+    /// Descending sort direction, shown next to the ID sort.
+    pub sort_desc: &'static str,
 }
 
 impl Glyphs {
@@ -85,6 +89,8 @@ impl Glyphs {
             bar_full: "█",
             bar_empty: "░",
             bar_half: "▌",
+            sort_asc: "↑",
+            sort_desc: "↓",
         }
     }
 
@@ -109,12 +115,14 @@ impl Glyphs {
             bar_full: "#",
             bar_empty: ".",
             bar_half: "=",
+            sort_asc: "^",
+            sort_desc: "v",
         }
     }
 
     /// Every glyph of the set, in a fixed order.
     #[cfg(test)]
-    fn all(&self) -> [&'static str; 18] {
+    fn all(&self) -> [&'static str; 20] {
         [
             self.status_todo,
             self.status_in_progress,
@@ -134,6 +142,8 @@ impl Glyphs {
             self.bar_full,
             self.bar_empty,
             self.bar_half,
+            self.sort_asc,
+            self.sort_desc,
         ]
     }
 
