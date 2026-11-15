@@ -9,6 +9,8 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
     Frame,
     layout::Rect,
+    style::{Modifier, Style},
+    text::{Line, Span},
     widgets::{Block, Borders},
 };
 
@@ -18,6 +20,7 @@ use crate::domain::version::{Version, VersionStatus};
 use crate::domain::version_summary::VersionSummary;
 use crate::screens::components::help::{self, HelpSection};
 use crate::screens::components::keys::key;
+use crate::screens::components::theme;
 use crate::screens::task_list_view::{DependencySummary, TaskListView};
 pub use crate::screens::task_list_view::{FilterField, FilterState, TaskListMode};
 use crate::screens::{AUTO_REFRESH_INTERVAL, Action, Component, Screen};
@@ -234,33 +237,53 @@ impl Component for VersionDashboard {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect) {
-        let title = match (&self.project_name, &self.version) {
-            (Some(project), Some(v))
-                if v.status == VersionStatus::Released || !self.summaries.is_empty() =>
-            {
-                format!(
-                    "{project} · {} · {} · {} summaries",
-                    v.name,
-                    v.status.label(),
-                    self.summaries.len()
-                )
-            }
-            (Some(project), Some(v)) => format!("{project} · {} · {}", v.name, v.status.label()),
-            (_, Some(v)) if v.status == VersionStatus::Released || !self.summaries.is_empty() => {
-                format!(
-                    "{} · {} · {} summaries",
-                    v.name,
-                    v.status.label(),
-                    self.summaries.len()
-                )
-            }
-            (_, Some(v)) => format!("{} · {}", v.name, v.status.label()),
-            _ => "Version".to_string(),
-        };
-        let block = Block::default().title(title).borders(Borders::ALL);
+        let block = Block::default()
+            .title(self.breadcrumb())
+            .title_bottom(self.view.table_title())
+            .borders(Borders::ALL);
         let inner = block.inner(area);
         frame.render_widget(block, area);
         self.view.render(frame, inner);
+    }
+}
+
+impl VersionDashboard {
+    /// `Project › Version › Status`, plus a badge with the summary count when
+    /// the version is released or already has summaries.
+    fn breadcrumb(&self) -> Line<'static> {
+        let Some(version) = &self.version else {
+            return Line::from("Version");
+        };
+        let theme = theme::theme();
+        let separator = Span::styled(" › ", theme.muted_style());
+        let mut spans = Vec::new();
+        if let Some(project) = &self.project_name {
+            spans.push(Span::styled(
+                project.clone(),
+                Style::default().add_modifier(Modifier::BOLD),
+            ));
+            spans.push(separator.clone());
+        }
+        spans.push(Span::styled(version.name.clone(), theme.text_style()));
+        spans.push(separator);
+        spans.push(Span::styled(
+            version.status.label(),
+            theme.version_status_style(version.status),
+        ));
+        if version.status == VersionStatus::Released || !self.summaries.is_empty() {
+            let count = self.summaries.len();
+            let label = if count == 1 {
+                "1 summary".to_string()
+            } else {
+                format!("{count} summaries")
+            };
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                format!(" {label} "),
+                theme.accent_style().add_modifier(Modifier::REVERSED),
+            ));
+        }
+        Line::from(spans)
     }
 }
 
@@ -433,7 +456,7 @@ mod tests {
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let text = buffer_to_string(&buffer);
-        assert!(text.contains("Alpha · v0 · Open"));
+        assert!(text.contains("Alpha › v0 › Open"));
     }
 
     #[test]
@@ -613,7 +636,8 @@ mod tests {
             .draw(|frame| screen.render(frame, frame.area()))
             .unwrap();
         let text = buffer_to_string(terminal.backend().buffer());
-        assert!(text.contains("Released · 1 summaries"));
+        assert!(text.contains("Released"));
+        assert!(text.contains("1 summary"));
     }
 
     #[test]
@@ -633,7 +657,8 @@ mod tests {
             .draw(|frame| screen.render(frame, frame.area()))
             .unwrap();
         let text = buffer_to_string(terminal.backend().buffer());
-        assert!(text.contains("Alpha · v0 · Open · 1 summaries"), "{text}");
+        assert!(text.contains("Alpha › v0 › Open"), "{text}");
+        assert!(text.contains("1 summary"), "{text}");
         assert_eq!(
             repo.get_version(version_id).unwrap().status,
             VersionStatus::Open

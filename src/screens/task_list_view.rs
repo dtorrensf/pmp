@@ -8,7 +8,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Flex, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap},
+    widgets::{Cell, Paragraph, Row, Table, Wrap},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -22,7 +22,7 @@ use crate::screens::components::fields::{render_field, render_readonly_field};
 use crate::screens::components::glyphs;
 use crate::screens::components::list_navigation::move_selection;
 use crate::screens::components::popup::{centered_rect, render_popup_scaffold};
-use crate::screens::components::scroll::{ListScroll, list_rows, render_list_scrollbar};
+use crate::screens::components::scroll::{ListScroll, render_scrollbar};
 use crate::screens::components::theme::{self, priority_style, status_row_style, status_style};
 use crate::screens::{Action, Screen};
 
@@ -460,6 +460,19 @@ impl TaskListView {
         }
     }
 
+    /// Caption for the enclosing block: active filters and sort direction.
+    pub fn table_title(&self) -> String {
+        let mut title = task_list_title(
+            self.filter_title.as_deref(),
+            self.filter_status,
+            self.filter_priority,
+        );
+        if let Some(arrow) = self.sort_mode.arrow() {
+            title = format!("{title} · ID {arrow}");
+        }
+        title
+    }
+
     /// Render the task table (browsing) or the active modal popup. The table
     /// stays visible, dimmed, behind the delete confirmation.
     pub fn render(&self, frame: &mut Frame, area: Rect) {
@@ -484,8 +497,9 @@ impl TaskListView {
             return;
         }
 
-        // Rows that fit below the top border and the header row.
-        let row_height = list_rows(area, 1);
+        // The last column is reserved for the scrollbar; the rest holds the table.
+        let table_area = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
+        let row_height = table_rows(area);
         let range = self
             .scroll
             .visible_range(self.tasks.len(), self.selected, row_height);
@@ -515,20 +529,11 @@ impl TaskListView {
             Constraint::Percentage(26),
             Constraint::Percentage(26),
         ];
-        let mut title = task_list_title(
-            self.filter_title.as_deref(),
-            self.filter_status,
-            self.filter_priority,
-        );
-        if let Some(arrow) = self.sort_mode.arrow() {
-            title = format!("{title} · ID {arrow}");
-        }
-        let block = Block::default().title(title).borders(Borders::ALL);
         // Width of the name column, so long names can be cut to fit it.
         let name_width = Layout::horizontal(widths)
             .spacing(1)
             .flex(Flex::Start)
-            .split(block.inner(area))[1]
+            .split(table_area)[1]
             .width as usize;
 
         let rows: Vec<Row> = self.tasks[range.clone()]
@@ -559,10 +564,18 @@ impl TaskListView {
             })
             .collect();
 
-        let table = Table::new(rows, widths).header(header).block(block);
-        frame.render_widget(table, area);
+        let table = Table::new(rows, widths).header(header);
+        frame.render_widget(table, table_area);
 
-        render_list_scrollbar(frame, area, 1, self.tasks.len(), range.start);
+        if row_height > 0 {
+            let track = Rect::new(
+                area.right().saturating_sub(1),
+                area.y + 1,
+                1,
+                row_height as u16,
+            );
+            render_scrollbar(frame, track, self.tasks.len(), row_height, range.start);
+        }
     }
 }
 
@@ -577,6 +590,11 @@ impl Default for TaskListView {
 pub struct DependencySummary {
     pub total: usize,
     pub pending: usize,
+}
+
+/// Data rows that fit below the header row of the table.
+fn table_rows(area: Rect) -> usize {
+    area.height.saturating_sub(1) as usize
 }
 
 /// Name cell: the selection marker, the name cut to `width` columns and,
@@ -808,15 +826,15 @@ mod tests {
         let mut view = TaskListView::new();
         view.set_tasks(numbered_tasks(30));
 
-        // Height 13 => 10 data rows (border + header + border take 3).
-        let before = render_view(&view, 40, 13);
+        // Height 11 => 10 data rows (the header row takes 1).
+        let before = render_view(&view, 40, 11);
         assert!(before.contains("Task00"));
         assert!(!before.contains("Task10"));
 
         for _ in 0..12 {
             view.handle_key(KeyCode::Down, &repo);
         }
-        let after = render_view(&view, 40, 13);
+        let after = render_view(&view, 40, 11);
         assert_eq!(view.selected(), 12);
         assert!(after.contains("Task12"), "selection not visible:\n{after}");
         assert!(
@@ -994,7 +1012,7 @@ mod tests {
         let buffer = terminal.backend().buffer();
 
         // The "ID" header cell sits at the first column of the header row.
-        let header_cell = &buffer[(1, 1)];
+        let header_cell = &buffer[(1, 0)];
         assert_eq!(header_cell.fg, theme::theme().text);
         // White is invisible on light terminals.
         assert_ne!(header_cell.fg, ratatui::style::Color::White);
@@ -1302,12 +1320,12 @@ mod tests {
     fn table_title_shows_the_active_id_direction() {
         let repo = StubRepository::default();
         let mut view = sortable_view();
-        assert!(!render_view(&view, 60, 10).contains("ID ↑"));
+        assert!(!view.table_title().contains("ID ↑"));
 
         view.handle_key(KeyCode::Char('o'), &repo);
-        assert!(render_view(&view, 60, 10).contains("Tasks · ID ↑"));
+        assert_eq!(view.table_title(), "Tasks · ID ↑");
 
         view.handle_key(KeyCode::Char('o'), &repo);
-        assert!(render_view(&view, 60, 10).contains("Tasks · ID ↓"));
+        assert_eq!(view.table_title(), "Tasks · ID ↓");
     }
 }
