@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Sparkline, Wrap},
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -16,6 +16,7 @@ use crate::db::repository::Repository;
 use crate::domain::project::Project;
 use crate::domain::task::{Status, Task};
 use crate::domain::version::Version;
+use crate::screens::components::activity::{ACTIVITY_DAYS, completions_per_day, today_epoch_day};
 use crate::screens::components::confirm_dialog::{ConfirmDialog, ConfirmState};
 use crate::screens::components::empty_state::EmptyState;
 use crate::screens::components::glyphs;
@@ -34,6 +35,9 @@ use crate::screens::{AUTO_REFRESH_INTERVAL, Action, Component, Screen};
 
 /// Width, in cells, of the stacked progress bar of each version.
 const VERSION_BAR_WIDTH: usize = 10;
+
+/// Narrowest progress row that still fits the activity sparkline.
+const MIN_WIDTH_FOR_ACTIVITY: u16 = 50;
 
 /// One row of the versions list: the version plus its task progress.
 #[derive(Debug, Clone, PartialEq)]
@@ -370,7 +374,23 @@ impl Component for ProjectDashboard {
             .ratio(ratio)
             .use_unicode(true)
             .label(format!("{done}/{total} tasks ({percentage}%)"));
-        frame.render_widget(gauge, chunks[2]);
+        // The activity sparkline sits beside the gauge when there is room.
+        if chunks[2].width >= MIN_WIDTH_FOR_ACTIVITY {
+            let [gauge_area, activity_area] = Layout::horizontal([
+                Constraint::Min(0),
+                Constraint::Length(ACTIVITY_DAYS as u16 + 2),
+            ])
+            .areas(chunks[2]);
+            frame.render_widget(gauge, gauge_area);
+            let counts = completions_per_day(&self.all_tasks, today_epoch_day());
+            let activity = Sparkline::default()
+                .block(Block::default().title("14 days").borders(Borders::ALL))
+                .data(counts)
+                .style(status_style(Status::Done));
+            frame.render_widget(activity, activity_area);
+        } else {
+            frame.render_widget(gauge, chunks[2]);
+        }
 
         self.render_versions(frame, chunks[3]);
     }
@@ -637,6 +657,26 @@ mod tests {
         terminal
             .draw(|frame| dashboard.render(frame, frame.area()))
             .unwrap();
+    }
+
+    #[test]
+    fn activity_sparkline_sits_beside_the_gauge_when_wide_enough() {
+        let (_repo, dashboard, _) = setup_with_tasks();
+        let wide = render_text(&dashboard);
+        assert!(wide.contains("14 days"), "{wide}");
+        assert!(wide.contains("2/6 tasks"), "{wide}");
+
+        let backend = TestBackend::new(40, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| dashboard.render(frame, frame.area()))
+            .unwrap();
+        let narrow = buffer_to_string(terminal.backend().buffer());
+        assert!(!narrow.contains("14 days"));
+        assert!(
+            narrow.contains("tasks ("),
+            "gauge label must stay: {narrow}"
+        );
     }
 
     #[test]

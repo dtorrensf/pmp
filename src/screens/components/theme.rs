@@ -14,13 +14,31 @@
 //! - `PMP_THEME`: selects one of the built-in palettes (`default`, `bright`).
 //!   Unknown names fall back to `default`.
 //!
+//! A user file at `~/.config/pmp/theme.toml` (see [`THEME_FILE`]) can pick a
+//! base palette and override individual tokens:
+//!
+//! ```toml
+//! palette = "bright"
+//!
+//! [colors]
+//! accent = "#7aa2f7"
+//! muted = "dark gray"
+//! ```
+//!
+//! `PMP_THEME` takes precedence over the file's `palette`. A missing or
+//! malformed file, unknown token names and invalid colors never stop the
+//! app: they are logged and the default values are kept.
+//!
 //! The mapping from domain enums (`Status`, `Priority`, `VersionStatus`) to
 //! styles lives here, so the domain layer stays free of any `ratatui`
 //! dependency.
 
+use std::collections::BTreeMap;
+use std::str::FromStr;
 use std::sync::OnceLock;
 
 use ratatui::style::{Color, Modifier, Style};
+use serde::Deserialize;
 
 use crate::domain::task::{Priority, Status};
 use crate::domain::version::VersionStatus;
@@ -30,6 +48,10 @@ pub const NO_COLOR_ENV: &str = "NO_COLOR";
 
 /// Environment variable that selects the built-in palette.
 pub const THEME_ENV: &str = "PMP_THEME";
+
+/// Path of the user theme file, relative to the config directory
+/// (`~/.config` on Linux).
+pub const THEME_FILE: &str = "pmp/theme.toml";
 
 /// Name of the default palette.
 pub const DEFAULT_PALETTE: &str = "default";
@@ -158,9 +180,64 @@ impl Theme {
         theme
     }
 
-    /// Builds the theme from the process environment.
+    /// Builds the theme from the process environment and the user theme file.
     pub fn from_env() -> Theme {
-        Theme::from_env_with(|key| std::env::var(key).ok())
+        Theme::from_sources(|key| std::env::var(key).ok(), read_theme_file().as_deref())
+    }
+
+    /// Builds the theme from an environment lookup and the contents of the
+    /// theme file, if any. `PMP_THEME` wins over the file's `palette`; the
+    /// file's `[colors]` overrides apply on top of the chosen palette.
+    pub fn from_sources(lookup: impl Fn(&str) -> Option<String>, file: Option<&str>) -> Theme {
+        let file = file.and_then(parse_theme_file);
+        let palette = lookup(THEME_ENV).or_else(|| file.as_ref().and_then(|f| f.palette.clone()));
+        let mut theme = Theme::new(palette.as_deref(), no_color_in(&lookup));
+        if let Some(file) = file {
+            for (name, value) in &file.colors {
+                theme.apply_override(name, value);
+            }
+        }
+        theme
+    }
+
+    /// Sets the token called `name` to the color written as `value`.
+    /// Unknown tokens and unparsable colors are logged and ignored.
+    fn apply_override(&mut self, name: &str, value: &str) {
+        let color = match Color::from_str(value) {
+            Ok(color) => color,
+            Err(_) => {
+                tracing::warn!(token = name, value, "invalid color in theme file");
+                return;
+            }
+        };
+        let slot = match name {
+            "bg" => &mut self.bg,
+            "surface" => &mut self.surface,
+            "border" => &mut self.border,
+            "border_focus" => &mut self.border_focus,
+            "text" => &mut self.text,
+            "muted" => &mut self.muted,
+            "accent" => &mut self.accent,
+            "success" => &mut self.success,
+            "warning" => &mut self.warning,
+            "danger" => &mut self.danger,
+            "selection_bg" => &mut self.selection_bg,
+            "selection_fg" => &mut self.selection_fg,
+            "status_todo" => &mut self.status_todo,
+            "status_in_progress" => &mut self.status_in_progress,
+            "status_done" => &mut self.status_done,
+            "priority_high" => &mut self.priority_high,
+            "priority_medium" => &mut self.priority_medium,
+            "priority_low" => &mut self.priority_low,
+            "version_backlog" => &mut self.version_backlog,
+            "version_open" => &mut self.version_open,
+            "version_released" => &mut self.version_released,
+            _ => {
+                tracing::warn!(token = name, "unknown token in theme file");
+                return;
+            }
+        };
+        *slot = color;
     }
 
     /// Builds the theme from an arbitrary environment lookup.
@@ -277,6 +354,30 @@ impl Theme {
             VersionStatus::Released => self.version_released,
         };
         self.fg(color)
+    }
+}
+
+/// Contents of the user theme file, when it exists and can be read.
+pub fn read_theme_file() -> Option<String> {
+    let path = dirs::config_dir()?.join(THEME_FILE);
+    std::fs::read_to_string(path).ok()
+}
+
+/// The user theme file, or `None` (with a log entry) when it is malformed.
+#[derive(Debug, Default, Deserialize)]
+struct ThemeFile {
+    palette: Option<String>,
+    #[serde(default)]
+    colors: BTreeMap<String, String>,
+}
+
+fn parse_theme_file(text: &str) -> Option<ThemeFile> {
+    match toml::from_str(text) {
+        Ok(file) => Some(file),
+        Err(error) => {
+            tracing::warn!(%error, "ignoring malformed theme file");
+            None
+        }
     }
 }
 
@@ -498,5 +599,60 @@ mod tests {
 
         assert_eq!(theme.status_todo, Theme::default_theme().status_todo);
         assert!(theme.colors_enabled);
+    }
+
+    fn no_env(_: &str) -> Option<String> {
+        None
+    }
+
+    #[test]
+    fn theme_file_overrides_tokens_on_the_default_palette() {
+        let file = "[colors]\naccent = \"#7aa2f7\"\nmuted = \"dark gray\"\n";
+        let theme = Theme::from_sources(no_env, Some(file));
+        assert_eq!(theme.accent, Color::Rgb(0x7a, 0xa2, 0xf7));
+        assert_eq!(theme.muted, Color::DarkGray);
+        // Untouched tokens keep the default palette.
+        assert_eq!(theme.status_done, Theme::default_theme().status_done);
+    }
+
+    #[test]
+    fn theme_file_palette_is_the_base_and_colors_apply_on_top() {
+        let file = "palette = \"bright\"\n[colors]\nsuccess = \"red\"\n";
+        let theme = Theme::from_sources(no_env, Some(file));
+        assert_eq!(theme.status_done, Color::LightGreen);
+        assert_eq!(theme.success, Color::Red);
+    }
+
+    #[test]
+    fn pmp_theme_env_wins_over_the_file_palette() {
+        let file = "palette = \"default\"\n";
+        let theme = Theme::from_sources(
+            |key| (key == THEME_ENV).then(|| BRIGHT_PALETTE.to_string()),
+            Some(file),
+        );
+        assert_eq!(theme.status_done, Color::LightGreen);
+    }
+
+    #[test]
+    fn malformed_theme_file_falls_back_to_the_default_theme() {
+        let theme = Theme::from_sources(no_env, Some("[colors\naccent ="));
+        assert_eq!(theme, Theme::default_theme());
+    }
+
+    #[test]
+    fn invalid_colors_and_unknown_tokens_are_ignored() {
+        let file = "[colors]\naccent = \"not-a-color\"\nnope = \"red\"\n";
+        let theme = Theme::from_sources(no_env, Some(file));
+        assert_eq!(theme, Theme::default_theme());
+    }
+
+    #[test]
+    fn no_color_still_wins_over_theme_file_colors() {
+        let file = "[colors]\naccent = \"red\"\n";
+        let theme = Theme::from_sources(
+            |key| (key == NO_COLOR_ENV).then(|| "1".to_string()),
+            Some(file),
+        );
+        assert_eq!(theme.accent_style().fg, None);
     }
 }
