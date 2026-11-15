@@ -18,7 +18,7 @@ use crate::domain::version::{Version, VersionStatus};
 use crate::domain::version_summary::VersionSummary;
 use crate::screens::components::help::{self, HelpSection};
 use crate::screens::components::keys::key;
-use crate::screens::task_list_view::TaskListView;
+use crate::screens::task_list_view::{DependencySummary, TaskListView};
 pub use crate::screens::task_list_view::{FilterField, FilterState, TaskListMode};
 use crate::screens::{AUTO_REFRESH_INTERVAL, Action, Component, Screen};
 
@@ -117,13 +117,30 @@ impl VersionDashboard {
         self.version = Some(version);
         self.summaries = self.repo.list_version_summaries(self.version_id)?;
         let tasks = self.repo.list_tasks_by_version(self.version_id)?;
-        let dependency_counts = tasks
+        // Dependencies live in the same version, so their status is known
+        // from the tasks just loaded.
+        let statuses: std::collections::HashMap<i64, Status> = tasks
+            .iter()
+            .filter_map(|task| task.id.map(|id| (id, task.status)))
+            .collect();
+        let dependency_summaries = tasks
             .iter()
             .filter_map(|task| task.id)
-            .map(|id| (id, self.repo.get_dependencies(id).unwrap_or_default().len()))
+            .map(|id| {
+                let dependencies = self.repo.get_dependencies(id).unwrap_or_default();
+                let pending = dependencies
+                    .iter()
+                    .filter(|dep| statuses.get(dep) != Some(&Status::Done))
+                    .count();
+                let summary = DependencySummary {
+                    total: dependencies.len(),
+                    pending,
+                };
+                (id, summary)
+            })
             .collect::<std::collections::HashMap<_, _>>();
         self.view.set_tasks(tasks);
-        self.view.set_dependency_counts(dependency_counts);
+        self.view.set_dependency_summaries(dependency_summaries);
         Ok(())
     }
 

@@ -84,8 +84,8 @@ pub struct TaskListView {
     filter_priority: Option<Priority>,
     filter_title: Option<String>,
     mode: TaskListMode,
-    /// Number of dependencies of each task, keyed by task id.
-    dependency_counts: HashMap<i64, usize>,
+    /// Dependency summary of each task, keyed by task id.
+    dependency_summaries: HashMap<i64, DependencySummary>,
 }
 
 impl TaskListView {
@@ -99,7 +99,7 @@ impl TaskListView {
             filter_priority: None,
             filter_title: None,
             mode: TaskListMode::Browsing,
-            dependency_counts: HashMap::new(),
+            dependency_summaries: HashMap::new(),
         }
     }
 
@@ -167,10 +167,10 @@ impl TaskListView {
         self.apply_filter();
     }
 
-    /// Number of tasks each task depends on, keyed by task id. Shown as a
-    /// compact indicator next to the task name. Missing ids count as zero.
-    pub fn set_dependency_counts(&mut self, counts: HashMap<i64, usize>) {
-        self.dependency_counts = counts;
+    /// Dependency summary of each task, keyed by task id. Shown as a compact
+    /// indicator next to the task name. Missing ids show no indicator.
+    pub fn set_dependency_summaries(&mut self, summaries: HashMap<i64, DependencySummary>) {
+        self.dependency_summaries = summaries;
     }
 
     fn apply_filter(&mut self) {
@@ -468,8 +468,7 @@ impl TaskListView {
                 };
                 let dependencies = task
                     .id
-                    .and_then(|id| self.dependency_counts.get(&id).copied())
-                    .unwrap_or(0);
+                    .and_then(|id| self.dependency_summaries.get(&id).copied());
                 Row::new(vec![
                     Cell::from(
                         Line::from(task.id.map_or_else(|| "-".to_string(), |id| id.to_string()))
@@ -497,20 +496,39 @@ impl Default for TaskListView {
     }
 }
 
+/// How many dependencies a task has and how many of them are not done yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DependencySummary {
+    pub total: usize,
+    pub pending: usize,
+}
+
 /// Name cell: the selection marker, the name cut to `width` columns and,
-/// when the task has dependencies, a compact count such as `↳ 2`.
-fn name_cell(name: &str, dependencies: usize, selected: bool, width: usize) -> Cell<'static> {
+/// when the task has dependencies, a compact count such as `↳ 2`. The count
+/// is green when every dependency is done and yellow while any is pending.
+fn name_cell(
+    name: &str,
+    dependencies: Option<DependencySummary>,
+    selected: bool,
+    width: usize,
+) -> Cell<'static> {
     let glyphs = glyphs::glyphs();
     let marker = if selected { glyphs.selection } else { " " };
-    let suffix = if dependencies > 0 {
-        format!("  {} {dependencies}", glyphs.dependency)
-    } else {
-        String::new()
+    let (suffix, suffix_style) = match dependencies {
+        Some(summary) if summary.total > 0 => {
+            let style = if summary.pending == 0 {
+                theme::theme().success_style()
+            } else {
+                theme::theme().warning_style()
+            };
+            (format!("  {} {}", glyphs.dependency, summary.total), style)
+        }
+        _ => (String::new(), Style::default()),
     };
     let available = width.saturating_sub(marker.width() + 1 + suffix.width());
     Cell::from(Line::from(vec![
         Span::raw(format!("{marker} {}", truncate_display(name, available))),
-        Span::raw(suffix),
+        Span::styled(suffix, suffix_style),
     ]))
 }
 
@@ -794,12 +812,59 @@ mod tests {
         with_deps.id = Some(7);
         let mut view = TaskListView::new();
         view.set_tasks(vec![with_deps, task("Beta", Status::Todo)]);
-        view.set_dependency_counts(HashMap::from([(7, 2)]));
+        view.set_dependency_summaries(HashMap::from([(
+            7,
+            DependencySummary {
+                total: 2,
+                pending: 2,
+            },
+        )]));
 
         let rendered = render_view(&view, 60, 8);
 
         assert!(rendered.contains("↳ 2"), "{rendered}");
         assert_eq!(rendered.matches("↳").count(), 1, "{rendered}");
+    }
+
+    /// Foreground color of the dependency marker in a view rendered at 60x8.
+    fn dependency_marker_color(summary: DependencySummary) -> Option<ratatui::style::Color> {
+        let mut with_deps = task("Alpha", Status::Todo);
+        with_deps.id = Some(7);
+        let mut view = TaskListView::new();
+        view.set_tasks(vec![with_deps]);
+        view.set_dependency_summaries(HashMap::from([(7, summary)]));
+
+        let backend = TestBackend::new(60, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| view.render(frame, frame.area()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        buffer
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == "↳")
+            .map(|cell| cell.fg)
+    }
+
+    #[test]
+    fn dependency_marker_is_green_when_all_dependencies_are_done() {
+        let color = dependency_marker_color(DependencySummary {
+            total: 2,
+            pending: 0,
+        });
+
+        assert_eq!(color, Some(theme::theme().success_style().fg.unwrap()));
+    }
+
+    #[test]
+    fn dependency_marker_is_yellow_while_a_dependency_is_pending() {
+        let color = dependency_marker_color(DependencySummary {
+            total: 2,
+            pending: 1,
+        });
+
+        assert_eq!(color, Some(theme::theme().warning_style().fg.unwrap()));
     }
 
     #[test]
