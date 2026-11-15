@@ -120,6 +120,7 @@ pub struct FilterState {
 /// - `d`: delete the selected task (with confirmation)
 /// - `f`: filter the list
 /// - `o`: cycle the sort order (priority, then id ascending and descending)
+/// - `x`: clear every active filter
 ///
 /// The move popup is opened by the embedding screen through
 /// [`TaskListView::open_move`] because only the screen knows the other
@@ -291,6 +292,10 @@ impl TaskListView {
                 self.cycle_sort();
                 None
             }
+            KeyCode::Char('x') => {
+                self.clear_filters();
+                None
+            }
             KeyCode::Enter => self.tasks.get(self.selected).map(|task| {
                 Action::Navigate(Screen::TaskForm {
                     version_id: task.version_id,
@@ -460,17 +465,23 @@ impl TaskListView {
         }
     }
 
-    /// Caption for the enclosing block: active filters and sort direction.
-    pub fn table_title(&self) -> String {
-        let mut title = task_list_title(
+    /// Caption for the enclosing block: one chip per active filter, the sort
+    /// direction and, while filters are active, how to clear them.
+    pub fn table_title(&self) -> Line<'static> {
+        filter_chips(
             self.filter_title.as_deref(),
             self.filter_status,
             self.filter_priority,
-        );
-        if let Some(arrow) = self.sort_mode.arrow() {
-            title = format!("{title} · ID {arrow}");
-        }
-        title
+            self.sort_mode.arrow(),
+        )
+    }
+
+    /// Drops every active filter at once.
+    fn clear_filters(&mut self) {
+        self.filter_title = None;
+        self.filter_status = None;
+        self.filter_priority = None;
+        self.apply_filter();
     }
 
     /// Render the task table (browsing) or the active modal popup. The table
@@ -649,38 +660,40 @@ pub fn truncate_display(text: &str, width: usize) -> String {
     out
 }
 
-fn task_list_title(
+/// The table caption: "Tasks", one bracketed chip per active filter, then the
+/// sort direction. Chips keep their shape without color, so they stay readable
+/// under `NO_COLOR`.
+fn filter_chips(
     title: Option<&str>,
     status: Option<Status>,
     priority: Option<Priority>,
-) -> String {
-    if title.is_none() {
-        return match (status, priority) {
-            (None, None) => "Tasks".to_string(),
-            (Some(status), None) => format!("Tasks (Status: {})", status.label()),
-            (None, Some(priority)) => format!("Tasks (Priority: {})", priority.label()),
-            (Some(status), Some(priority)) => {
-                format!("Tasks ({} - {})", status.label(), priority.label())
-            }
-        };
-    }
+    sort_arrow: Option<&str>,
+) -> Line<'static> {
+    let theme = theme::theme();
+    let mut spans = vec![Span::styled("Tasks", theme.text_style())];
 
-    let mut filters = Vec::new();
+    let mut chips = Vec::new();
     if let Some(title) = title {
-        filters.push(format!("Title: {title}"));
+        chips.push(("Title", title.to_string()));
     }
     if let Some(status) = status {
-        filters.push(format!("Status: {}", status.label()));
+        chips.push(("Status", status.label().to_string()));
     }
     if let Some(priority) = priority {
-        filters.push(format!("Priority: {}", priority.label()));
+        chips.push(("Priority", priority.label().to_string()));
     }
-
-    if filters.is_empty() {
-        "Tasks".to_string()
-    } else {
-        format!("Tasks ({})", filters.join(" - "))
+    let chip_style = theme.accent_style().add_modifier(Modifier::BOLD);
+    for (label, value) in &chips {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(format!("[{label}: {value}]"), chip_style));
     }
+    if !chips.is_empty() {
+        spans.push(Span::styled("  x clear", theme.muted_style()));
+    }
+    if let Some(arrow) = sort_arrow {
+        spans.push(Span::styled(format!(" · ID {arrow}"), theme.muted_style()));
+    }
+    Line::from(spans)
 }
 
 fn render_move_popup(state: &MoveTaskState, frame: &mut Frame, area: Rect) {
@@ -756,7 +769,7 @@ fn render_filter_popup(state: &FilterState, frame: &mut Frame, area: Rect) {
         "Title",
         &state.filter_title,
         state.selected_field == FilterField::Title,
-        false,
+        None,
     );
     render_readonly_field(
         frame,
@@ -1094,33 +1107,49 @@ mod tests {
         assert_eq!(view.tasks().len(), 2);
     }
 
+    fn caption(title: Option<&str>, status: Option<Status>, priority: Option<Priority>) -> String {
+        filter_chips(title, status, priority, None)
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
     #[test]
-    fn filter_title_renders_active_status() {
+    fn filter_chips_show_each_active_filter() {
         assert_eq!(
-            task_list_title(None, Some(Status::Todo), None),
-            "Tasks (Status: Todo)"
+            caption(None, Some(Status::Todo), None),
+            "Tasks [Status: Todo]  x clear"
+        );
+        assert_eq!(
+            caption(None, None, Some(Priority::High)),
+            "Tasks [Priority: High]  x clear"
+        );
+        assert_eq!(
+            caption(Some("login"), Some(Status::Done), Some(Priority::Low)),
+            "Tasks [Title: login] [Status: Done] [Priority: Low]  x clear"
         );
     }
 
     #[test]
-    fn filter_title_renders_active_priority() {
-        assert_eq!(
-            task_list_title(None, None, Some(Priority::High)),
-            "Tasks (Priority: High)"
-        );
+    fn filter_chips_default_to_plain_title() {
+        assert_eq!(caption(None, None, None), "Tasks");
     }
 
     #[test]
-    fn filter_title_renders_both_active() {
-        assert_eq!(
-            task_list_title(None, Some(Status::Done), Some(Priority::Low)),
-            "Tasks (Done - Low)"
-        );
-    }
+    fn x_clears_every_active_filter() {
+        let repo = StubRepository::default();
+        let mut view = sortable_view();
+        view.handle_key(KeyCode::Char('f'), &repo);
+        view.handle_key(KeyCode::Right, &repo);
+        view.handle_key(KeyCode::Enter, &repo);
+        assert_eq!(view.filter_status(), Some(Status::Todo));
 
-    #[test]
-    fn filter_title_renders_default_when_none() {
-        assert_eq!(task_list_title(None, None, None), "Tasks");
+        view.handle_key(KeyCode::Char('x'), &repo);
+
+        assert_eq!(view.filter_status(), None);
+        assert_eq!(view.filter_priority(), None);
+        assert_eq!(view.filter_title(), None);
     }
 
     #[test]
@@ -1316,16 +1345,24 @@ mod tests {
         assert_eq!(ids(&view), vec![Some(1), Some(9)]);
     }
 
+    fn caption_of(view: &TaskListView) -> String {
+        view.table_title()
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
     #[test]
     fn table_title_shows_the_active_id_direction() {
         let repo = StubRepository::default();
         let mut view = sortable_view();
-        assert!(!view.table_title().contains("ID ↑"));
+        assert!(!caption_of(&view).contains("ID ↑"));
 
         view.handle_key(KeyCode::Char('o'), &repo);
-        assert_eq!(view.table_title(), "Tasks · ID ↑");
+        assert_eq!(caption_of(&view), "Tasks · ID ↑");
 
         view.handle_key(KeyCode::Char('o'), &repo);
-        assert_eq!(view.table_title(), "Tasks · ID ↓");
+        assert_eq!(caption_of(&view), "Tasks · ID ↓");
     }
 }

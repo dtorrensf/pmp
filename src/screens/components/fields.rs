@@ -9,34 +9,54 @@ use ratatui::{
     Frame,
     layout::Rect,
     style::{Modifier, Style},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    text::{Line, Span},
+    widgets::{Block, Borders, Padding, Paragraph, Wrap},
 };
 use ratatui_textarea::{TextArea, WrapMode};
 use unicode_width::UnicodeWidthStr;
 
+use crate::screens::components::glyphs;
 use crate::screens::components::theme;
 
-/// Renders an editable text field: red border on `error`, bold border when
-/// `active` (error takes precedence), plain otherwise.
+/// Columns taken by the borders plus the horizontal padding on each side.
+const FIELD_CHROME: u16 = 4;
+
+/// The block every field is drawn in. The focused field gets the focus color
+/// and bold (bold keeps the cue under `NO_COLOR`); a validation `error` turns
+/// the border red and is written on the bottom border, next to the field.
+fn field_block(title: &str, active: bool, error: Option<&str>) -> Block<'static> {
+    let theme = theme::theme();
+    let (border, title_style) = if error.is_some() {
+        (theme.danger_style(), theme.danger_style())
+    } else if active {
+        let focus = theme.border_focus_style().add_modifier(Modifier::BOLD);
+        (focus, theme.accent_style().add_modifier(Modifier::BOLD))
+    } else {
+        (Style::default(), Style::default())
+    };
+    let mut block = Block::default()
+        .title(Line::from(Span::styled(title.to_string(), title_style)))
+        .borders(Borders::ALL)
+        .border_style(border)
+        .padding(Padding::horizontal(1));
+    if let Some(error) = error {
+        let message = format!(" {} {error} ", glyphs::glyphs().error);
+        block = block.title_bottom(Line::from(Span::styled(message, theme.danger_style())));
+    }
+    block
+}
+
+/// Renders an editable text field. `error` is the validation message to show
+/// next to the field, if the field is invalid.
 pub fn render_field(
     frame: &mut Frame,
     area: Rect,
     title: &str,
     value: &str,
     active: bool,
-    error: bool,
+    error: Option<&str>,
 ) {
-    let style = if error {
-        theme::theme().danger_style()
-    } else if active {
-        Style::default().add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-    let block = Block::default()
-        .title(title)
-        .borders(Borders::ALL)
-        .border_style(style);
+    let block = field_block(title, active, error);
     frame.render_widget(
         Paragraph::new(value.to_string())
             .block(block)
@@ -45,10 +65,10 @@ pub fn render_field(
     );
 }
 
-/// Renders a multi-line description `TextArea` inside a `Borders::ALL` block
-/// titled `title`, bold border when `active`. The textarea is cloned so the
-/// caller's state is untouched, and word-wrapped to the area width (like
-/// `Paragraph` with `Wrap`) so long lines stay fully visible.
+/// Renders a multi-line description `TextArea` inside the shared field block,
+/// focused when `active`. The textarea is cloned so the caller's state is
+/// untouched, and word-wrapped to the area width (like `Paragraph` with
+/// `Wrap`) so long lines stay fully visible.
 pub fn render_description_field(
     frame: &mut Frame,
     area: Rect,
@@ -56,32 +76,25 @@ pub fn render_description_field(
     value: &TextArea<'_>,
     active: bool,
 ) {
-    let style = if active {
-        Style::default().add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-    let block = Block::default()
-        .title(title)
-        .borders(Borders::ALL)
-        .border_style(style);
+    let block = field_block(title, active, None);
     let mut textarea = value.clone();
     textarea.set_block(block);
     textarea.set_wrap_mode(WrapMode::WordOrGlyph);
     frame.render_widget(&textarea, area);
 }
 
-/// Screen column for a cursor placed after `text` inside the `Borders::ALL`
-/// field drawn in `area`. Widths use terminal display columns (CJK glyphs take
-/// two), and the result is clamped so the cursor never leaves the field.
+/// Screen column for a cursor placed after `text` inside the field drawn in
+/// `area` (borders and padding excluded). Widths use terminal display columns
+/// (CJK glyphs take two), and the result is clamped so the cursor never leaves
+/// the field.
 pub fn field_cursor_x(area: Rect, text: &str) -> u16 {
-    let inner = area.width.saturating_sub(2) as usize;
+    let inner = area.width.saturating_sub(FIELD_CHROME) as usize;
     let used = text.width().min(inner) as u16;
-    area.x.saturating_add(1).saturating_add(used)
+    area.x.saturating_add(FIELD_CHROME / 2).saturating_add(used)
 }
 
 /// Renders a value the user cycles with arrow keys; the title advertises the
-/// `(←/→)` hint and the border is bold while the field is active.
+/// `(←/→)` hint and the field is focused while `active`.
 pub fn render_readonly_field(
     frame: &mut Frame,
     area: Rect,
@@ -89,15 +102,7 @@ pub fn render_readonly_field(
     value: &str,
     active: bool,
 ) {
-    let style = if active {
-        Style::default().add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-    let block = Block::default()
-        .title(format!("{} (←/→)", title))
-        .borders(Borders::ALL)
-        .border_style(style);
+    let block = field_block(&format!("{title} (←/→)"), active, None);
     frame.render_widget(Paragraph::new(value.to_string()).block(block), area);
 }
 
@@ -164,7 +169,8 @@ mod tests {
         fn render(&self, frame: &mut Frame, area: Rect) {
             match self.kind {
                 FieldKind::Editable { error } => {
-                    render_field(frame, area, self.title, self.value, self.active, error);
+                    let message = error.then_some("Name is required");
+                    render_field(frame, area, self.title, self.value, self.active, message);
                 }
                 FieldKind::Readonly => {
                     render_readonly_field(frame, area, self.title, self.value, self.active);
@@ -189,14 +195,14 @@ mod tests {
     #[test]
     fn field_cursor_counts_display_columns_and_clamps() {
         let area = Rect::new(2, 1, 10, 3);
-        // Ascii: after 3 chars -> x + 1 border + 3.
-        assert_eq!(field_cursor_x(area, "abc"), 6);
+        // Ascii: after 3 chars -> x + border + padding + 3.
+        assert_eq!(field_cursor_x(area, "abc"), 2 + 2 + 3);
         // CJK: two chars occupy four columns.
-        assert_eq!(field_cursor_x(area, "中文"), 2 + 1 + 4);
-        // Longer than the inner width (8): clamped to the right border.
-        assert_eq!(field_cursor_x(area, &"x".repeat(50)), 2 + 1 + 8);
+        assert_eq!(field_cursor_x(area, "中文"), 2 + 2 + 4);
+        // Longer than the inner width (10 - 4): clamped to the right padding.
+        assert_eq!(field_cursor_x(area, &"x".repeat(50)), 2 + 2 + 6);
         // Degenerate width never underflows.
-        assert_eq!(field_cursor_x(Rect::new(0, 0, 0, 0), "abc"), 1);
+        assert_eq!(field_cursor_x(Rect::new(0, 0, 0, 0), "abc"), 2);
     }
 
     #[test]
@@ -206,9 +212,9 @@ mod tests {
         let output = render_to_string(&stub, 20, 5);
 
         let expected = format!(
-            "┌Name{}┐\n│Alpha{}│\n│{}│\n│{}│\n└{}┘",
+            "┌Name{}┐\n│ Alpha{}│\n│{}│\n│{}│\n└{}┘",
             "─".repeat(14),
-            " ".repeat(13),
+            " ".repeat(12),
             " ".repeat(18),
             " ".repeat(18),
             "─".repeat(18),
@@ -228,15 +234,17 @@ mod tests {
     }
 
     #[test]
-    fn render_field_active_bolds_border_and_title_but_not_value() {
+    fn render_field_active_uses_focus_color_and_bold_border() {
         let stub = FieldStub::editable("Name", "Alpha", true, false);
 
         let buffer = render_to_buffer(&stub, 20, 5);
 
+        // Focus is shown by color and by bold, so it survives NO_COLOR.
+        assert_eq!(buffer[(0, 0)].fg, theme::theme().border_focus);
         assert!(buffer[(0, 0)].modifier.contains(Modifier::BOLD));
-        assert!(buffer[(1, 0)].modifier.contains(Modifier::BOLD));
-        assert!(!buffer[(1, 1)].modifier.contains(Modifier::BOLD));
-        assert_eq!(buffer[(0, 0)].fg, Color::Reset);
+        // The title takes the accent color; the value keeps the default style.
+        assert_eq!(buffer[(1, 0)].fg, theme::theme().accent);
+        assert!(!buffer[(2, 1)].modifier.contains(Modifier::BOLD));
     }
 
     #[test]
@@ -250,15 +258,25 @@ mod tests {
     }
 
     #[test]
+    fn render_field_error_is_written_on_the_bottom_border() {
+        let stub = FieldStub::editable("Name", "", false, true);
+
+        let output = render_to_string(&stub, 30, 3);
+        let bottom = output.lines().last().unwrap();
+
+        assert!(bottom.contains("Name is required"), "{output}");
+    }
+
+    #[test]
     fn render_readonly_field_renders_exact_bordered_value_with_arrow_hint() {
         let stub = FieldStub::readonly("Status", "Todo", false);
 
         let output = render_to_string(&stub, 20, 3);
 
         let expected = format!(
-            "┌Status (←/→){}┐\n│Todo{}│\n└{}┘",
+            "┌Status (←/→){}┐\n│ Todo{}│\n└{}┘",
             "─".repeat(6),
-            " ".repeat(14),
+            " ".repeat(13),
             "─".repeat(18),
         );
         assert_eq!(output, expected);
@@ -302,14 +320,13 @@ mod tests {
     }
 
     #[test]
-    fn render_description_field_active_bolds_border() {
+    fn render_description_field_active_uses_focus_border() {
         let stub = FieldStub::description("Description", "Alpha", true);
 
         let buffer = render_to_buffer(&stub, 20, 5);
 
+        assert_eq!(buffer[(0, 0)].fg, theme::theme().border_focus);
         assert!(buffer[(0, 0)].modifier.contains(Modifier::BOLD));
-        assert!(buffer[(1, 0)].modifier.contains(Modifier::BOLD));
-        assert_eq!(buffer[(0, 0)].fg, Color::Reset);
     }
 
     #[test]

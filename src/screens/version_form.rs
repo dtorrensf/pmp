@@ -162,10 +162,10 @@ impl Component for VersionForm {
         render_field(
             frame,
             chunks[0],
-            "Name",
+            "Name *",
             &self.name,
             self.active_field == NAME,
-            false,
+            None,
         );
 
         render_description_field(

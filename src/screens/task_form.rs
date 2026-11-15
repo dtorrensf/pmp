@@ -389,7 +389,7 @@ impl Component for TaskForm {
         };
         let inner = render_form_frame(frame, area, title);
 
-        let mut constraints = vec![
+        let constraints = vec![
             Constraint::Length(3), // Name
             Constraint::Min(5),    // Description
             Constraint::Length(3), // Status
@@ -397,9 +397,6 @@ impl Component for TaskForm {
             Constraint::Min(2),    // Dependencies
             Constraint::Min(7),    // Notes (list + new-note input)
         ];
-        if self.error.is_some() {
-            constraints.push(Constraint::Length(3));
-        }
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints(constraints)
@@ -408,10 +405,10 @@ impl Component for TaskForm {
         render_field(
             frame,
             chunks[0],
-            "Name",
+            "Name *",
             &self.name,
             self.active_field == 0,
-            self.error.is_some() && self.active_field == 0,
+            self.error.as_deref(),
         );
 
         render_description_field(
@@ -439,14 +436,6 @@ impl Component for TaskForm {
 
         render_dependencies(self, frame, chunks[4]);
         let notes_chunks = render_notes(self, frame, chunks[5]);
-
-        if let Some(error) = &self.error {
-            let error_para = Paragraph::new(error.as_str())
-                .style(theme::theme().danger_style())
-                .block(Block::default().borders(Borders::ALL))
-                .wrap(Wrap { trim: true });
-            frame.render_widget(error_para, chunks[6]);
-        }
 
         if self.active_field == 0 {
             let x = field_cursor_x(chunks[0], &self.name);
@@ -512,7 +501,7 @@ fn render_notes(form: &TaskForm, frame: &mut Frame, area: Rect) -> Vec<Rect> {
         "New note",
         &form.new_note,
         form.active_field == 5,
-        false,
+        None,
     );
 
     notes_chunks.to_vec()

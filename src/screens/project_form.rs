@@ -128,10 +128,10 @@ impl Component for ProjectForm {
         render_field(
             frame,
             chunks[0],
-            "Name",
+            "Name *",
             &self.name,
             self.active_field == 0,
-            false,
+            None,
         );
 
         render_description_field(
