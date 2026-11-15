@@ -77,7 +77,7 @@ impl Glyphs {
             version_open: "◐",
             version_released: "✔",
             selection: "▸",
-            dependency: "⛓",
+            dependency: "↳",
             warning: "⚠",
             info: "»",
             success: "✓",

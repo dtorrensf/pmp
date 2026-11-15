@@ -498,7 +498,7 @@ impl Default for TaskListView {
 }
 
 /// Name cell: the selection marker, the name cut to `width` columns and,
-/// when the task has dependencies, a compact count such as `⛓ 2`.
+/// when the task has dependencies, a compact count such as `↳ 2`.
 fn name_cell(name: &str, dependencies: usize, selected: bool, width: usize) -> Cell<'static> {
     let glyphs = glyphs::glyphs();
     let marker = if selected { glyphs.selection } else { " " };
@@ -798,8 +798,8 @@ mod tests {
 
         let rendered = render_view(&view, 60, 8);
 
-        assert!(rendered.contains("⛓ 2"), "{rendered}");
-        assert_eq!(rendered.matches("⛓").count(), 1, "{rendered}");
+        assert!(rendered.contains("↳ 2"), "{rendered}");
+        assert_eq!(rendered.matches("↳").count(), 1, "{rendered}");
     }
 
     #[test]
