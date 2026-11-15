@@ -7,7 +7,7 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem},
 };
@@ -205,10 +205,10 @@ fn render_list(screen: &ProjectListScreen, frame: &mut Frame, area: Rect) {
         .enumerate()
         .map(|(offset, p)| {
             let i = range.start + offset;
-            let style = if i == screen.selected {
-                Style::default().add_modifier(Modifier::REVERSED)
+            let (style, marker) = if i == screen.selected {
+                (theme::theme().selection_style(), glyphs::glyphs().selection)
             } else {
-                Style::default()
+                (Style::default(), " ")
             };
             let counts = screen.task_counts.get(i).copied().unwrap_or([0; 3]);
             let tasks: u64 = counts.iter().sum();
@@ -218,7 +218,10 @@ fn render_list(screen: &ProjectListScreen, frame: &mut Frame, area: Rect) {
                 .with_filled_style(status_style(Status::Done))
                 .with_empty_style(theme::theme().muted_style());
 
-            let mut spans = vec![Span::raw(pad_display(&p.name, name_width)), Span::raw("  ")];
+            let mut spans = vec![
+                Span::raw(format!("{marker} {}", pad_display(&p.name, name_width))),
+                Span::raw("  "),
+            ];
             spans.extend(bar.line().spans);
             spans.push(Span::raw(format!(" {percentage:>3}%  ")));
             spans.push(Span::raw(format!(

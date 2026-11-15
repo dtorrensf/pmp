@@ -117,7 +117,13 @@ impl VersionDashboard {
         self.version = Some(version);
         self.summaries = self.repo.list_version_summaries(self.version_id)?;
         let tasks = self.repo.list_tasks_by_version(self.version_id)?;
+        let dependency_counts = tasks
+            .iter()
+            .filter_map(|task| task.id)
+            .map(|id| (id, self.repo.get_dependencies(id).unwrap_or_default().len()))
+            .collect::<std::collections::HashMap<_, _>>();
         self.view.set_tasks(tasks);
+        self.view.set_dependency_counts(dependency_counts);
         Ok(())
     }
 

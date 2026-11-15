@@ -1,12 +1,16 @@
 // Copyright (C) 2026 Diego Torréns Farias
 // SPDX-License-Identifier: AGPL-3.0-or-later
+use std::collections::HashMap;
+
 use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Flex, Layout, Rect},
     style::{Modifier, Style},
+    text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap},
 };
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::db::repository::Repository;
 use crate::domain::task::{Priority, Status, Task};
@@ -80,6 +84,8 @@ pub struct TaskListView {
     filter_priority: Option<Priority>,
     filter_title: Option<String>,
     mode: TaskListMode,
+    /// Number of dependencies of each task, keyed by task id.
+    dependency_counts: HashMap<i64, usize>,
 }
 
 impl TaskListView {
@@ -93,6 +99,7 @@ impl TaskListView {
             filter_priority: None,
             filter_title: None,
             mode: TaskListMode::Browsing,
+            dependency_counts: HashMap::new(),
         }
     }
 
@@ -158,6 +165,12 @@ impl TaskListView {
     pub fn set_tasks(&mut self, tasks: Vec<Task>) {
         self.all_tasks = tasks;
         self.apply_filter();
+    }
+
+    /// Number of tasks each task depends on, keyed by task id. Shown as a
+    /// compact indicator next to the task name. Missing ids count as zero.
+    pub fn set_dependency_counts(&mut self, counts: HashMap<i64, usize>) {
+        self.dependency_counts = counts;
     }
 
     fn apply_filter(&mut self) {
@@ -415,28 +428,13 @@ impl TaskListView {
             .max("ID".len()) as u16
             + 2;
 
-        let header =
-            Row::new(vec!["ID", "Name", "Status", "Priority"]).style(theme::theme().header_style());
-        let rows: Vec<Row> = self.tasks[range.clone()]
-            .iter()
-            .enumerate()
-            .map(|(offset, task)| {
-                let i = range.start + offset;
-                let style = if i == self.selected {
-                    Style::default().add_modifier(Modifier::REVERSED)
-                } else {
-                    status_row_style(task.status)
-                };
-                Row::new(vec![
-                    Cell::from(task.id.map_or_else(|| "-".to_string(), |id| id.to_string())),
-                    Cell::from(task.name.clone()),
-                    Cell::from(Badge::status(task.status).text()).style(status_style(task.status)),
-                    Cell::from(Badge::priority(task.priority).text())
-                        .style(priority_style(task.priority)),
-                ])
-                .style(style)
-            })
-            .collect();
+        let header = Row::new(vec![
+            Cell::from(Line::from("ID").right_aligned()),
+            Cell::from("Name"),
+            Cell::from("Status"),
+            Cell::from("Priority"),
+        ])
+        .style(theme::theme().header_style());
 
         let widths = [
             Constraint::Length(id_width),
@@ -449,9 +447,44 @@ impl TaskListView {
             self.filter_status,
             self.filter_priority,
         );
-        let table = Table::new(rows, widths)
-            .header(header)
-            .block(Block::default().title(title).borders(Borders::ALL));
+        let block = Block::default().title(title).borders(Borders::ALL);
+        // Width of the name column, so long names can be cut to fit it.
+        let name_width = Layout::horizontal(widths)
+            .spacing(1)
+            .flex(Flex::Start)
+            .split(block.inner(area))[1]
+            .width as usize;
+
+        let rows: Vec<Row> = self.tasks[range.clone()]
+            .iter()
+            .enumerate()
+            .map(|(offset, task)| {
+                let i = range.start + offset;
+                let selected = i == self.selected;
+                let style = if selected {
+                    theme::theme().selection_style()
+                } else {
+                    status_row_style(task.status)
+                };
+                let dependencies = task
+                    .id
+                    .and_then(|id| self.dependency_counts.get(&id).copied())
+                    .unwrap_or(0);
+                Row::new(vec![
+                    Cell::from(
+                        Line::from(task.id.map_or_else(|| "-".to_string(), |id| id.to_string()))
+                            .right_aligned(),
+                    ),
+                    name_cell(&task.name, dependencies, selected, name_width),
+                    Cell::from(Badge::status(task.status).text()).style(status_style(task.status)),
+                    Cell::from(Badge::priority(task.priority).text())
+                        .style(priority_style(task.priority)),
+                ])
+                .style(style)
+            })
+            .collect();
+
+        let table = Table::new(rows, widths).header(header).block(block);
         frame.render_widget(table, area);
 
         render_list_scrollbar(frame, area, 1, self.tasks.len(), range.start);
@@ -462,6 +495,46 @@ impl Default for TaskListView {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Name cell: the selection marker, the name cut to `width` columns and,
+/// when the task has dependencies, a compact count such as `⛓ 2`.
+fn name_cell(name: &str, dependencies: usize, selected: bool, width: usize) -> Cell<'static> {
+    let glyphs = glyphs::glyphs();
+    let marker = if selected { glyphs.selection } else { " " };
+    let suffix = if dependencies > 0 {
+        format!("  {} {dependencies}", glyphs.dependency)
+    } else {
+        String::new()
+    };
+    let available = width.saturating_sub(marker.width() + 1 + suffix.width());
+    Cell::from(Line::from(vec![
+        Span::raw(format!("{marker} {}", truncate_display(name, available))),
+        Span::raw(suffix),
+    ]))
+}
+
+/// Cuts `text` to at most `width` terminal columns. A cut text ends with an
+/// ellipsis that counts as one column.
+fn truncate_display(text: &str, width: usize) -> String {
+    if text.width() <= width {
+        return text.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let ch_width = ch.width().unwrap_or(0);
+        if used + ch_width + 1 > width {
+            break;
+        }
+        out.push(ch);
+        used += ch_width;
+    }
+    out.push('…');
+    out
 }
 
 fn task_list_title(
@@ -691,6 +764,56 @@ mod tests {
         view.set_tasks(numbered_tasks(3));
         let rendered = render_view(&view, 40, 13);
         assert!(rendered.contains("Task00") && rendered.contains("Task02"));
+    }
+
+    #[test]
+    fn long_names_are_cut_with_an_ellipsis_to_the_name_column() {
+        let mut view = TaskListView::new();
+        view.set_tasks(vec![task(
+            "Una descripción de tarea bastante más larga que la columna",
+            Status::Todo,
+        )]);
+
+        let rendered = render_view(&view, 40, 6);
+
+        assert!(rendered.contains('…'), "{rendered}");
+        assert!(!rendered.contains("columna"), "{rendered}");
+    }
+
+    #[test]
+    fn truncate_display_measures_columns_not_chars() {
+        // Each CJK character is two columns wide.
+        assert_eq!(truncate_display("ab漢字", 4), "ab…");
+        assert_eq!(truncate_display("abc", 3), "abc");
+        assert_eq!(truncate_display("abcd", 0), "");
+    }
+
+    #[test]
+    fn dependency_count_is_shown_next_to_the_name() {
+        let mut with_deps = task("Alpha", Status::Todo);
+        with_deps.id = Some(7);
+        let mut view = TaskListView::new();
+        view.set_tasks(vec![with_deps, task("Beta", Status::Todo)]);
+        view.set_dependency_counts(HashMap::from([(7, 2)]));
+
+        let rendered = render_view(&view, 60, 8);
+
+        assert!(rendered.contains("⛓ 2"), "{rendered}");
+        assert_eq!(rendered.matches("⛓").count(), 1, "{rendered}");
+    }
+
+    #[test]
+    fn selected_row_is_marked_with_the_selection_glyph() {
+        let mut view = TaskListView::new();
+        view.set_tasks(vec![
+            task("Alpha", Status::Todo),
+            task("Beta", Status::Todo),
+        ]);
+
+        let rendered = render_view(&view, 60, 8);
+
+        assert!(rendered.contains("▸ Alpha"), "{rendered}");
+        assert!(!rendered.contains("▸ Beta"), "{rendered}");
     }
 
     #[test]

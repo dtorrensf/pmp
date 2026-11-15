@@ -45,6 +45,8 @@ pub struct Glyphs {
     pub version_released: &'static str,
     /// Marker of the selected row.
     pub selection: &'static str,
+    /// Marker of the number of tasks a task depends on.
+    pub dependency: &'static str,
     /// Warning marker.
     pub warning: &'static str,
     /// Marker of an informational message.
@@ -75,6 +77,7 @@ impl Glyphs {
             version_open: "◐",
             version_released: "✔",
             selection: "▸",
+            dependency: "⛓",
             warning: "⚠",
             info: "»",
             success: "✓",
@@ -98,6 +101,7 @@ impl Glyphs {
             version_open: "*",
             version_released: "x",
             selection: ">",
+            dependency: "&",
             warning: "!",
             info: ">",
             success: "+",
@@ -110,7 +114,7 @@ impl Glyphs {
 
     /// Every glyph of the set, in a fixed order.
     #[cfg(test)]
-    fn all(&self) -> [&'static str; 17] {
+    fn all(&self) -> [&'static str; 18] {
         [
             self.status_todo,
             self.status_in_progress,
@@ -122,6 +126,7 @@ impl Glyphs {
             self.version_open,
             self.version_released,
             self.selection,
+            self.dependency,
             self.warning,
             self.info,
             self.success,

@@ -623,7 +623,7 @@ fn render_dep_popup(form: &TaskForm, frame: &mut Frame, area: Rect) {
             );
             let mut line = ratatui::text::Line::from(vec![name, status]);
             if i == form.popup_selected {
-                line = line.style(Style::default().add_modifier(Modifier::REVERSED));
+                line = line.style(crate::screens::components::theme::theme().selection_style());
             }
             line
         })
