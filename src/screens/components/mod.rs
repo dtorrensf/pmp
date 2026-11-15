@@ -10,6 +10,7 @@ pub mod glyphs;
 pub mod help;
 pub mod keys;
 pub mod list_navigation;
+pub mod motion;
 pub mod popup;
 pub mod progress;
 pub mod progress_bar;

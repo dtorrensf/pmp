@@ -21,6 +21,7 @@ use signal_hook::flag;
 use crate::app::App;
 use crate::screens::Action;
 use crate::screens::components::help;
+use crate::screens::components::motion;
 use crate::screens::components::popup::{centered_rect, render_popup_scaffold};
 use crate::screens::components::toast;
 use crate::screens::components::top_bar;
@@ -124,6 +125,31 @@ fn setup_signal_flag() -> anyhow::Result<Arc<AtomicBool>> {
     Ok(stop)
 }
 
+/// Publishes the frame time for the duration of the event loop and withdraws
+/// it on exit, so renders made outside the loop stay static.
+struct FrameClock {
+    started: std::time::Instant,
+}
+
+impl FrameClock {
+    fn start() -> Self {
+        Self {
+            started: std::time::Instant::now(),
+        }
+    }
+
+    /// Publishes the time elapsed since the loop started as the current frame.
+    fn publish(&self) {
+        motion::set_frame_time(Some(self.started.elapsed()));
+    }
+}
+
+impl Drop for FrameClock {
+    fn drop(&mut self) {
+        motion::set_frame_time(None);
+    }
+}
+
 fn run_loop<B, E>(
     app: &mut App,
     terminal: &mut Terminal<B>,
@@ -137,10 +163,13 @@ where
 {
     let mut refresh_tick = 0usize;
     let mut shown_title = String::new();
+    let frame_clock = FrameClock::start();
 
     while !stop.load(Ordering::Relaxed) {
+        frame_clock.publish();
         app.poll_update();
         app.tick();
+        app.active_component().tick();
         let title = top_bar::window_title(&app.breadcrumb());
         if title != shown_title {
             events.set_title(&title);
@@ -220,7 +249,8 @@ fn render_app_frame(app: &mut App, frame: &mut Frame) {
     }
     if let Some(toast) = app.toasts().current() {
         let queued = app.toasts().len();
-        toast::render(frame, toast, queued, body);
+        let age = app.toast_age().unwrap_or_default();
+        toast::render(frame, toast, queued, body, age);
     }
 }
 
@@ -899,5 +929,15 @@ mod tests {
         app.set_current_version("0.3.0");
         app.open_update_banner();
         insta::assert_snapshot!(render_app_to_string(&mut app));
+    }
+
+    #[test]
+    fn frame_clock_withdraws_frame_time_when_the_loop_ends() {
+        {
+            let clock = FrameClock::start();
+            clock.publish();
+            assert!(motion::frame_time().is_some());
+        }
+        assert_eq!(motion::frame_time(), None);
     }
 }

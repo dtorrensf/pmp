@@ -84,18 +84,20 @@ Use the **arrow keys** to navigate, **Tab** to change statuses or jump between p
 
 #### Appearance
 
-PMP uses the terminal's own ANSI palette, so it adapts to light and dark themes without extra configuration. Two environment variables are available:
+PMP uses the terminal's own ANSI palette, so it adapts to light and dark themes without extra configuration. These environment variables are available:
 
 | Variable | Effect |
 | --- | --- |
 | `NO_COLOR` | When set to a non-empty value, colors are disabled and only shapes and bold text are used. |
 | `PMP_THEME` | Selects a built-in palette: `default` or `bright` (the high-contrast ANSI variants). Unknown names fall back to `default`. |
 | `PMP_ASCII` | When set to a non-empty value, the ASCII glyph set replaces the Unicode one, for terminals without Unicode support. |
+| `PMP_REDUCED_MOTION` | When set to a non-empty value other than `0`, turns off animations: gauges and bars jump to their value, the in-progress spinner stays still, and toasts appear without sliding. |
 
 ```bash
 NO_COLOR=1 pmp        # monochrome
 PMP_THEME=bright pmp  # high contrast
 PMP_ASCII=1 pmp        # ASCII glyphs
+PMP_REDUCED_MOTION=1 pmp  # no animations
 ```
 
 ### MCP Server

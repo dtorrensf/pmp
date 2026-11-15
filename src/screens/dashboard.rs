@@ -23,6 +23,7 @@ use crate::screens::components::glyphs;
 use crate::screens::components::help::{self, HelpSection};
 use crate::screens::components::keys::key;
 use crate::screens::components::list_navigation::move_selection;
+use crate::screens::components::motion::Tween;
 use crate::screens::components::progress::{completion_percentage, percent};
 use crate::screens::components::scroll::{
     ListScroll, TextScroll, list_rows, render_list_scrollbar, wrapped_line_count,
@@ -101,6 +102,8 @@ pub struct ProjectDashboard {
     confirm_delete: ConfirmState,
     description_scroll: TextScroll,
     versions_scroll: ListScroll,
+    /// Eased fill of the progress gauge.
+    gauge: Tween,
 }
 
 impl ProjectDashboard {
@@ -132,6 +135,18 @@ impl ProjectDashboard {
             confirm_delete: ConfirmState::default(),
             description_scroll: TextScroll::new(),
             versions_scroll: ListScroll::new(),
+            gauge: Tween::settled(0.0),
+        }
+    }
+
+    /// Fraction of the project's tasks that are done, for the gauge.
+    fn gauge_ratio(&self) -> f64 {
+        let [_, _, done] = status_counts(&self.all_tasks);
+        let total = self.all_tasks.len() as u64;
+        if total == 0 {
+            0.0
+        } else {
+            done as f64 / total as f64
         }
     }
 
@@ -199,11 +214,19 @@ impl ProjectDashboard {
 impl Component for ProjectDashboard {
     fn init(&mut self) -> anyhow::Result<()> {
         self.confirm_delete.close();
-        self.load()
+        self.load()?;
+        // Opening the project shows its real progress at once; only later
+        // changes are animated.
+        self.gauge = Tween::settled(self.gauge_ratio());
+        Ok(())
     }
 
     fn refresh(&mut self) -> anyhow::Result<()> {
         self.load()
+    }
+
+    fn tick(&mut self) {
+        self.gauge.set(self.gauge_ratio());
     }
 
     fn help_sections(&self) -> Vec<HelpSection> {
@@ -364,14 +387,9 @@ impl Component for ProjectDashboard {
         let total = self.all_tasks.len() as u64;
         let done = counts[2];
         let percentage = completion_percentage(&self.all_tasks);
-        let ratio = if total == 0 {
-            0.0
-        } else {
-            done as f64 / total as f64
-        };
         let gauge = Gauge::default()
             .block(Block::default().title("Progress").borders(Borders::ALL))
-            .ratio(ratio)
+            .ratio(self.gauge.value())
             .use_unicode(true)
             .label(format!("{done}/{total} tasks ({percentage}%)"));
         // The activity sparkline sits beside the gauge when there is room.

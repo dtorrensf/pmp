@@ -21,6 +21,7 @@ use ratatui::{
 };
 
 use crate::screens::components::glyphs;
+use crate::screens::components::motion;
 use crate::screens::components::scroll::wrapped_line_count;
 use crate::screens::components::theme;
 
@@ -82,6 +83,11 @@ pub struct Toast {
 }
 
 impl Toast {
+    /// Time elapsed since the message was queued.
+    pub fn age(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.created_at)
+    }
+
     fn expired(&self, now: Instant) -> bool {
         self.severity.auto_dismisses()
             && now.saturating_duration_since(self.created_at) >= AUTO_DISMISS_AFTER
@@ -163,7 +169,10 @@ impl Toasts {
 
 /// Draws the toast for `toast` right-aligned at the bottom of `area`, which
 /// should be the content area directly above the footer.
-pub fn render(frame: &mut Frame, toast: &Toast, queued: usize, area: Rect) {
+///
+/// `age` is how long the message has been queued. While motion is on, a new
+/// toast slides in from the right edge and is drawn dimmed until it settles.
+pub fn render(frame: &mut Frame, toast: &Toast, queued: usize, area: Rect, age: Duration) {
     let width = MAX_WIDTH.min(area.width);
     let text_width = width.saturating_sub(CHROME_WIDTH).max(1);
     let lines = wrapped_line_count(&toast.message, text_width).max(1) as u16;
@@ -171,14 +180,24 @@ pub fn render(frame: &mut Frame, toast: &Toast, queued: usize, area: Rect) {
     if height == 0 || width <= CHROME_WIDTH {
         return;
     }
+    let progress = motion::entrance_progress(age);
+    let slide = ((1.0 - motion::ease_out(progress)) * width as f64).round() as u16;
     let rect = Rect {
-        x: area.right() - width,
+        x: (area.right() - width).saturating_add(slide),
         y: area.bottom() - height,
         width,
         height,
-    };
+    }
+    .intersection(frame.area());
+    if rect.is_empty() {
+        return;
+    }
+    let settling = progress < 1.0;
 
-    let style = toast.severity.style();
+    let mut style = toast.severity.style();
+    if settling {
+        style = style.add_modifier(Modifier::DIM);
+    }
     let mut title = format!(" {} {}", toast.severity.icon(), toast.severity.title());
     if queued > 1 {
         title.push_str(&format!(" (1/{queued})"));
@@ -193,8 +212,12 @@ pub fn render(frame: &mut Frame, toast: &Toast, queued: usize, area: Rect) {
         .border_style(style);
 
     frame.render_widget(Clear, rect);
+    let mut text_style = theme::theme().text_style();
+    if settling {
+        text_style = text_style.add_modifier(Modifier::DIM);
+    }
     let paragraph = Paragraph::new(toast.message.as_str())
-        .style(theme::theme().text_style())
+        .style(text_style)
         .block(block)
         .wrap(Wrap { trim: true });
     frame.render_widget(paragraph, rect);
@@ -309,8 +332,39 @@ mod tests {
         for (w, h) in [(0, 0), (1, 1), (4, 3), (12, 4), (80, 24)] {
             let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
             terminal
-                .draw(|frame| render(frame, toast, 1, frame.area()))
+                .draw(|frame| render(frame, toast, 1, frame.area(), Duration::ZERO))
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn new_toast_slides_in_while_motion_is_on() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let t0 = base();
+        let mut toasts = Toasts::default();
+        toasts.push(Severity::Success, "Slides in", t0);
+        let toast = toasts.current().unwrap().clone();
+
+        let draw = |age: Duration| {
+            let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+            motion::with_frame_time(Some(Duration::ZERO), || {
+                terminal
+                    .draw(|frame| render(frame, &toast, 1, frame.area(), age))
+                    .unwrap();
+            });
+            let buffer = terminal.backend().buffer().clone();
+            (0..buffer.area().height)
+                .map(|y| {
+                    (0..buffer.area().width)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        assert!(!draw(Duration::ZERO).contains("Slides in"));
+        assert!(draw(motion::TOAST_ENTRANCE).contains("Slides in"));
     }
 }

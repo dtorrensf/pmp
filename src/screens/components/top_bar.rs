@@ -67,7 +67,11 @@ pub fn render(
 
     if let Some(text) = update_text {
         let badge = Paragraph::new(format!("{text} "))
-            .style(theme.warning_style().add_modifier(Modifier::BOLD))
+            .style(
+                theme
+                    .pulse_style(theme.warning)
+                    .add_modifier(Modifier::BOLD),
+            )
             .alignment(Alignment::Right);
         frame.render_widget(badge, parts[2]);
     }

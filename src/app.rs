@@ -146,6 +146,12 @@ impl App {
         self.toasts.tick(now);
     }
 
+    /// How long the toast on screen has been queued, if there is one.
+    pub fn toast_age(&self) -> Option<std::time::Duration> {
+        let now = (self.clock)();
+        self.toasts.current().map(|toast| toast.age(now))
+    }
+
     /// Handles `Esc` while an error toast is on screen: closes it and consumes
     /// the key, so the screen behind does not also go back. Returns `true`
     /// when the key was consumed.

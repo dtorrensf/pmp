@@ -39,6 +39,10 @@ pub trait Component {
     fn refresh(&mut self) -> anyhow::Result<()> {
         self.init()
     }
+    /// Advances time-driven state (eased values, pending celebrations). Called
+    /// by the event loop about every 100 ms for the active component. Reads the
+    /// frame time published through `components::motion`; does nothing by default.
+    fn tick(&mut self) {}
     fn handle_event(&mut self, _event: &Event) -> Option<Action> {
         None
     }

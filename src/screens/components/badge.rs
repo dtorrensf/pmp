@@ -11,6 +11,7 @@ use ratatui::text::Span;
 
 use crate::domain::task::{Priority, Status};
 use crate::screens::components::glyphs;
+use crate::screens::components::motion;
 use crate::screens::components::theme;
 
 /// A label with an optional leading glyph and its own style.
@@ -48,6 +49,15 @@ impl Badge {
         Badge::new(status.label())
             .with_glyph(glyphs::status_icon(status))
             .with_style(theme::status_style(status))
+    }
+
+    /// Like [`Badge::status`], but a task in progress shows the animated
+    /// spinner in place of its static icon.
+    pub fn status_live(status: Status) -> Badge {
+        match status {
+            Status::InProgress => Badge::status(status).with_glyph(motion::spinner_glyph()),
+            _ => Badge::status(status),
+        }
     }
 
     /// The badge of a task priority: its glyph, its label and its theme color.

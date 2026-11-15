@@ -567,7 +567,8 @@ impl TaskListView {
                             .right_aligned(),
                     ),
                     name_cell(&task.name, dependencies, selected, name_width),
-                    Cell::from(Badge::status(task.status).text()).style(status_style(task.status)),
+                    Cell::from(Badge::status_live(task.status).text())
+                        .style(status_style(task.status)),
                     Cell::from(Badge::priority(task.priority).text())
                         .style(priority_style(task.priority)),
                 ])
@@ -1008,8 +1009,9 @@ mod tests {
 
         let rendered = render_view(&view, 60, 10);
 
-        // The state is not communicated by color alone.
-        assert!(rendered.contains("◐ In Progress"), "{rendered}");
+        // The state is not communicated by color alone. Without a frame time
+        // the spinner shows its first frame.
+        assert!(rendered.contains("⠋ In Progress"), "{rendered}");
     }
 
     #[test]

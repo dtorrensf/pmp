@@ -42,6 +42,7 @@ use serde::Deserialize;
 
 use crate::domain::task::{Priority, Status};
 use crate::domain::version::VersionStatus;
+use crate::screens::components::motion;
 
 /// Environment variable that disables colors when set to a non-empty value.
 pub const NO_COLOR_ENV: &str = "NO_COLOR";
@@ -274,7 +275,21 @@ impl Theme {
 
     /// Style of the focused element's border.
     pub fn border_focus_style(&self) -> Style {
-        self.fg(self.border_focus)
+        self.pulse_fg(self.border_focus)
+    }
+
+    /// Foreground that pulses gently while animations are on. Only RGB colors
+    /// can be blended, so the default ANSI palette stays steady.
+    pub fn pulse_style(&self, color: Color) -> Style {
+        self.pulse_fg(color)
+    }
+
+    fn pulse_fg(&self, color: Color) -> Style {
+        if self.colors_enabled {
+            Style::default().fg(motion::pulse_color(color))
+        } else {
+            Style::default()
+        }
     }
 
     /// Style of the accent color.
@@ -311,7 +326,9 @@ impl Theme {
     /// Style of the selected row.
     pub fn selection_style(&self) -> Style {
         if self.colors_enabled {
-            Style::default().bg(self.selection_bg).fg(self.selection_fg)
+            Style::default()
+                .bg(motion::pulse_color(self.selection_bg))
+                .fg(self.selection_fg)
         } else {
             Style::default().add_modifier(Modifier::REVERSED)
         }

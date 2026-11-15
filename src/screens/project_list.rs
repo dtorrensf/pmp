@@ -21,6 +21,7 @@ use crate::screens::components::glyphs;
 use crate::screens::components::help::{self, HelpSection};
 use crate::screens::components::keys::key;
 use crate::screens::components::list_navigation::move_selection;
+use crate::screens::components::motion::Tween;
 use crate::screens::components::progress::percent;
 use crate::screens::components::progress_bar::ProgressBar;
 use crate::screens::components::scroll::{ListScroll, list_rows, render_list_scrollbar};
@@ -34,6 +35,8 @@ pub struct ProjectListScreen {
     /// Tasks per status for each project, see `status_counts`.
     task_counts: Vec<[u64; 3]>,
     version_counts: Vec<usize>,
+    /// Eased fill of each project's progress bar, indexed like `projects`.
+    bars: Vec<Tween>,
     selected: usize,
     scroll: ListScroll,
     confirm: ConfirmState,
@@ -57,6 +60,7 @@ impl ProjectListScreen {
             projects: Vec::new(),
             task_counts: Vec::new(),
             version_counts: Vec::new(),
+            bars: Vec::new(),
             selected: 0,
             scroll: ListScroll::new(),
             confirm: ConfirmState::default(),
@@ -69,6 +73,24 @@ impl ProjectListScreen {
 }
 
 impl Component for ProjectListScreen {
+    fn tick(&mut self) {
+        let targets: Vec<f64> = self
+            .task_counts
+            .iter()
+            .map(|counts| {
+                let tasks: u64 = counts.iter().sum();
+                percent(counts[2], tasks) as f64 / 100.0
+            })
+            .collect();
+        for (i, target) in targets.iter().enumerate() {
+            match self.bars.get_mut(i) {
+                Some(bar) => bar.set(*target),
+                None => self.bars.push(Tween::settled(*target)),
+            }
+        }
+        self.bars.truncate(targets.len());
+    }
+
     fn init(&mut self) -> anyhow::Result<()> {
         self.projects = self.repo.list_projects()?;
         self.task_counts = self
@@ -214,7 +236,12 @@ fn render_list(screen: &ProjectListScreen, frame: &mut Frame, area: Rect) {
             let tasks: u64 = counts.iter().sum();
             let percentage = percent(counts[2], tasks);
             let versions = screen.version_counts.get(i).copied().unwrap_or(0);
-            let bar = ProgressBar::new(percentage as f64 / 100.0, PROGRESS_BAR_WIDTH)
+            // The label shows the real percentage; the bar eases toward it.
+            let ratio = screen
+                .bars
+                .get(i)
+                .map_or(percentage as f64 / 100.0, Tween::value);
+            let bar = ProgressBar::new(ratio, PROGRESS_BAR_WIDTH)
                 .with_filled_style(status_style(Status::Done))
                 .with_empty_style(theme::theme().muted_style());
 

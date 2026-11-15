@@ -20,6 +20,7 @@ use crate::domain::version::{Version, VersionStatus};
 use crate::domain::version_summary::VersionSummary;
 use crate::screens::components::help::{self, HelpSection};
 use crate::screens::components::keys::key;
+use crate::screens::components::motion;
 use crate::screens::components::theme;
 use crate::screens::task_list_view::{DependencySummary, TaskListView};
 pub use crate::screens::task_list_view::{FilterField, FilterState, TaskListMode};
@@ -33,6 +34,19 @@ pub struct VersionDashboard {
     version: Option<Version>,
     summaries: Vec<VersionSummary>,
     view: TaskListView,
+    /// Last state seen for `version_id`, used to detect a celebration.
+    observed: Option<VersionMilestones>,
+    /// Frame time at which the current celebration started, if any.
+    celebration: Option<Duration>,
+}
+
+/// The milestones a version can celebrate: all its tasks done, or a summary
+/// created by compaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VersionMilestones {
+    version_id: i64,
+    complete: bool,
+    compacted: bool,
 }
 
 impl VersionDashboard {
@@ -65,6 +79,8 @@ impl VersionDashboard {
             version: None,
             summaries: Vec::new(),
             view: TaskListView::new(),
+            observed: None,
+            celebration: None,
         }
     }
 
@@ -146,7 +162,33 @@ impl VersionDashboard {
             .collect::<std::collections::HashMap<_, _>>();
         self.view.set_tasks(tasks);
         self.view.set_dependency_summaries(dependency_summaries);
+        self.observe_milestones();
         Ok(())
+    }
+
+    /// Starts a celebration when the version has just reached one of its
+    /// milestones. The first state seen for a version is a baseline, so
+    /// opening an already finished version does not celebrate.
+    fn observe_milestones(&mut self) {
+        let current = VersionMilestones {
+            version_id: self.version_id,
+            complete: self.is_complete(),
+            compacted: !self.summaries.is_empty(),
+        };
+        if let Some(previous) = self.observed
+            && previous.version_id == current.version_id
+            && ((!previous.complete && current.complete)
+                || (!previous.compacted && current.compacted))
+        {
+            self.celebration = motion::frame_time();
+        }
+        self.observed = Some(current);
+    }
+
+    /// `true` when the version has tasks and all of them are done.
+    fn is_complete(&self) -> bool {
+        let tasks = self.view.all_tasks();
+        !tasks.is_empty() && tasks.iter().all(|task| task.status == Status::Done)
     }
 
     fn latest_summary_id(&self) -> Option<i64> {
@@ -240,10 +282,13 @@ impl Component for VersionDashboard {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect) {
-        let block = Block::default()
+        let mut block = Block::default()
             .title(self.breadcrumb())
             .title_bottom(self.view.table_title())
             .borders(Borders::ALL);
+        if motion::celebrating(self.celebration) {
+            block = block.border_style(theme::theme().success_style().add_modifier(Modifier::BOLD));
+        }
         let inner = block.inner(area);
         frame.render_widget(block, area);
         self.view.render(frame, inner);
@@ -1129,5 +1174,74 @@ mod tests {
         screen.init().unwrap();
         screen.handle_event(&key_event(KeyCode::Char('m')));
         assert!(screen.view.is_browsing());
+    }
+
+    fn complete_every_task(repo: &StubRepository, version_id: i64) {
+        for task in repo.list_tasks_by_version(version_id).unwrap() {
+            repo.update_task_status(task.id.unwrap(), Status::Done)
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn completing_the_last_task_celebrates_on_refresh() {
+        let (repo, mut screen, _project_id) = setup_with_tasks();
+        let version_id = screen.version_id();
+        let start = Duration::from_secs(10);
+
+        motion::with_frame_time(Some(start), || {
+            complete_every_task(&repo, version_id);
+            screen.refresh().unwrap();
+            assert!(motion::celebrating(screen.celebration));
+        });
+        motion::with_frame_time(Some(start + motion::CELEBRATION_DURATION), || {
+            assert!(!motion::celebrating(screen.celebration));
+        });
+    }
+
+    #[test]
+    fn opening_an_already_finished_version_does_not_celebrate() {
+        let (repo, _screen, _project_id) = setup_with_tasks();
+        let version_id = repo.default_version_id(1).unwrap();
+        complete_every_task(&repo, version_id);
+
+        let mut screen = VersionDashboard::new(repo.clone());
+        screen.set_ids(1, version_id);
+        motion::with_frame_time(Some(Duration::from_secs(10)), || {
+            screen.init().unwrap();
+        });
+
+        assert_eq!(screen.celebration, None);
+    }
+
+    #[test]
+    fn a_summary_created_by_compaction_celebrates() {
+        let (repo, mut screen, _project_id) = setup_with_tasks();
+        let version_id = screen.version_id();
+        complete_every_task(&repo, version_id);
+        motion::with_frame_time(Some(Duration::from_secs(1)), || {
+            screen.refresh().unwrap();
+        });
+        assert!(screen.celebration.is_some());
+
+        screen.celebration = None;
+        let snapshot = repo.build_compact_snapshot(version_id).unwrap();
+        repo.compact_version(version_id, "Summary", &snapshot)
+            .unwrap();
+        motion::with_frame_time(Some(Duration::from_secs(2)), || {
+            screen.refresh().unwrap();
+        });
+
+        assert_eq!(screen.celebration, Some(Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn celebration_is_silent_without_animation() {
+        let (repo, mut screen, _project_id) = setup_with_tasks();
+        complete_every_task(&repo, screen.version_id());
+
+        screen.refresh().unwrap();
+
+        assert!(!motion::celebrating(screen.celebration));
     }
 }
