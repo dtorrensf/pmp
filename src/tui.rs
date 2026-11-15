@@ -8,30 +8,34 @@ use std::time::Duration;
 use anyhow::Context;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    EnterAlternateScreen, LeaveAlternateScreen, SetTitle, disable_raw_mode, enable_raw_mode,
 };
 use crossterm::{ExecutableCommand, cursor};
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::Modifier;
 use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
-use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 use crate::screens::Action;
 use crate::screens::components::help;
 use crate::screens::components::popup::{centered_rect, render_popup_scaffold};
-use crate::screens::components::theme;
 use crate::screens::components::toast;
+use crate::screens::components::top_bar;
 use crate::screens::keybinding_footer::render_footer;
 use crate::update::update_command;
 
 /// Polling timeout for each iteration of the TUI event loop.
 const EVENT_TIMEOUT: Duration = Duration::from_millis(100);
-const UPDATE_HINT_MIN_WIDTH: u16 = 100;
+/// xterm-style escape codes that save and restore the window title. Terminals
+/// that do not support them ignore the sequences.
+const PUSH_TITLE: &[u8] = b"\x1b[22;0t";
+const POP_TITLE: &[u8] = b"\x1b[23;0t";
+/// Whether the title was pushed and still needs restoring. Guards against a
+/// second restore (panic hook followed by `Drop`) popping an outer title.
+static TITLE_PUSHED: AtomicBool = AtomicBool::new(false);
 
 struct CancelUpdateCheckOnDrop(Option<Arc<AtomicBool>>);
 
@@ -59,6 +63,9 @@ fn restore_terminal() {
 fn restore_terminal_on(out: &mut impl Write) {
     let _ = disable_raw_mode();
     let _ = out.execute(LeaveAlternateScreen);
+    if TITLE_PUSHED.swap(false, Ordering::Relaxed) {
+        let _ = out.write_all(POP_TITLE);
+    }
     let _ = out.execute(cursor::Show);
 }
 
@@ -75,6 +82,8 @@ impl TerminalGuard {
             .execute(EnterAlternateScreen)
             .context("enter alternate screen")?;
         stdout.execute(cursor::Hide).context("hide cursor")?;
+        stdout.write_all(PUSH_TITLE).context("save window title")?;
+        TITLE_PUSHED.store(true, Ordering::Relaxed);
         Ok(Self)
     }
 }
@@ -127,10 +136,16 @@ where
     E: EventSource,
 {
     let mut refresh_tick = 0usize;
+    let mut shown_title = String::new();
 
     while !stop.load(Ordering::Relaxed) {
         app.poll_update();
         app.tick();
+        let title = top_bar::window_title(&app.breadcrumb());
+        if title != shown_title {
+            events.set_title(&title);
+            shown_title = title;
+        }
         terminal.draw(|frame| render_app_frame(app, frame))?;
 
         let event = events.next_event(EVENT_TIMEOUT)?;
@@ -178,12 +193,24 @@ fn render_app_frame(app: &mut App, frame: &mut Frame) {
     let area = frame.area();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
         .split(area);
+    let (top, body, footer) = (chunks[0], chunks[1], chunks[2]);
+    top_bar::render(
+        frame,
+        top,
+        &app.breadcrumb(),
+        app.current_version(),
+        app.update_version(),
+    );
     let keys = app.active_component().keybindings();
-    app.active_component().render(frame, chunks[0]);
+    app.active_component().render(frame, body);
     let help_hint = !app.screen.accepts_text_input();
-    render_footer_row(frame, chunks[1], keys, app.update_version(), help_hint);
+    render_footer(frame, footer, keys, help_hint);
     if let (true, Some(version)) = (app.is_update_banner_open(), app.update_version()) {
         render_update_banner(frame, version, app.current_version(), area);
     }
@@ -193,38 +220,8 @@ fn render_app_frame(app: &mut App, frame: &mut Frame) {
     }
     if let Some(toast) = app.toasts().current() {
         let queued = app.toasts().len();
-        toast::render(frame, toast, queued, chunks[0]);
+        toast::render(frame, toast, queued, body);
     }
-}
-
-/// Renders the keybinding footer, plus a yellow `New vX.Y.Z (u)` hint on the
-/// right when a newer version is available.
-fn render_footer_row(
-    frame: &mut Frame,
-    area: Rect,
-    keys: &[(crossterm::event::KeyEvent, &str)],
-    update_version: Option<&str>,
-    help_hint: bool,
-) {
-    let Some(version) = update_version else {
-        render_footer(frame, area, keys, help_hint);
-        return;
-    };
-    if area.width < UPDATE_HINT_MIN_WIDTH {
-        render_footer(frame, area, keys, help_hint);
-        return;
-    }
-    let hint = format!("⬆ New v{version} (u)");
-    let hint_width = (hint.width() as u16).min(area.width);
-    let parts = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(0), Constraint::Length(hint_width)])
-        .split(area);
-    render_footer(frame, parts[0], keys, help_hint);
-    frame.render_widget(
-        Paragraph::new(hint).style(theme::theme().warning_style().add_modifier(Modifier::BOLD)),
-        parts[1],
-    );
 }
 
 fn render_update_banner(frame: &mut Frame, version: &str, current_version: &str, area: Rect) {
@@ -239,6 +236,9 @@ fn render_update_banner(frame: &mut Frame, version: &str, current_version: &str,
 
 trait EventSource {
     fn next_event(&mut self, timeout: Duration) -> anyhow::Result<Option<Event>>;
+    /// Sets the terminal window title. Does nothing by default so that tests
+    /// never write escape codes to the real terminal.
+    fn set_title(&mut self, _title: &str) {}
 }
 
 struct CrosstermEvents;
@@ -250,6 +250,10 @@ impl EventSource for CrosstermEvents {
         } else {
             Ok(None)
         }
+    }
+
+    fn set_title(&mut self, title: &str) {
+        let _ = io::stdout().execute(SetTitle(title));
     }
 }
 
@@ -618,6 +622,62 @@ mod tests {
         );
     }
 
+    /// Event source that records every window title the loop asks for.
+    struct TitleRecorder {
+        titles: Vec<String>,
+        remaining: usize,
+        stop: Arc<AtomicBool>,
+    }
+
+    impl EventSource for TitleRecorder {
+        fn next_event(&mut self, _timeout: Duration) -> anyhow::Result<Option<Event>> {
+            if self.remaining == 0 {
+                self.stop.store(true, Ordering::Relaxed);
+            }
+            self.remaining = self.remaining.saturating_sub(1);
+            Ok(None)
+        }
+
+        fn set_title(&mut self, title: &str) {
+            self.titles.push(title.to_string());
+        }
+    }
+
+    #[test]
+    fn window_title_is_set_for_the_current_context_only_when_it_changes() {
+        let (_repo, mut app) = setup_app_with_project();
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut source = TitleRecorder {
+            titles: Vec::new(),
+            remaining: 3,
+            stop: stop.clone(),
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+
+        run_loop(&mut app, &mut terminal, &mut source, &stop).unwrap();
+        assert_eq!(source.titles, vec!["pmp — Projects".to_string()]);
+
+        app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id: 1 }));
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut source = TitleRecorder {
+            titles: Vec::new(),
+            remaining: 2,
+            stop: stop.clone(),
+        };
+        run_loop(&mut app, &mut terminal, &mut source, &stop).unwrap();
+        assert_eq!(source.titles, vec!["pmp — Alpha".to_string()]);
+    }
+
+    #[test]
+    fn top_bar_shows_breadcrumb_on_the_first_row() {
+        let (_repo, mut app) = setup_app_with_project();
+        app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id: 1 }));
+        let text = render_app_to_string_at_size(&mut app, 120, 24);
+        let first = text.lines().next().unwrap();
+        assert!(first.contains("PMP v"), "{first:?}");
+        assert!(first.contains("Alpha"), "{first:?}");
+    }
+
     #[test]
     fn sigterm_flag_breaks_loop() {
         let (_repo, mut app) = setup_app_with_project();
@@ -816,22 +876,14 @@ mod tests {
     }
 
     #[test]
-    fn footer_shows_update_hint_when_available() {
+    fn update_hint_is_in_the_top_bar_not_the_footer() {
         let (_repo, mut app) = app_with_update("0.4.0");
         let text = render_app_to_string_at_size(&mut app, 120, 24);
+        let first = text.lines().next().unwrap();
         let last_line = text.lines().last().unwrap();
-        assert!(last_line.contains("⬆ New v0.4.0 (u)"));
+        assert!(first.contains("⬆ New v0.4.0 (u)"), "{first:?}");
+        assert!(!last_line.contains("(u)"), "{last_line:?}");
         assert!(last_line.contains("Enter: Open"));
-    }
-
-    #[test]
-    fn footer_hides_update_hint_when_terminal_is_narrow() {
-        let (_repo, mut app) = app_with_update("0.4.0");
-        let text = render_app_to_string_at_size(&mut app, 40, 24);
-        let footer = text.lines().last().unwrap();
-
-        assert!(!footer.contains("⬆ New v0.4.0 (u)"));
-        assert!(footer.contains("Enter: Open"));
     }
 
     #[test]

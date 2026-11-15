@@ -16,3 +16,4 @@ pub mod scroll;
 pub mod stacked_bar;
 pub mod theme;
 pub mod toast;
+pub mod top_bar;

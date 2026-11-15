@@ -610,7 +610,7 @@ fn name_cell(
 
 /// Cuts `text` to at most `width` terminal columns. A cut text ends with an
 /// ellipsis that counts as one column.
-fn truncate_display(text: &str, width: usize) -> String {
+pub fn truncate_display(text: &str, width: usize) -> String {
     if text.width() <= width {
         return text.to_string();
     }

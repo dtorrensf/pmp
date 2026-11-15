@@ -171,6 +171,72 @@ impl App {
         self.toasts.push(Severity::Success, message, now);
     }
 
+    /// Context of the active screen as breadcrumb segments, outermost first.
+    /// Names that can no longer be loaded fall back to a generic label.
+    pub fn breadcrumb(&self) -> Vec<String> {
+        let project = |id: i64| {
+            self.repo
+                .get_project(id)
+                .map(|p| p.name)
+                .unwrap_or_else(|_| "Project".to_string())
+        };
+        let version = |id: i64| {
+            self.repo
+                .get_version(id)
+                .map(|v| (v.project_id, v.name))
+                .unwrap_or_else(|_| (0, "Version".to_string()))
+        };
+        let crumbs: Vec<&str> = match &self.screen {
+            Screen::ProjectList => return vec!["Projects".to_string()],
+            Screen::ProjectDashboard { project_id } => return vec![project(*project_id)],
+            Screen::ProjectForm { project_id: None } => vec!["Projects", "New project"],
+            Screen::ProjectForm {
+                project_id: Some(id),
+            } => return vec![project(*id), "Edit project".to_string()],
+            Screen::TaskForm {
+                version_id,
+                task_id,
+            } => {
+                let (project_id, version_name) = version(*version_id);
+                let task = if task_id.is_some() {
+                    "Edit task"
+                } else {
+                    "New task"
+                };
+                return vec![project(project_id), version_name, task.to_string()];
+            }
+            Screen::VersionDashboard {
+                project_id,
+                version_id,
+            } => {
+                return vec![project(*project_id), version(*version_id).1];
+            }
+            Screen::VersionForm {
+                project_id,
+                version_id,
+            } => {
+                let label = if version_id.is_some() {
+                    "Edit version"
+                } else {
+                    "New version"
+                };
+                return vec![project(*project_id), label.to_string()];
+            }
+            Screen::VersionSummary {
+                project_id,
+                version_id,
+                ..
+            } => {
+                return vec![
+                    project(*project_id),
+                    version(*version_id).1,
+                    "Summary".to_string(),
+                ];
+            }
+        };
+        crumbs.into_iter().map(str::to_string).collect()
+    }
+
     /// Returns the version compiled into the running binary, used in the
     /// update banner as the "current" version the user is running.
     pub fn current_version(&self) -> &str {
@@ -636,6 +702,70 @@ impl App {
                 &mut self.components.version_summary
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod breadcrumb_tests {
+    use std::sync::Arc;
+
+    use crate::db::repository::{ProjectRepository, RepositoryPolicy, VersionRepository};
+    use crate::db::stub::StubRepository;
+    use crate::screens::Screen;
+
+    use super::App;
+
+    fn app_with_project() -> (Arc<StubRepository>, App, i64, i64) {
+        let repo = Arc::new(StubRepository::default());
+        let project = repo.create_project("Alpha", "").unwrap();
+        let project_id = project.id.unwrap();
+        let version_id = repo.default_version_id(project_id).unwrap();
+        let app = App::new(repo.clone());
+        (repo, app, project_id, version_id)
+    }
+
+    #[test]
+    fn project_list_breadcrumb_is_the_root() {
+        let (_repo, app, _, _) = app_with_project();
+        assert_eq!(app.breadcrumb(), vec!["Projects"]);
+    }
+
+    #[test]
+    fn project_dashboard_breadcrumb_shows_the_project_name() {
+        let (_repo, mut app, project_id, _) = app_with_project();
+        app.screen = Screen::ProjectDashboard { project_id };
+        assert_eq!(app.breadcrumb(), vec!["Alpha"]);
+    }
+
+    #[test]
+    fn version_dashboard_breadcrumb_shows_project_then_version() {
+        let (repo, mut app, project_id, version_id) = app_with_project();
+        let version_name = repo.get_version(version_id).unwrap().name;
+        app.screen = Screen::VersionDashboard {
+            project_id,
+            version_id,
+        };
+        assert_eq!(app.breadcrumb(), vec!["Alpha".to_string(), version_name]);
+    }
+
+    #[test]
+    fn task_form_breadcrumb_adds_the_action() {
+        let (_repo, mut app, _, version_id) = app_with_project();
+        app.screen = Screen::TaskForm {
+            version_id,
+            task_id: None,
+        };
+        let crumbs = app.breadcrumb();
+        assert_eq!(crumbs.first().map(String::as_str), Some("Alpha"));
+        assert_eq!(crumbs.last().map(String::as_str), Some("New task"));
+        assert_eq!(crumbs.len(), 3);
+    }
+
+    #[test]
+    fn missing_project_falls_back_to_generic_label() {
+        let (_repo, mut app, _, _) = app_with_project();
+        app.screen = Screen::ProjectDashboard { project_id: 999 };
+        assert_eq!(app.breadcrumb(), vec!["Project"]);
     }
 }
 
