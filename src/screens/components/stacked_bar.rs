@@ -6,6 +6,7 @@
 //! Every task chart in the app uses this module, so the same status always
 //! has the same colour and the same proportion everywhere.
 
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::domain::task::{Status, Task};
@@ -13,6 +14,7 @@ use crate::screens::components::glyphs;
 use crate::screens::components::progress::percent;
 use crate::screens::components::progress_bar::ProgressBar;
 use crate::screens::components::theme::{self, status_style};
+use unicode_width::UnicodeWidthStr;
 
 /// The statuses in the order they are drawn, left to right.
 pub const STATUS_ORDER: [Status; 3] = [Status::Todo, Status::InProgress, Status::Done];
@@ -81,32 +83,58 @@ pub fn stacked_bar_spans(counts: [u64; 3], width: usize) -> Vec<Span<'static>> {
 /// count; see `STATUS_ROW_OVERHEAD`.
 pub fn status_rows(counts: [u64; 3], bar_width: usize) -> Vec<Line<'static>> {
     let total: u64 = counts.iter().sum();
-    let muted = theme::theme().muted_style();
     STATUS_ORDER
         .iter()
         .zip(counts)
         .map(|(status, count)| {
-            let ratio = if total == 0 {
-                0.0
-            } else {
-                count as f64 / total as f64
-            };
-            let bar = ProgressBar::new(ratio, bar_width)
-                .with_filled_style(status_style(*status))
-                .with_empty_style(muted);
-            let mut spans = vec![Span::raw(format!(
-                "{:<width$}",
+            share_row(
+                None,
                 status_label(*status),
-                width = STATUS_LABEL_WIDTH
-            ))];
-            spans.extend(bar.line().spans);
-            spans.push(Span::raw(format!(
-                "  {count:>3}  ({:>3}%)",
-                percent(count, total)
-            )));
-            Line::from(spans)
+                count,
+                total,
+                status_style(*status),
+                bar_width,
+            )
         })
         .collect()
+}
+
+/// A row of the shared layout: an optional icon, the label, a bar showing
+/// `count` out of `total` and the count with its percentage on the right.
+/// Rows built with the same `bar_width` line up column by column.
+pub fn share_row(
+    icon: Option<(&'static str, Style)>,
+    label: &str,
+    count: u64,
+    total: u64,
+    style: Style,
+    bar_width: usize,
+) -> Line<'static> {
+    let ratio = if total == 0 {
+        0.0
+    } else {
+        count as f64 / total as f64
+    };
+    let bar = ProgressBar::new(ratio, bar_width)
+        .with_filled_style(style)
+        .with_empty_style(theme::theme().muted_style());
+
+    // The icon, when present, takes its own cell and a space before the label.
+    let mut spans = Vec::new();
+    let mut used = 0;
+    if let Some((glyph, glyph_style)) = icon {
+        spans.push(Span::styled(glyph, glyph_style));
+        spans.push(Span::raw(" "));
+        used = glyph.width() + 1;
+    }
+    let padding = STATUS_LABEL_WIDTH.saturating_sub(used + label.width());
+    spans.push(Span::raw(format!("{label}{}", " ".repeat(padding))));
+    spans.extend(bar.line().spans);
+    spans.push(Span::raw(format!(
+        "  {count:>3}  ({:>3}%)",
+        percent(count, total)
+    )));
+    Line::from(spans)
 }
 
 /// Columns used by a status row besides its bar: the label and the count with

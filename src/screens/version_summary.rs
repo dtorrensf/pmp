@@ -9,8 +9,7 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::Style,
-    text::{Line, Span, Text},
+    text::{Line, Text},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
@@ -22,10 +21,9 @@ use crate::domain::version_summary::VersionSummary;
 use crate::screens::components::glyphs;
 use crate::screens::components::help::{self, HelpSection};
 use crate::screens::components::keys::key;
-use crate::screens::components::progress_bar::ProgressBar;
 use crate::screens::components::scroll::{clamp_text_scroll, wrapped_line_count};
-use crate::screens::components::stacked_bar::status_rows;
-use crate::screens::components::theme::{self, priority_style};
+use crate::screens::components::stacked_bar::{share_row, status_rows};
+use crate::screens::components::theme::priority_style;
 use crate::screens::{Action, Component, Screen};
 
 /// Width, in cells, of the bars of the distribution chart.
@@ -178,54 +176,24 @@ fn render_chart(snapshot: &CompactSnapshot) -> Vec<Line<'static>> {
     let counts = [Status::Todo, Status::InProgress, Status::Done]
         .map(|status| count_status(snapshot, status));
 
-    // Status rows and priority rows share one scale: a full bar is every
-    // task of the version, the same as the dashboard's status rows.
+    // Status rows and priority rows share one scale and one layout: a full
+    // bar is every task of the version.
     let mut lines = status_rows(counts.map(|c| c as u64), CHART_BAR_WIDTH);
-    let priority_line = |label: &str, count: usize, priority: Priority| {
-        chart_line(
-            &format!("{label:<8}"),
-            count,
-            total,
-            glyphs::priority_icon(priority),
+    for (label, priority) in [
+        ("high", Priority::High),
+        ("medium", Priority::Medium),
+        ("low", Priority::Low),
+    ] {
+        lines.push(share_row(
+            Some((glyphs::priority_icon(priority), priority_style(priority))),
+            label,
+            count_priority(snapshot, priority) as u64,
+            total as u64,
             priority_style(priority),
-        )
-    };
-    lines.push(priority_line(
-        "high",
-        count_priority(snapshot, Priority::High),
-        Priority::High,
-    ));
-    lines.push(priority_line(
-        "medium",
-        count_priority(snapshot, Priority::Medium),
-        Priority::Medium,
-    ));
-    lines.push(priority_line(
-        "low",
-        count_priority(snapshot, Priority::Low),
-        Priority::Low,
-    ));
+            CHART_BAR_WIDTH,
+        ));
+    }
     lines
-}
-
-/// One priority row: glyph, label, count and a bar of its share of the tasks.
-fn chart_line(label: &str, count: usize, total: usize, icon: &str, style: Style) -> Line<'static> {
-    let ratio = if total == 0 {
-        0.0
-    } else {
-        count as f64 / total as f64
-    };
-    let bar = ProgressBar::new(ratio, CHART_BAR_WIDTH)
-        .with_filled_style(style)
-        .with_empty_style(theme::theme().muted_style());
-
-    let mut spans = vec![
-        Span::styled(format!("{icon} "), style),
-        Span::raw(label.to_string()),
-        Span::raw(format!("{count:>3} ")),
-    ];
-    spans.extend(bar.line().spans);
-    Line::from(spans)
 }
 
 fn count_status(snapshot: &CompactSnapshot, status: Status) -> usize {
