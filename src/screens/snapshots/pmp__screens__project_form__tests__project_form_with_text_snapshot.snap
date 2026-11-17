@@ -1,13 +1,13 @@
 ---
 source: src/screens/project_form.rs
-expression: render_to_string(&form)
+expression: "render_to_string(&form, 60, 20)"
 ---
 ┌Create Project────────────────────────────────────────────┐
-│┌Name────────────────────────────────────────────────────┐│
-││My Project                                              ││
+│┌Name *──────────────────────────────────────────────────┐│
+││ My Project                                             ││
 │└────────────────────────────────────────────────────────┘│
 │┌Description─────────────────────────────────────────────┐│
-││A description                                           ││
+││ A description                                          ││
 ││                                                        ││
 ││                                                        ││
 ││                                                        ││

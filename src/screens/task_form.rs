@@ -3,25 +3,31 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    style::{Modifier, Style},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 use ratatui_textarea::TextArea;
 
 use crate::db::repository::Repository;
 use crate::domain::task::{Priority, Status, Task, TaskNote};
+use crate::screens::components::badge::Badge;
+use crate::screens::components::empty_state::hint_empty_state;
 use crate::screens::components::fields::{
-    render_description_field, render_field, render_readonly_field,
+    field_cursor_x, render_description_field, render_field, render_readonly_field,
+};
+use crate::screens::components::form::{
+    TextTarget, handle_text_keys, is_submit, key_press, next_field, render_form_frame,
 };
 use crate::screens::components::keys::{ctrl, key};
 use crate::screens::components::popup::{centered_rect_percent, render_popup_scaffold};
 use crate::screens::components::scroll::{
     ListScroll, TextScroll, render_scrollbar, wrapped_line_count,
 };
+use crate::screens::components::theme::{self, status_style};
 use crate::screens::{Action, Component, Screen};
 
 pub struct TaskForm {
@@ -209,6 +215,87 @@ impl TaskForm {
     }
 }
 
+impl TaskForm {
+    /// Ctrl+S: rejects an empty name, otherwise emits `SaveTask`.
+    fn submit(&mut self) -> Option<Action> {
+        if self.name.trim().is_empty() {
+            self.error = Some("Task name cannot be empty".to_string());
+            return None;
+        }
+        Some(Action::SaveTask {
+            task_id: self.task_id,
+            version_id: self.version_id,
+            name: self.name.clone(),
+            description: self.description.lines().join("\n"),
+            status: self.status,
+            priority: self.priority,
+            depends_on_ids: self.selected_deps.iter().copied().collect(),
+        })
+    }
+
+    /// PageUp/PageDown scroll the dependency or notes list when it is focused.
+    fn scroll_focused_section(&self, up: bool) {
+        let scroll = match self.active_field {
+            4 => &self.deps_scroll,
+            5 => &self.notes_scroll,
+            _ => return,
+        };
+        if up {
+            scroll.page_up();
+        } else {
+            scroll.page_down();
+        }
+    }
+
+    /// Enter opens the dependency picker on field 4 and saves the typed note
+    /// on field 5. On the other fields it behaves as an editing key.
+    fn handle_enter(&mut self) -> Option<Action> {
+        match self.active_field {
+            4 => {
+                self.dep_original_selection = self.selected_deps.clone();
+                self.dep_filter.clear();
+                self.popup_selected = 0;
+                self.recompute_filtered_tasks();
+                self.show_dep_popup = true;
+                None
+            }
+            5 => match self.task_id {
+                Some(task_id) if !self.new_note.trim().is_empty() => Some(Action::AddTaskNote {
+                    task_id,
+                    content: self.new_note.clone(),
+                }),
+                _ => None,
+            },
+            _ => {
+                self.handle_field_key(KeyCode::Enter);
+                None
+            }
+        }
+    }
+
+    /// Routes a key to the focused field. Status and priority cycle with
+    /// ←/→ or h/l, the text fields take the key as editing input, and the
+    /// dependency field takes no keys here.
+    fn handle_field_key(&mut self, code: KeyCode) {
+        match (self.active_field, code) {
+            (2, KeyCode::Left | KeyCode::Char('h')) => self.status = self.status.previous(),
+            (2, KeyCode::Right | KeyCode::Char('l')) => self.status = self.status.next(),
+            (3, KeyCode::Left | KeyCode::Char('h')) => self.priority = self.priority.previous(),
+            (3, KeyCode::Right | KeyCode::Char('l')) => self.priority = self.priority.next(),
+            (0, _) => {
+                handle_text_keys(TextTarget::Line(&mut self.name), code);
+            }
+            (1, _) => {
+                handle_text_keys(TextTarget::Area(&mut self.description), code);
+            }
+            (5, _) => {
+                handle_text_keys(TextTarget::Line(&mut self.new_note), code);
+            }
+            _ => {}
+        }
+    }
+}
+
 impl Component for TaskForm {
     fn init(&mut self) -> anyhow::Result<()> {
         self.project_id = self.repo.get_version(self.version_id)?.project_id;
@@ -269,169 +356,40 @@ impl Component for TaskForm {
     }
 
     fn handle_event(&mut self, event: &Event) -> Option<Action> {
-        if let Event::Key(KeyEvent {
-            code,
-            modifiers,
-            kind: KeyEventKind::Press,
-            ..
-        }) = event
-        {
-            if *code == KeyCode::Char('s') && modifiers.contains(KeyModifiers::CONTROL) {
-                if self.name.trim().is_empty() {
-                    self.error = Some("Task name cannot be empty".to_string());
-                    return None;
-                }
-                return Some(Action::SaveTask {
-                    task_id: self.task_id,
-                    version_id: self.version_id,
-                    name: self.name.clone(),
-                    description: self.description.lines().join("\n"),
-                    status: self.status,
-                    priority: self.priority,
-                    depends_on_ids: self.selected_deps.iter().copied().collect(),
-                });
+        let (code, modifiers) = key_press(event)?;
+        if is_submit(code, modifiers) {
+            return self.submit();
+        }
+        if self.show_dep_popup {
+            return self.handle_popup_event(&code);
+        }
+        match code {
+            KeyCode::Esc => Some(Action::Navigate(self.return_to.clone())),
+            KeyCode::Tab => {
+                self.active_field = next_field(self.active_field, 6);
+                None
             }
-
-            if self.show_dep_popup {
-                return self.handle_popup_event(code);
+            KeyCode::PageUp | KeyCode::PageDown => {
+                self.scroll_focused_section(code == KeyCode::PageUp);
+                None
             }
-
-            match code {
-                KeyCode::Esc => Some(Action::Navigate(self.return_to.clone())),
-                KeyCode::Tab => {
-                    self.active_field = (self.active_field + 1) % 6;
-                    None
-                }
-                KeyCode::PageUp | KeyCode::PageDown => {
-                    let scroll = match self.active_field {
-                        4 => &self.deps_scroll,
-                        5 => &self.notes_scroll,
-                        _ => return None,
-                    };
-                    if *code == KeyCode::PageUp {
-                        scroll.page_up();
-                    } else {
-                        scroll.page_down();
-                    }
-                    None
-                }
-                KeyCode::Backspace => {
-                    match self.active_field {
-                        0 => {
-                            self.name.pop();
-                        }
-                        1 => {
-                            self.description.delete_char();
-                        }
-                        5 => {
-                            self.new_note.pop();
-                        }
-                        _ => {}
-                    }
-                    None
-                }
-                KeyCode::Left => {
-                    if self.active_field == 1 {
-                        self.description
-                            .move_cursor(ratatui_textarea::CursorMove::Back);
-                    } else if self.active_field == 2 {
-                        self.status = self.status.previous();
-                    } else if self.active_field == 3 {
-                        self.priority = self.priority.previous();
-                    }
-                    None
-                }
-                KeyCode::Right => {
-                    if self.active_field == 1 {
-                        self.description
-                            .move_cursor(ratatui_textarea::CursorMove::Forward);
-                    } else if self.active_field == 2 {
-                        self.status = self.status.next();
-                    } else if self.active_field == 3 {
-                        self.priority = self.priority.next();
-                    }
-                    None
-                }
-                KeyCode::Up => {
-                    if self.active_field == 1 {
-                        self.description
-                            .move_cursor(ratatui_textarea::CursorMove::Up);
-                    }
-                    None
-                }
-                KeyCode::Down => {
-                    if self.active_field == 1 {
-                        self.description
-                            .move_cursor(ratatui_textarea::CursorMove::Down);
-                    }
-                    None
-                }
-                KeyCode::Enter => {
-                    if self.active_field == 1 {
-                        self.description.insert_newline();
-                    } else if self.active_field == 4 {
-                        self.dep_original_selection = self.selected_deps.clone();
-                        self.dep_filter.clear();
-                        self.popup_selected = 0;
-                        self.recompute_filtered_tasks();
-                        self.show_dep_popup = true;
-                    } else if self.active_field == 5
-                        && let Some(task_id) = self.task_id
-                        && !self.new_note.trim().is_empty()
-                    {
-                        return Some(Action::AddTaskNote {
-                            task_id,
-                            content: self.new_note.clone(),
-                        });
-                    }
-                    None
-                }
-                KeyCode::Char(c) => {
-                    match self.active_field {
-                        0 => self.name.push(*c),
-                        1 => {
-                            self.description.insert_char(*c);
-                        }
-                        2 => {
-                            if *c == 'h' {
-                                self.status = self.status.previous();
-                            } else if *c == 'l' {
-                                self.status = self.status.next();
-                            }
-                        }
-                        3 => {
-                            if *c == 'h' {
-                                self.priority = self.priority.previous();
-                            } else if *c == 'l' {
-                                self.priority = self.priority.next();
-                            }
-                        }
-                        5 => {
-                            self.new_note.push(*c);
-                        }
-                        _ => {}
-                    }
-                    None
-                }
-                _ => None,
+            KeyCode::Enter => self.handle_enter(),
+            _ => {
+                self.handle_field_key(code);
+                None
             }
-        } else {
-            None
         }
     }
 
     fn render(&self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(Clear, area);
         let title = if self.task_id.is_some() {
             "Edit Task"
         } else {
             "Create Task"
         };
-        let block = Block::default().title(title).borders(Borders::ALL);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+        let inner = render_form_frame(frame, area, title);
 
-        let mut constraints = vec![
+        let constraints = vec![
             Constraint::Length(3), // Name
             Constraint::Min(5),    // Description
             Constraint::Length(3), // Status
@@ -439,9 +397,6 @@ impl Component for TaskForm {
             Constraint::Min(2),    // Dependencies
             Constraint::Min(7),    // Notes (list + new-note input)
         ];
-        if self.error.is_some() {
-            constraints.push(Constraint::Length(3));
-        }
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints(constraints)
@@ -450,10 +405,10 @@ impl Component for TaskForm {
         render_field(
             frame,
             chunks[0],
-            "Name",
+            "Name *",
             &self.name,
             self.active_field == 0,
-            self.error.is_some() && self.active_field == 0,
+            self.error.as_deref(),
         );
 
         render_description_field(
@@ -482,20 +437,12 @@ impl Component for TaskForm {
         render_dependencies(self, frame, chunks[4]);
         let notes_chunks = render_notes(self, frame, chunks[5]);
 
-        if let Some(error) = &self.error {
-            let error_para = Paragraph::new(error.as_str())
-                .style(Style::default().fg(Color::Red))
-                .block(Block::default().borders(Borders::ALL))
-                .wrap(Wrap { trim: true });
-            frame.render_widget(error_para, chunks[6]);
-        }
-
         if self.active_field == 0 {
-            let x = chunks[0].x + 1 + self.name.chars().count() as u16;
+            let x = field_cursor_x(chunks[0], &self.name);
             let y = chunks[0].y + 1;
             frame.set_cursor_position((x, y));
         } else if self.active_field == 5 {
-            let x = notes_chunks[1].x + 1 + self.new_note.chars().count() as u16;
+            let x = field_cursor_x(notes_chunks[1], &self.new_note);
             let y = notes_chunks[1].y + 1;
             frame.set_cursor_position((x, y));
         }
@@ -529,9 +476,7 @@ fn render_notes(form: &TaskForm, frame: &mut Frame, area: Rect) -> Vec<Rect> {
     let list_area = notes_chunks[0];
     if form.notes.is_empty() {
         form.notes_scroll.sync(0, list_area.height);
-        let placeholder =
-            Paragraph::new("No notes yet").style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(placeholder, list_area);
+        hint_empty_state("No notes yet").render(frame, list_area);
     } else {
         let rows: Vec<String> = form
             .notes
@@ -556,7 +501,7 @@ fn render_notes(form: &TaskForm, frame: &mut Frame, area: Rect) -> Vec<Rect> {
         "New note",
         &form.new_note,
         form.active_field == 5,
-        false,
+        None,
     );
 
     notes_chunks.to_vec()
@@ -580,7 +525,7 @@ fn render_dependencies(form: &TaskForm, frame: &mut Frame, area: Rect) {
     if form.selected_deps.is_empty() {
         let mut lines = vec![ratatui::text::Line::styled(
             "No dependencies",
-            Style::default().fg(Color::DarkGray),
+            theme::theme().muted_style(),
         )];
         if form.active_field == 4 {
             lines.push(ratatui::text::Line::from("[Enter: manage dependencies]"));
@@ -602,8 +547,8 @@ fn render_dependencies(form: &TaskForm, frame: &mut Frame, area: Rect) {
         .map(|task| {
             let name = ratatui::text::Span::from(task.name.clone());
             let status = ratatui::text::Span::styled(
-                format!(" [{}]", task.status.label()),
-                task.status.style(),
+                format!(" [{}]", Badge::status(task.status).text()),
+                status_style(task.status),
             );
             ratatui::text::Line::from(vec![name, status])
         })
@@ -637,9 +582,7 @@ fn render_dep_popup(form: &TaskForm, frame: &mut Frame, area: Rect) {
     frame.render_widget(filter_para, chunks[0]);
 
     if form.popup_filtered_tasks.is_empty() {
-        let placeholder =
-            Paragraph::new("No matching tasks").style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(placeholder, chunks[1]);
+        hint_empty_state("No matching tasks").render(frame, chunks[1]);
         return;
     }
 
@@ -664,12 +607,12 @@ fn render_dep_popup(form: &TaskForm, frame: &mut Frame, area: Rect) {
             let marker = if checked { "[x]" } else { "[ ]" };
             let name = ratatui::text::Span::from(format!("{} {}", marker, task.name));
             let status = ratatui::text::Span::styled(
-                format!(" [{}]", task.status.label()),
-                task.status.style(),
+                format!(" [{}]", Badge::status(task.status).text()),
+                status_style(task.status),
             );
             let mut line = ratatui::text::Line::from(vec![name, status]);
             if i == form.popup_selected {
-                line = line.style(Style::default().add_modifier(Modifier::REVERSED));
+                line = line.style(crate::screens::components::theme::theme().selection_style());
             }
             line
         })
@@ -698,21 +641,24 @@ fn render_dep_popup(form: &TaskForm, frame: &mut Frame, area: Rect) {
 
 #[cfg(test)]
 mod tests {
+    use crate::db::repository::RepositoryPolicy;
     use std::sync::Arc;
 
     use crossterm::event::KeyCode;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    use crate::db::repository::Repository;
+    use crate::db::repository::{
+        DependencyRepository, NoteRepository, ProjectRepository, TaskRepository,
+    };
     use crate::db::stub::StubRepository;
     use crate::domain::task::{Priority, Status};
+    use crate::screens::components::glyphs;
     use crate::screens::test_utils::{
         buffer_to_string, char_event, ctrl_s_event, key_event, render_to_string,
     };
     use crate::screens::{Component, Screen};
     use ratatui::buffer::Buffer;
-    use ratatui::style::Color;
 
     use super::*;
 
@@ -1094,7 +1040,11 @@ mod tests {
         let buffer = terminal.backend().buffer();
 
         let badge_style = find_status_badge_style(buffer, "In Progress");
-        assert_eq!(badge_style.fg, Some(Color::Blue));
+        assert_eq!(
+            badge_style.fg,
+            Some(theme::theme().status_in_progress),
+            "the badge must use the theme's in-progress color"
+        );
     }
 
     #[test]
@@ -1352,12 +1302,24 @@ mod tests {
         let buffer = terminal.backend().buffer();
 
         let badge_style = find_status_badge_style(buffer, "Todo");
-        assert_eq!(badge_style.fg, Some(Color::Yellow));
+        assert_eq!(
+            badge_style.fg,
+            Some(theme::theme().status_todo),
+            "the badge must use the theme's todo color"
+        );
     }
 
     fn find_status_badge_style(buffer: &Buffer, label: &str) -> ratatui::style::Style {
         let area = buffer.area();
-        let pattern = format!("[{label}]");
+        // The badge carries the status glyph before the label, e.g. `○ Todo`.
+        let pattern = format!(
+            "{} {label}",
+            glyphs::status_icon(match label {
+                "Todo" => Status::Todo,
+                "In Progress" => Status::InProgress,
+                _ => Status::Done,
+            })
+        );
         for y in area.y..area.y + area.height {
             for x in area.x..area.x + area.width {
                 let mut matched = true;
@@ -1373,7 +1335,7 @@ mod tests {
                 }
             }
         }
-        panic!("status badge [{label}] not found in buffer");
+        panic!("status badge {pattern:?} not found in buffer");
     }
 
     #[test]

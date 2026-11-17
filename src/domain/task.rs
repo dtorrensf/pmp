@@ -1,10 +1,10 @@
 // Copyright (C) 2026 Diego Torréns Farias
 // SPDX-License-Identifier: AGPL-3.0-or-later
-use ratatui::style::{Color, Style};
 use serde::de;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::domain::error::AppError;
+use crate::domain::validation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -20,15 +20,6 @@ impl Status {
             Status::Todo => "todo",
             Status::InProgress => "in_progress",
             Status::Done => "done",
-        }
-    }
-
-    pub fn try_from_str(value: &str) -> Result<Self, AppError> {
-        match value {
-            "todo" => Ok(Status::Todo),
-            "in_progress" => Ok(Status::InProgress),
-            "done" => Ok(Status::Done),
-            _ => Err(AppError::Validation(format!("invalid status: {value}"))),
         }
     }
 
@@ -73,21 +64,6 @@ impl Status {
             Status::Todo => "Todo",
             Status::InProgress => "In Progress",
             Status::Done => "Done",
-        }
-    }
-
-    pub fn style(&self) -> Style {
-        match self {
-            Status::Todo => Style::default().fg(Color::Yellow),
-            Status::InProgress => Style::default().fg(Color::Blue),
-            Status::Done => Style::default().fg(Color::Green),
-        }
-    }
-
-    pub fn row_style(&self) -> Style {
-        match self {
-            Status::Done => Style::default().fg(Color::DarkGray),
-            _ => Style::default(),
         }
     }
 }
@@ -144,12 +120,23 @@ impl Priority {
             Priority::High => "High",
         }
     }
+}
 
-    pub fn style(&self) -> Style {
-        match self {
-            Priority::High => Style::default().fg(Color::Red),
-            Priority::Medium => Style::default().fg(Color::Yellow),
-            Priority::Low => Style::default().fg(Color::Green),
+impl From<Status> for &'static str {
+    fn from(status: Status) -> Self {
+        status.as_str()
+    }
+}
+
+impl TryFrom<&str> for Status {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "todo" => Ok(Status::Todo),
+            "in_progress" => Ok(Status::InProgress),
+            "done" => Ok(Status::Done),
+            _ => Err(AppError::Validation(format!("invalid status: {value}"))),
         }
     }
 }
@@ -202,6 +189,7 @@ pub struct Task {
     pub status: Status,
     pub priority: Priority,
     pub created_at: String,
+    pub completed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -232,6 +220,7 @@ impl TaskNote {
                 "note content cannot be empty".to_string(),
             ));
         }
+        validation::validate_text("note", "content", content)?;
         Ok(TaskNote {
             id: None,
             task_id,
@@ -306,6 +295,7 @@ mod tests {
             status: Status::Todo,
             priority: Priority::Medium,
             created_at: "now".to_string(),
+            completed_at: None,
         };
         assert!(task.id.is_none());
         assert_eq!(task.project_id, 1);
@@ -448,30 +438,5 @@ mod tests {
         assert_eq!(Priority::Low.label(), "Low");
         assert_eq!(Priority::Medium.label(), "Medium");
         assert_eq!(Priority::High.label(), "High");
-    }
-
-    #[test]
-    fn status_style_returns_colored_style() {
-        assert_eq!(Status::Todo.style().fg, Some(Color::Yellow));
-        assert_eq!(Status::InProgress.style().fg, Some(Color::Blue));
-        assert_eq!(Status::Done.style().fg, Some(Color::Green));
-    }
-
-    #[test]
-    fn priority_style_returns_colored_style() {
-        assert_eq!(Priority::High.style().fg, Some(Color::Red));
-        assert_eq!(Priority::Medium.style().fg, Some(Color::Yellow));
-        assert_eq!(Priority::Low.style().fg, Some(Color::Green));
-    }
-
-    #[test]
-    fn status_row_style_done_is_dark_gray() {
-        assert_eq!(Status::Done.row_style().fg, Some(Color::DarkGray));
-    }
-
-    #[test]
-    fn status_row_style_non_done_is_default() {
-        assert_eq!(Status::Todo.row_style().fg, None);
-        assert_eq!(Status::InProgress.row_style().fg, None);
     }
 }

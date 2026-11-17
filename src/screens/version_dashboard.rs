@@ -9,14 +9,20 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
     Frame,
     layout::Rect,
+    style::{Modifier, Style},
+    text::{Line, Span},
     widgets::{Block, Borders},
 };
 
 use crate::db::repository::Repository;
 use crate::domain::task::{Priority, Status, Task};
-use crate::domain::version::Version;
+use crate::domain::version::{Version, VersionStatus};
+use crate::domain::version_summary::VersionSummary;
+use crate::screens::components::help::{self, HelpSection};
 use crate::screens::components::keys::key;
-use crate::screens::task_list_view::TaskListView;
+use crate::screens::components::motion;
+use crate::screens::components::theme;
+use crate::screens::task_list_view::{DependencySummary, TaskListView};
 pub use crate::screens::task_list_view::{FilterField, FilterState, TaskListMode};
 use crate::screens::{AUTO_REFRESH_INTERVAL, Action, Component, Screen};
 
@@ -24,8 +30,23 @@ pub struct VersionDashboard {
     repo: Arc<dyn Repository>,
     project_id: i64,
     version_id: i64,
+    project_name: Option<String>,
     version: Option<Version>,
+    summaries: Vec<VersionSummary>,
     view: TaskListView,
+    /// Last state seen for `version_id`, used to detect a celebration.
+    observed: Option<VersionMilestones>,
+    /// Frame time at which the current celebration started, if any.
+    celebration: Option<Duration>,
+}
+
+/// The milestones a version can celebrate: all its tasks done, or a summary
+/// created by compaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VersionMilestones {
+    version_id: i64,
+    complete: bool,
+    compacted: bool,
 }
 
 impl VersionDashboard {
@@ -39,6 +60,11 @@ impl VersionDashboard {
         (key(KeyCode::Char('d')), "Delete"),
         (key(KeyCode::Char('r')), "Refresh"),
         (key(KeyCode::Char('f')), "Filter"),
+        (key(KeyCode::Char('x')), "Clear filters"),
+        (key(KeyCode::Char('o')), "Sort"),
+        (key(KeyCode::Char('m')), "Move"),
+        (key(KeyCode::Char('s')), "Summary"),
+        (key(KeyCode::Char('e')), "Export"),
         (key(KeyCode::Char('c')), "New"),
         (key(KeyCode::Esc), "Back"),
         (key(KeyCode::Char('q')), "Quit"),
@@ -49,8 +75,12 @@ impl VersionDashboard {
             repo,
             project_id: 0,
             version_id: 0,
+            project_name: None,
             version: None,
+            summaries: Vec::new(),
             view: TaskListView::new(),
+            observed: None,
+            celebration: None,
         }
     }
 
@@ -87,13 +117,82 @@ impl VersionDashboard {
         self.view.filter_priority()
     }
 
+    /// Opens the move popup for the selected task with every other version of
+    /// the project as destination. A failed version lookup leaves the popup
+    /// with no targets, which shows the "only version" message.
+    fn open_move_popup(&mut self) {
+        let targets = self
+            .repo
+            .list_versions_by_project(self.project_id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|v| v.id != Some(self.version_id))
+            .collect();
+        self.view.open_move(targets);
+    }
+
     fn load_tasks(&mut self) -> anyhow::Result<()> {
         let version = self.repo.get_version(self.version_id)?;
         self.project_id = version.project_id;
+        self.project_name = Some(self.repo.get_project(version.project_id)?.name);
         self.version = Some(version);
+        self.summaries = self.repo.list_version_summaries(self.version_id)?;
         let tasks = self.repo.list_tasks_by_version(self.version_id)?;
+        // Dependencies live in the same version, so their status is known
+        // from the tasks just loaded.
+        let statuses: std::collections::HashMap<i64, Status> = tasks
+            .iter()
+            .filter_map(|task| task.id.map(|id| (id, task.status)))
+            .collect();
+        let dependency_summaries = tasks
+            .iter()
+            .filter_map(|task| task.id)
+            .map(|id| {
+                let dependencies = self.repo.get_dependencies(id).unwrap_or_default();
+                let pending = dependencies
+                    .iter()
+                    .filter(|dep| statuses.get(dep) != Some(&Status::Done))
+                    .count();
+                let summary = DependencySummary {
+                    total: dependencies.len(),
+                    pending,
+                };
+                (id, summary)
+            })
+            .collect::<std::collections::HashMap<_, _>>();
         self.view.set_tasks(tasks);
+        self.view.set_dependency_summaries(dependency_summaries);
+        self.observe_milestones();
         Ok(())
+    }
+
+    /// Starts a celebration when the version has just reached one of its
+    /// milestones. The first state seen for a version is a baseline, so
+    /// opening an already finished version does not celebrate.
+    fn observe_milestones(&mut self) {
+        let current = VersionMilestones {
+            version_id: self.version_id,
+            complete: self.is_complete(),
+            compacted: !self.summaries.is_empty(),
+        };
+        if let Some(previous) = self.observed
+            && previous.version_id == current.version_id
+            && ((!previous.complete && current.complete)
+                || (!previous.compacted && current.compacted))
+        {
+            self.celebration = motion::frame_time();
+        }
+        self.observed = Some(current);
+    }
+
+    /// `true` when the version has tasks and all of them are done.
+    fn is_complete(&self) -> bool {
+        let tasks = self.view.all_tasks();
+        !tasks.is_empty() && tasks.iter().all(|task| task.status == Status::Done)
+    }
+
+    fn latest_summary_id(&self) -> Option<i64> {
+        self.summaries.first().and_then(|s| s.id)
     }
 }
 
@@ -106,6 +205,18 @@ impl Component for VersionDashboard {
 
     fn refresh(&mut self) -> anyhow::Result<()> {
         self.load_tasks()
+    }
+
+    /// Tasks are the subject here, so task actions go under Tasks.
+    fn help_sections(&self) -> Vec<HelpSection> {
+        help::sections(self.keybindings(), |label| match label {
+            "Down" | "Up" => help::NAVIGATION,
+            "New" | "Edit" | "Cycle" | "Delete" | "Filter" | "Clear filters" | "Sort" | "Move" => {
+                help::TASKS
+            }
+            "Summary" | "Export" => help::VERSIONS,
+            _ => help::APPLICATION,
+        })
     }
 
     fn keybindings(&self) -> &'static [(KeyEvent, &'static str)] {
@@ -130,11 +241,31 @@ impl Component for VersionDashboard {
             if self.view.is_browsing() {
                 match code {
                     KeyCode::Char('r') => return Some(Action::Refresh),
+                    KeyCode::Char('m') => {
+                        self.open_move_popup();
+                        return None;
+                    }
                     KeyCode::Char('c') => {
                         return Some(Action::Navigate(Screen::TaskForm {
                             version_id: self.version_id,
                             task_id: None,
                         }));
+                    }
+                    KeyCode::Char('s') => {
+                        if let Some(summary_id) = self.latest_summary_id() {
+                            return Some(Action::Navigate(Screen::VersionSummary {
+                                project_id: self.project_id,
+                                version_id: self.version_id,
+                                summary_id,
+                            }));
+                        }
+                        return None;
+                    }
+                    KeyCode::Char('e') => {
+                        if let Some(summary_id) = self.latest_summary_id() {
+                            return Some(Action::ExportVersionSummary { summary_id });
+                        }
+                        return None;
                     }
                     KeyCode::Esc | KeyCode::Backspace => {
                         return Some(Action::Navigate(Screen::ProjectDashboard {
@@ -151,19 +282,62 @@ impl Component for VersionDashboard {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect) {
-        let title = match &self.version {
-            Some(v) => format!("{} · {}", v.name, v.status.label()),
-            None => "Version".to_string(),
-        };
-        let block = Block::default().title(title).borders(Borders::ALL);
+        let mut block = Block::default()
+            .title(self.breadcrumb())
+            .title_bottom(self.view.table_title())
+            .borders(Borders::ALL);
+        if motion::celebrating(self.celebration) {
+            block = block.border_style(theme::theme().success_style().add_modifier(Modifier::BOLD));
+        }
         let inner = block.inner(area);
         frame.render_widget(block, area);
         self.view.render(frame, inner);
     }
 }
 
+impl VersionDashboard {
+    /// `Project › Version › Status`, plus a badge with the summary count when
+    /// the version is released or already has summaries.
+    fn breadcrumb(&self) -> Line<'static> {
+        let Some(version) = &self.version else {
+            return Line::from("Version");
+        };
+        let theme = theme::theme();
+        let separator = Span::styled(" › ", theme.muted_style());
+        let mut spans = Vec::new();
+        if let Some(project) = &self.project_name {
+            spans.push(Span::styled(
+                project.clone(),
+                Style::default().add_modifier(Modifier::BOLD),
+            ));
+            spans.push(separator.clone());
+        }
+        spans.push(Span::styled(version.name.clone(), theme.text_style()));
+        spans.push(separator);
+        spans.push(Span::styled(
+            version.status.label(),
+            theme.version_status_style(version.status),
+        ));
+        if version.status == VersionStatus::Released || !self.summaries.is_empty() {
+            let count = self.summaries.len();
+            let label = if count == 1 {
+                "1 summary".to_string()
+            } else {
+                format!("{count} summaries")
+            };
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                format!(" {label} "),
+                theme.accent_style().add_modifier(Modifier::REVERSED),
+            ));
+        }
+        Line::from(spans)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::db::repository::*;
     use std::sync::Arc;
 
     use crossterm::event::KeyCode;
@@ -172,6 +346,7 @@ mod tests {
 
     use crate::db::stub::StubRepository;
     use crate::domain::task::{Priority, Status};
+    use crate::domain::version::VersionStatus;
     use crate::screens::components::confirm_dialog::ConfirmDialog;
     use crate::screens::test_utils::{buffer_to_string, key_event, render_to_string};
 
@@ -226,8 +401,18 @@ mod tests {
             Priority::Medium,
         )
         .unwrap();
+        let version_id = repo.default_version_id(project_id).unwrap();
+        // Versions are created in Backlog; this fixture exercises an active one.
+        let version = repo.get_version(version_id).unwrap();
+        repo.update_version(
+            version_id,
+            &version.name,
+            &version.description,
+            VersionStatus::Open,
+        )
+        .unwrap();
         let mut screen = VersionDashboard::new(repo.clone());
-        screen.set_ids(project_id, repo.default_version_id(project_id).unwrap());
+        screen.set_ids(project_id, version_id);
         screen.init().unwrap();
         (repo, screen, project_id)
     }
@@ -250,6 +435,11 @@ mod tests {
                 (KeyCode::Char('d'), "Delete"),
                 (KeyCode::Char('r'), "Refresh"),
                 (KeyCode::Char('f'), "Filter"),
+                (KeyCode::Char('x'), "Clear filters"),
+                (KeyCode::Char('o'), "Sort"),
+                (KeyCode::Char('m'), "Move"),
+                (KeyCode::Char('s'), "Summary"),
+                (KeyCode::Char('e'), "Export"),
                 (KeyCode::Char('c'), "New"),
                 (KeyCode::Esc, "Back"),
                 (KeyCode::Char('q'), "Quit"),
@@ -301,7 +491,8 @@ mod tests {
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let text = buffer_to_string(&buffer);
-        assert!(text.contains("No tasks. Press c to create one."));
+        assert!(text.contains("No tasks"), "{text}");
+        assert!(text.contains("Press c to create one."), "{text}");
     }
 
     #[test]
@@ -314,7 +505,7 @@ mod tests {
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let text = buffer_to_string(&buffer);
-        assert!(text.contains("v0 · Open"));
+        assert!(text.contains("Alpha › v0 › Open"));
     }
 
     #[test]
@@ -335,7 +526,8 @@ mod tests {
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let text = buffer_to_string(&buffer);
-        assert!(text.contains("No tasks. Press c to create one."));
+        assert!(text.contains("No tasks"), "{text}");
+        assert!(text.contains("Press c to create one."), "{text}");
     }
 
     #[test]
@@ -344,7 +536,7 @@ mod tests {
         screen
             .view
             .set_mode(TaskListMode::ConfirmDelete(ConfirmDialog::new(
-                "Delete task Leaf? (y/N)",
+                "Delete task Leaf?",
                 Action::DeleteTask { task_id: 1 },
             )));
 
@@ -355,7 +547,9 @@ mod tests {
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let text = buffer_to_string(&buffer);
-        assert!(text.contains("? (y/N)"));
+        assert!(text.contains("Delete task Leaf?"));
+        assert!(text.contains("[y] Confirm"));
+        assert!(text.contains("[n/Esc] Cancel"));
         assert!(!text.contains("dependency links"));
     }
 
@@ -365,7 +559,7 @@ mod tests {
         screen
             .view
             .set_mode(TaskListMode::ConfirmDelete(ConfirmDialog::new(
-                "Deleting will remove 3 dependency links. Continue? (y/N)",
+                "Deleting will remove 3 dependency links. Continue?",
                 Action::DeleteTask { task_id: 1 },
             )));
 
@@ -415,6 +609,110 @@ mod tests {
                 task_id: None,
             }))
         );
+    }
+
+    #[test]
+    fn s_key_navigates_to_version_summary_when_summary_exists() {
+        let (repo, mut screen, project_id) = setup_with_tasks();
+        let version_id = screen.version_id();
+        for task in screen.tasks().to_vec() {
+            repo.update_task_status(task.id.unwrap(), Status::Done)
+                .unwrap();
+        }
+        let snapshot = repo.build_compact_snapshot(version_id).unwrap();
+        let summary = repo
+            .create_version_summary(version_id, "Summary", &snapshot)
+            .unwrap();
+        let summary_id = summary.id.unwrap();
+        screen.init().unwrap();
+
+        let action = screen.handle_event(&key_event(KeyCode::Char('s')));
+        assert_eq!(
+            action,
+            Some(Action::Navigate(Screen::VersionSummary {
+                project_id,
+                version_id,
+                summary_id,
+            }))
+        );
+    }
+
+    #[test]
+    fn e_key_exports_when_summary_exists_and_does_nothing_otherwise() {
+        let (repo, mut screen, _project_id) = setup_with_tasks();
+        assert_eq!(screen.handle_event(&key_event(KeyCode::Char('e'))), None);
+
+        let version_id = screen.version_id();
+        for task in screen.tasks().to_vec() {
+            repo.update_task_status(task.id.unwrap(), Status::Done)
+                .unwrap();
+        }
+        let snapshot = repo.build_compact_snapshot(version_id).unwrap();
+        let summary = repo
+            .create_version_summary(version_id, "Summary", &snapshot)
+            .unwrap();
+        let summary_id = summary.id.unwrap();
+        screen.init().unwrap();
+
+        let action = screen.handle_event(&key_event(KeyCode::Char('e')));
+        assert_eq!(action, Some(Action::ExportVersionSummary { summary_id }));
+    }
+
+    #[test]
+    fn released_header_shows_summary_count() {
+        let (repo, mut screen, _project_id) = setup_with_tasks();
+        let version_id = screen.version_id();
+        for task in screen.tasks().to_vec() {
+            repo.update_task_status(task.id.unwrap(), Status::Done)
+                .unwrap();
+        }
+        let snapshot = repo.build_compact_snapshot(version_id).unwrap();
+        repo.create_version_summary(version_id, "Summary", &snapshot)
+            .unwrap();
+        let version = repo.get_version(version_id).unwrap();
+        repo.update_version(
+            version_id,
+            &version.name,
+            &version.description,
+            VersionStatus::Released,
+        )
+        .unwrap();
+        screen.init().unwrap();
+
+        let backend = TestBackend::new(60, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| screen.render(frame, frame.area()))
+            .unwrap();
+        let text = buffer_to_string(terminal.backend().buffer());
+        assert!(text.contains("Released"));
+        assert!(text.contains("1 summary"));
+    }
+
+    #[test]
+    fn open_header_shows_summary_count_with_pending_tasks() {
+        let (repo, mut screen, _project_id) = setup_with_tasks();
+        let version_id = screen.version_id();
+        let first = screen.tasks()[0].id.unwrap();
+        repo.update_task_status(first, Status::Done).unwrap();
+        let snapshot = repo.build_compact_snapshot(version_id).unwrap();
+        repo.create_version_summary(version_id, "Partial", &snapshot)
+            .unwrap();
+        screen.init().unwrap();
+
+        let backend = TestBackend::new(60, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| screen.render(frame, frame.area()))
+            .unwrap();
+        let text = buffer_to_string(terminal.backend().buffer());
+        assert!(text.contains("Alpha › v0 › Open"), "{text}");
+        assert!(text.contains("1 summary"), "{text}");
+        assert_eq!(
+            repo.get_version(version_id).unwrap().status,
+            VersionStatus::Open
+        );
+        assert!(!screen.tasks().is_empty(), "pending tasks must remain");
     }
 
     #[test]
@@ -564,6 +862,26 @@ mod tests {
     }
 
     #[test]
+    fn esc_cancels_confirm_mode() {
+        let (_repo, mut screen, _id) = setup_with_tasks();
+        screen.handle_event(&key_event(KeyCode::Char('d')));
+        let action = screen.handle_event(&key_event(KeyCode::Esc));
+        assert_eq!(action, None);
+        assert!(matches!(screen.view.mode(), TaskListMode::Browsing));
+    }
+
+    #[test]
+    fn other_keys_keep_the_confirm_dialog_open() {
+        let (_repo, mut screen, _id) = setup_with_tasks();
+        screen.handle_event(&key_event(KeyCode::Char('d')));
+        for code in [KeyCode::Enter, KeyCode::Char('x'), KeyCode::Char('Y')] {
+            let action = screen.handle_event(&key_event(code));
+            assert_eq!(action, None);
+            assert!(matches!(screen.view.mode(), TaskListMode::ConfirmDelete(_)));
+        }
+    }
+
+    #[test]
     fn long_task_list_scrolls_to_selected_task() {
         let repo = Arc::new(StubRepository::default());
         let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
@@ -606,6 +924,29 @@ mod tests {
     }
 
     #[test]
+    fn version_dashboard_with_summary_snapshot() {
+        let (repo, mut screen, _project_id) = setup_with_tasks();
+        let version_id = screen.version_id();
+        for task in screen.tasks().to_vec() {
+            repo.update_task_status(task.id.unwrap(), Status::Done)
+                .unwrap();
+        }
+        let snapshot = repo.build_compact_snapshot(version_id).unwrap();
+        repo.create_version_summary(version_id, "Summary", &snapshot)
+            .unwrap();
+        let version = repo.get_version(version_id).unwrap();
+        repo.update_version(
+            version_id,
+            &version.name,
+            &version.description,
+            VersionStatus::Released,
+        )
+        .unwrap();
+        screen.init().unwrap();
+        insta::assert_snapshot!(render_to_string(&screen, 60, 24));
+    }
+
+    #[test]
     fn version_dashboard_empty_snapshot() {
         let repo = Arc::new(StubRepository::default());
         let project = repo.create_project("Empty", "No tasks here").unwrap();
@@ -624,7 +965,7 @@ mod tests {
         screen
             .view
             .set_mode(TaskListMode::ConfirmDelete(ConfirmDialog::new(
-                format!("Delete task {}? (y/N)", screen.tasks()[0].name),
+                format!("Delete task {}?", screen.tasks()[0].name),
                 Action::DeleteTask { task_id: 1 },
             )));
         insta::assert_snapshot!(render_to_string(&screen, 60, 24));
@@ -636,7 +977,7 @@ mod tests {
         screen
             .view
             .set_mode(TaskListMode::ConfirmDelete(ConfirmDialog::new(
-                "Deleting will remove 1 dependency links. Continue? (y/N)",
+                "Deleting will remove 1 dependency links. Continue?",
                 Action::DeleteTask { task_id: 1 },
             )));
         insta::assert_snapshot!(render_to_string(&screen, 60, 24));
@@ -752,5 +1093,155 @@ mod tests {
         screen.handle_event(&key_event(KeyCode::Right));
         screen.handle_event(&key_event(KeyCode::Enter));
         assert!(screen.selected_task() < screen.tasks().len());
+    }
+
+    fn setup_with_second_version() -> (Arc<StubRepository>, VersionDashboard, i64, i64) {
+        let (repo, screen, project_id) = setup_with_tasks();
+        let other = repo
+            .create_version(project_id, "v0.2.0", "")
+            .unwrap()
+            .id
+            .unwrap();
+        (repo, screen, project_id, other)
+    }
+
+    #[test]
+    fn m_opens_move_popup_listing_other_versions() {
+        let (_repo, mut screen, _pid, _other) = setup_with_second_version();
+        assert!(
+            screen
+                .handle_event(&key_event(KeyCode::Char('m')))
+                .is_none()
+        );
+        match screen.view.mode() {
+            TaskListMode::MovingTask(state) => {
+                assert_eq!(state.targets.len(), 1);
+                assert_eq!(state.targets[0].name, "v0.2.0");
+            }
+            other => panic!("expected MovingTask, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enter_in_move_popup_emits_move_action_for_selected_task() {
+        let (_repo, mut screen, _pid, other) = setup_with_second_version();
+        let task_id = screen.tasks()[0].id.unwrap();
+        screen.handle_event(&key_event(KeyCode::Char('m')));
+        let action = screen.handle_event(&key_event(KeyCode::Enter));
+        assert_eq!(
+            action,
+            Some(Action::MoveTask {
+                task_id,
+                version_id: other
+            })
+        );
+        assert!(screen.view.is_browsing());
+    }
+
+    #[test]
+    fn esc_in_move_popup_cancels_without_moving() {
+        let (_repo, mut screen, _pid, _other) = setup_with_second_version();
+        screen.handle_event(&key_event(KeyCode::Char('m')));
+        assert!(screen.handle_event(&key_event(KeyCode::Esc)).is_none());
+        assert!(screen.view.is_browsing());
+    }
+
+    #[test]
+    fn esc_in_move_popup_does_not_navigate_back() {
+        let (_repo, mut screen, _pid, _other) = setup_with_second_version();
+        screen.handle_event(&key_event(KeyCode::Char('m')));
+        let action = screen.handle_event(&key_event(KeyCode::Esc));
+        assert!(!matches!(action, Some(Action::Navigate(_))));
+    }
+
+    #[test]
+    fn move_popup_with_single_version_shows_message_and_moves_nothing() {
+        let (_repo, mut screen, _pid) = setup_with_tasks();
+        screen.handle_event(&key_event(KeyCode::Char('m')));
+        let text = render_to_string(&screen, 60, 20);
+        assert!(text.contains("This is the only version of the project."));
+        assert!(screen.handle_event(&key_event(KeyCode::Enter)).is_none());
+        assert!(screen.view.is_browsing());
+    }
+
+    #[test]
+    fn move_popup_without_selected_task_does_nothing() {
+        let repo = Arc::new(StubRepository::default());
+        let project_id = repo.create_project("Empty", "").unwrap().id.unwrap();
+        repo.create_version(project_id, "v0.2.0", "").unwrap();
+        let mut screen = VersionDashboard::new(repo.clone());
+        screen.set_ids(project_id, repo.default_version_id(project_id).unwrap());
+        screen.init().unwrap();
+        screen.handle_event(&key_event(KeyCode::Char('m')));
+        assert!(screen.view.is_browsing());
+    }
+
+    fn complete_every_task(repo: &StubRepository, version_id: i64) {
+        for task in repo.list_tasks_by_version(version_id).unwrap() {
+            repo.update_task_status(task.id.unwrap(), Status::Done)
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn completing_the_last_task_celebrates_on_refresh() {
+        let (repo, mut screen, _project_id) = setup_with_tasks();
+        let version_id = screen.version_id();
+        let start = Duration::from_secs(10);
+
+        motion::with_frame_time(Some(start), || {
+            complete_every_task(&repo, version_id);
+            screen.refresh().unwrap();
+            assert!(motion::celebrating(screen.celebration));
+        });
+        motion::with_frame_time(Some(start + motion::CELEBRATION_DURATION), || {
+            assert!(!motion::celebrating(screen.celebration));
+        });
+    }
+
+    #[test]
+    fn opening_an_already_finished_version_does_not_celebrate() {
+        let (repo, _screen, _project_id) = setup_with_tasks();
+        let version_id = repo.default_version_id(1).unwrap();
+        complete_every_task(&repo, version_id);
+
+        let mut screen = VersionDashboard::new(repo.clone());
+        screen.set_ids(1, version_id);
+        motion::with_frame_time(Some(Duration::from_secs(10)), || {
+            screen.init().unwrap();
+        });
+
+        assert_eq!(screen.celebration, None);
+    }
+
+    #[test]
+    fn a_summary_created_by_compaction_celebrates() {
+        let (repo, mut screen, _project_id) = setup_with_tasks();
+        let version_id = screen.version_id();
+        complete_every_task(&repo, version_id);
+        motion::with_frame_time(Some(Duration::from_secs(1)), || {
+            screen.refresh().unwrap();
+        });
+        assert!(screen.celebration.is_some());
+
+        screen.celebration = None;
+        let snapshot = repo.build_compact_snapshot(version_id).unwrap();
+        repo.compact_version(version_id, "Summary", &snapshot)
+            .unwrap();
+        motion::with_frame_time(Some(Duration::from_secs(2)), || {
+            screen.refresh().unwrap();
+        });
+
+        assert_eq!(screen.celebration, Some(Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn celebration_is_silent_without_animation() {
+        let (repo, mut screen, _project_id) = setup_with_tasks();
+        complete_every_task(&repo, screen.version_id());
+
+        screen.refresh().unwrap();
+
+        assert!(!motion::celebrating(screen.celebration));
     }
 }

@@ -2,20 +2,24 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use crate::domain::task::{Status, Task};
 
+/// `done` out of `total` as a whole percentage, rounded. `0` when `total` is `0`.
+pub fn percent(done: u64, total: u64) -> u64 {
+    if total == 0 {
+        return 0;
+    }
+    (done as f64 / total as f64 * 100.0).round() as u64
+}
+
 /// Returns the completion percentage for a slice of tasks.
 ///
 /// The percentage is calculated as `done / total * 100` and rounded to the
 /// nearest integer. If there are no tasks, `0` is returned.
 pub fn completion_percentage(tasks: &[Task]) -> u64 {
-    let total = tasks.len() as u64;
-    if total == 0 {
-        return 0;
-    }
     let done = tasks
         .iter()
         .filter(|task| task.status == Status::Done)
         .count() as u64;
-    (done as f64 / total as f64 * 100.0).round() as u64
+    percent(done, tasks.len() as u64)
 }
 
 #[cfg(test)]
@@ -34,6 +38,7 @@ mod tests {
             status,
             priority: Priority::Low,
             created_at: "now".to_string(),
+            completed_at: None,
         }
     }
 
@@ -73,5 +78,13 @@ mod tests {
 
         let tasks = vec![task(Status::Done), task(Status::Done), task(Status::Todo)];
         assert_eq!(completion_percentage(&tasks), 67);
+    }
+
+    #[test]
+    fn percent_rounds_and_handles_zero_total() {
+        assert_eq!(percent(0, 0), 0);
+        assert_eq!(percent(1, 3), 33);
+        assert_eq!(percent(2, 3), 67);
+        assert_eq!(percent(3, 3), 100);
     }
 }

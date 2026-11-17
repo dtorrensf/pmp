@@ -10,7 +10,7 @@ pub enum AppError {
     DbError(#[from] rusqlite::Error),
     #[error("dependency cycle")]
     DependencyCycle,
-    #[error("validation: {0}")]
+    #[error("{0}")]
     Validation(String),
 }
 

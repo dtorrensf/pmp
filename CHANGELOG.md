@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Features
+
+* Add version compaction: freeze a released version into a summary snapshot, review it from the TUI and export it as Markdown with Mermaid charts.
+* Add a semantic visual theme: a single source of truth for colors with `NO_COLOR` and `PMP_THEME` support.
+* Add shared visual primitives (glyph set, badges, progress bars and empty states) with an ASCII fallback via `PMP_ASCII`.
+* Add subtle motion: eased progress gauges and bars, a braille spinner next to in-progress tasks, toasts that slide in, a short celebration when a version reaches 100% or is compacted, and a `PMP_REDUCED_MOTION` switch to turn it all off.
+* Add a top bar with the app version, a centered breadcrumb of the current context and the update badge. The terminal window title follows the breadcrumb and is restored on exit.
+
 ## [0.5.0](https://github.com/dtorrensf/pmp/compare/pmp-v0.4.1...pmp-v0.5.0) (2026-10-25)
 
 

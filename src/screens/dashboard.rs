@@ -7,26 +7,38 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
     text::{Line, Span, Text},
-    widgets::{Bar, BarChart, BarGroup, Block, Borders, Gauge, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Sparkline, Wrap},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::db::repository::Repository;
 use crate::domain::project::Project;
 use crate::domain::task::{Status, Task};
 use crate::domain::version::Version;
-use crate::screens::components::confirm_dialog::ConfirmDialog;
+use crate::screens::components::activity::{ACTIVITY_DAYS, completions_per_day, today_epoch_day};
+use crate::screens::components::confirm_dialog::{ConfirmDialog, ConfirmState};
+use crate::screens::components::empty_state::EmptyState;
+use crate::screens::components::glyphs;
+use crate::screens::components::help::{self, HelpSection};
 use crate::screens::components::keys::key;
 use crate::screens::components::list_navigation::move_selection;
-use crate::screens::components::progress::completion_percentage;
+use crate::screens::components::motion::Tween;
+use crate::screens::components::progress::{completion_percentage, percent};
 use crate::screens::components::scroll::{
-    ListScroll, TextScroll, render_scrollbar, wrapped_line_count,
+    ListScroll, TextScroll, list_rows, render_list_scrollbar, wrapped_line_count,
 };
+use crate::screens::components::stacked_bar::{
+    STATUS_ROW_OVERHEAD, stacked_bar_spans, status_counts, status_rows,
+};
+use crate::screens::components::theme::{status_style, version_status_style};
 use crate::screens::{AUTO_REFRESH_INTERVAL, Action, Component, Screen};
 
 /// Width, in cells, of the stacked progress bar of each version.
 const VERSION_BAR_WIDTH: usize = 10;
+
+/// Narrowest progress row that still fits the activity sparkline.
+const MIN_WIDTH_FOR_ACTIVITY: u16 = 50;
 
 /// One row of the versions list: the version plus its task progress.
 #[derive(Debug, Clone, PartialEq)]
@@ -56,30 +68,24 @@ impl VersionRow {
         ];
         let mut spans = vec![
             Span::styled(
-                format!("{:<name_width$}", self.name_column()),
-                self.version.status.style(),
+                pad_display(&self.name_column(), name_width),
+                version_status_style(self.version.status),
             ),
             Span::raw("  "),
         ];
-        if self.total == 0 {
-            spans.push(Span::styled(
-                "▱".repeat(VERSION_BAR_WIDTH),
-                Style::default().fg(Color::DarkGray),
-            ));
-        } else {
-            let cells = bar_segments([self.todo, self.in_progress, self.done], VERSION_BAR_WIDTH);
-            for ((_, _, status), n) in parts.iter().zip(cells) {
-                if n > 0 {
-                    spans.push(Span::styled("█".repeat(n), status.style()));
-                }
-            }
-        }
+        spans.extend(stacked_bar_spans(
+            [self.todo, self.in_progress, self.done],
+            VERSION_BAR_WIDTH,
+        ));
         spans.push(Span::raw(format!(" ({}%)  ", self.percentage)));
         for (i, (label, count, status)) in parts.iter().enumerate() {
             if i > 0 {
                 spans.push(Span::raw(" "));
             }
-            spans.push(Span::styled(format!("{label}({count})"), status.style()));
+            spans.push(Span::styled(
+                format!("{label}({count})"),
+                status_style(*status),
+            ));
         }
         Line::from(spans)
     }
@@ -93,9 +99,11 @@ pub struct ProjectDashboard {
     all_tasks: Vec<Task>,
     versions: Vec<VersionRow>,
     selected: usize,
-    confirm_delete: Option<ConfirmDialog>,
+    confirm_delete: ConfirmState,
     description_scroll: TextScroll,
     versions_scroll: ListScroll,
+    /// Eased fill of the progress gauge.
+    gauge: Tween,
 }
 
 impl ProjectDashboard {
@@ -106,6 +114,7 @@ impl ProjectDashboard {
         (key(KeyCode::Down), "Down"),
         (key(KeyCode::Enter), "Open"),
         (key(KeyCode::Char('c')), "New Version"),
+        (key(KeyCode::Char('v')), "Edit Version"),
         (key(KeyCode::Char('d')), "Delete"),
         (key(KeyCode::Char('r')), "Cycle Status"),
         (key(KeyCode::Char('e')), "Edit Project"),
@@ -123,9 +132,21 @@ impl ProjectDashboard {
             all_tasks: Vec::new(),
             versions: Vec::new(),
             selected: 0,
-            confirm_delete: None,
+            confirm_delete: ConfirmState::default(),
             description_scroll: TextScroll::new(),
             versions_scroll: ListScroll::new(),
+            gauge: Tween::settled(0.0),
+        }
+    }
+
+    /// Fraction of the project's tasks that are done, for the gauge.
+    fn gauge_ratio(&self) -> f64 {
+        let [_, _, done] = status_counts(&self.all_tasks);
+        let total = self.all_tasks.len() as u64;
+        if total == 0 {
+            0.0
+        } else {
+            done as f64 / total as f64
         }
     }
 
@@ -152,7 +173,7 @@ impl ProjectDashboard {
     }
 
     pub fn is_confirming_delete(&self) -> bool {
-        self.confirm_delete.is_some()
+        self.confirm_delete.is_open()
     }
 
     fn load(&mut self) -> anyhow::Result<()> {
@@ -169,11 +190,7 @@ impl ProjectDashboard {
                     .collect();
                 let total = tasks.len() as u64;
                 let [todo, in_progress, done] = status_counts(tasks.iter().copied());
-                let percentage = if total == 0 {
-                    0
-                } else {
-                    (done as f64 / total as f64 * 100.0).round() as u64
-                };
+                let percentage = percent(done, total);
                 VersionRow {
                     version,
                     todo,
@@ -196,12 +213,29 @@ impl ProjectDashboard {
 
 impl Component for ProjectDashboard {
     fn init(&mut self) -> anyhow::Result<()> {
-        self.confirm_delete = None;
-        self.load()
+        self.confirm_delete.close();
+        self.load()?;
+        // Opening the project shows its real progress at once; only later
+        // changes are animated.
+        self.gauge = Tween::settled(self.gauge_ratio());
+        Ok(())
     }
 
     fn refresh(&mut self) -> anyhow::Result<()> {
         self.load()
+    }
+
+    fn tick(&mut self) {
+        self.gauge.set(self.gauge_ratio());
+    }
+
+    fn help_sections(&self) -> Vec<HelpSection> {
+        help::sections(self.keybindings(), |label| match label {
+            "Down" | "Up" | "Open" | "Scroll description" => help::NAVIGATION,
+            "Edit Project" => help::PROJECTS,
+            "New Version" | "Edit Version" | "Delete" | "Cycle Status" => help::VERSIONS,
+            _ => help::APPLICATION,
+        })
     }
 
     fn keybindings(&self) -> &'static [(KeyEvent, &'static str)] {
@@ -209,9 +243,7 @@ impl Component for ProjectDashboard {
     }
 
     fn auto_refresh_interval(&self) -> Option<Duration> {
-        self.confirm_delete
-            .is_none()
-            .then_some(AUTO_REFRESH_INTERVAL)
+        (!self.confirm_delete.is_open()).then_some(AUTO_REFRESH_INTERVAL)
     }
 
     fn handle_event(&mut self, event: &Event) -> Option<Action> {
@@ -225,10 +257,8 @@ impl Component for ProjectDashboard {
         };
         let code = *code;
 
-        if let Some(dialog) = &self.confirm_delete {
-            let action = dialog.handle_key(code);
-            self.confirm_delete = None;
-            return action;
+        if self.confirm_delete.is_open() {
+            return self.confirm_delete.answer(code);
         }
 
         match code {
@@ -262,6 +292,14 @@ impl Component for ProjectDashboard {
                 project_id,
                 version_id: None,
             })),
+            KeyCode::Char('v') => {
+                let row = self.selected_row()?;
+                let version_id = row.version.id?;
+                Some(Action::Navigate(Screen::VersionForm {
+                    project_id,
+                    version_id: Some(version_id),
+                }))
+            }
             KeyCode::Char('e') => Some(Action::Navigate(Screen::ProjectForm {
                 project_id: Some(project_id),
             })),
@@ -269,13 +307,13 @@ impl Component for ProjectDashboard {
                 let row = self.selected_row()?;
                 let version_id = row.version.id?;
                 let message = format!(
-                    "Delete version {}? Its tasks will be removed. (y/N)",
+                    "Delete version {}? Its tasks will be removed.",
                     row.version.name
                 );
-                self.confirm_delete = Some(ConfirmDialog::new(
-                    message,
-                    Action::DeleteVersion { version_id },
-                ));
+                self.confirm_delete.open(
+                    ConfirmDialog::new(message, Action::DeleteVersion { version_id })
+                        .with_title("Delete version"),
+                );
                 None
             }
             KeyCode::Char('r') => {
@@ -316,7 +354,7 @@ impl Component for ProjectDashboard {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(3),
-                Constraint::Length(9),
+                Constraint::Length(5),
                 Constraint::Length(3),
                 Constraint::Min(0),
             ])
@@ -335,39 +373,42 @@ impl Component for ProjectDashboard {
         frame.render_widget(desc, chunks[0]);
 
         let counts = status_counts(&self.all_tasks);
-        let status_bars = vec![
-            Bar::default()
-                .value(counts[0])
-                .label(Line::from("Todo"))
-                .style(Status::Todo.style()),
-            Bar::default()
-                .value(counts[1])
-                .label(Line::from("In Progress"))
-                .style(Status::InProgress.style()),
-            Bar::default()
-                .value(counts[2])
-                .label(Line::from("Done"))
-                .style(Status::Done.style()),
-        ];
-        let status_chart = BarChart::default()
-            .block(Block::default().title("Status").borders(Borders::ALL))
-            .data(BarGroup::default().bars(&status_bars))
-            .bar_width(10);
-        frame.render_widget(status_chart, chunks[1]);
+        let status_block = Block::default().title("Status").borders(Borders::ALL);
+        let status_inner = status_block.inner(chunks[1]);
+        frame.render_widget(status_block, chunks[1]);
+        // One row per status; the bar takes the width left by the label and
+        // the count, so narrow terminals shorten the bar, never the text.
+        let bar_width = (status_inner.width as usize).saturating_sub(STATUS_ROW_OVERHEAD);
+        frame.render_widget(
+            Paragraph::new(Text::from(status_rows(counts, bar_width))),
+            status_inner,
+        );
 
         let total = self.all_tasks.len() as u64;
         let done = counts[2];
         let percentage = completion_percentage(&self.all_tasks);
-        let ratio = if total == 0 {
-            0.0
-        } else {
-            done as f64 / total as f64
-        };
         let gauge = Gauge::default()
             .block(Block::default().title("Progress").borders(Borders::ALL))
-            .ratio(ratio)
+            .ratio(self.gauge.value())
+            .use_unicode(true)
             .label(format!("{done}/{total} tasks ({percentage}%)"));
-        frame.render_widget(gauge, chunks[2]);
+        // The activity sparkline sits beside the gauge when there is room.
+        if chunks[2].width >= MIN_WIDTH_FOR_ACTIVITY {
+            let [gauge_area, activity_area] = Layout::horizontal([
+                Constraint::Min(0),
+                Constraint::Length(ACTIVITY_DAYS as u16 + 2),
+            ])
+            .areas(chunks[2]);
+            frame.render_widget(gauge, gauge_area);
+            let counts = completions_per_day(&self.all_tasks, today_epoch_day());
+            let activity = Sparkline::default()
+                .block(Block::default().title("14 days").borders(Borders::ALL))
+                .data(counts)
+                .style(status_style(Status::Done));
+            frame.render_widget(activity, activity_area);
+        } else {
+            frame.render_widget(gauge, chunks[2]);
+        }
 
         self.render_versions(frame, chunks[3]);
     }
@@ -375,20 +416,27 @@ impl Component for ProjectDashboard {
 
 impl ProjectDashboard {
     fn render_versions(&self, frame: &mut Frame, area: Rect) {
-        if let Some(dialog) = &self.confirm_delete {
-            dialog.render(frame, area);
-            return;
+        self.render_versions_list(frame, area);
+        // The list stays visible, dimmed, behind the confirmation modal, which
+        // is centered on the whole screen rather than on the versions list.
+        if let Some(dialog) = self.confirm_delete.dialog() {
+            dialog.render(frame, frame.area());
         }
+    }
+
+    fn render_versions_list(&self, frame: &mut Frame, area: Rect) {
         let block = Block::default().title("Versions").borders(Borders::ALL);
         if self.versions.is_empty() {
-            let paragraph = Paragraph::new("No versions yet. Press c to create one.")
-                .block(block)
-                .wrap(Wrap { trim: true });
-            frame.render_widget(paragraph, area);
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            EmptyState::new("No versions yet")
+                .with_icon(glyphs::glyphs().status_todo)
+                .with_hint("Press c to create one.")
+                .render(frame, inner);
             return;
         }
         // Rows that fit inside the top and bottom borders.
-        let row_height = area.height.saturating_sub(2) as usize;
+        let row_height = list_rows(area, 0);
         let range =
             self.versions_scroll
                 .visible_range(self.versions.len(), self.selected, row_height);
@@ -400,7 +448,11 @@ impl ProjectDashboard {
                 let i = range.start + offset;
                 // A marker in front of the selected version; the same width
                 // on the others keeps the columns aligned.
-                let marker = if i == self.selected { "> " } else { "  " };
+                let marker = if i == self.selected {
+                    format!("{} ", glyphs::glyphs().selection)
+                } else {
+                    "  ".to_string()
+                };
                 let mut line = line.clone();
                 line.spans.insert(0, Span::raw(marker));
                 ListItem::new(line)
@@ -408,24 +460,14 @@ impl ProjectDashboard {
             .collect();
         frame.render_widget(List::new(items).block(block), area);
 
-        // Scrollbar on the right border, aligned with the data rows.
-        if row_height > 0 && area.width > 0 {
-            let track = Rect::new(area.x + area.width - 1, area.y + 1, 1, row_height as u16);
-            render_scrollbar(frame, track, self.versions.len(), row_height, range.start);
-        }
+        render_list_scrollbar(frame, area, 0, self.versions.len(), range.start);
     }
 }
 
-fn status_counts<'a>(tasks: impl IntoIterator<Item = &'a Task>) -> [u64; 3] {
-    let mut counts = [0u64; 3];
-    for task in tasks {
-        match task.status {
-            Status::Todo => counts[0] += 1,
-            Status::InProgress => counts[1] += 1,
-            Status::Done => counts[2] += 1,
-        }
-    }
-    counts
+/// Right-pads `text` with spaces to `width` terminal columns.
+fn pad_display(text: &str, width: usize) -> String {
+    let fill = width.saturating_sub(text.width());
+    format!("{text}{}", " ".repeat(fill))
 }
 
 /// Lines for the versions list. The name column is padded to the longest
@@ -433,39 +475,15 @@ fn status_counts<'a>(tasks: impl IntoIterator<Item = &'a Task>) -> [u64; 3] {
 fn version_lines(rows: &[VersionRow]) -> Vec<Line<'static>> {
     let name_width = rows
         .iter()
-        .map(|row| row.name_column().chars().count())
+        .map(|row| row.name_column().width())
         .max()
         .unwrap_or(0);
     rows.iter().map(|row| row.line(name_width)).collect()
 }
 
-/// Splits `width` cells among the three status counts, proportionally, using
-/// the largest-remainder method so the segments always add up to `width`.
-/// Returns zeros when there are no tasks.
-fn bar_segments(counts: [u64; 3], width: usize) -> [usize; 3] {
-    let total: u64 = counts.iter().sum();
-    if total == 0 {
-        return [0; 3];
-    }
-    let width = width as u64;
-    let mut cells = [0u64; 3];
-    let mut remainders = [0u64; 3];
-    for i in 0..3 {
-        let exact = counts[i] * width;
-        cells[i] = exact / total;
-        remainders[i] = exact % total;
-    }
-    let mut order = [0usize, 1, 2];
-    order.sort_by_key(|&i| std::cmp::Reverse(remainders[i]));
-    let missing = width - cells.iter().sum::<u64>();
-    for &i in order.iter().take(missing as usize) {
-        cells[i] += 1;
-    }
-    cells.map(|c| c as usize)
-}
-
 #[cfg(test)]
 mod tests {
+    use crate::db::repository::*;
     use std::sync::Arc;
 
     use crossterm::event::KeyCode;
@@ -489,6 +507,10 @@ mod tests {
             .id
             .unwrap();
         let v0 = repo.default_version_id(project_id).unwrap();
+        // Versions are created in Backlog; these fixtures exercise an active one.
+        let v0_row = repo.get_version(v0).unwrap();
+        repo.update_version(v0, &v0_row.name, &v0_row.description, VersionStatus::Open)
+            .unwrap();
         for (name, status) in [
             ("T1", Status::Todo),
             ("T2", Status::Todo),
@@ -503,6 +525,8 @@ mod tests {
             .create_version(project_id, "v0.1.0", "")
             .unwrap()
             .id
+            .unwrap();
+        repo.update_version(v1, "v0.1.0", "", VersionStatus::Open)
             .unwrap();
         repo.create_task(project_id, v1, "R1", "", Status::Done, Priority::Low)
             .unwrap();
@@ -519,6 +543,14 @@ mod tests {
             .draw(|frame| dashboard.render(frame, frame.area()))
             .unwrap();
         buffer_to_string(terminal.backend().buffer())
+    }
+
+    #[test]
+    fn pad_display_pads_by_terminal_columns() {
+        // "中文" is 4 columns, so 4 spaces bring it to the 8-column target.
+        assert_eq!(pad_display("中文", 8).width(), 8);
+        assert_eq!(pad_display("v1", 5), "v1   ");
+        assert_eq!(pad_display("toolong", 3), "toolong");
     }
 
     #[test]
@@ -575,25 +607,6 @@ mod tests {
     }
 
     #[test]
-    fn bar_segments_split_proportionally() {
-        assert_eq!(bar_segments([3, 1, 1], 10), [6, 2, 2]);
-        assert_eq!(bar_segments([0, 0, 4], 10), [0, 0, 10]);
-    }
-
-    #[test]
-    fn bar_segments_always_fill_the_width() {
-        // 1/3 each: the leftover cell goes to the first segment on a tie.
-        assert_eq!(bar_segments([1, 1, 1], 10), [4, 3, 3]);
-        assert_eq!(bar_segments([1, 2, 4], 10).iter().sum::<usize>(), 10);
-        assert_eq!(bar_segments([7, 0, 3], 10).iter().sum::<usize>(), 10);
-    }
-
-    #[test]
-    fn bar_segments_are_zero_without_tasks() {
-        assert_eq!(bar_segments([0, 0, 0], 10), [0, 0, 0]);
-    }
-
-    #[test]
     fn version_without_tasks_shows_empty_bar() {
         let repo = Arc::new(StubRepository::default());
         let project_id = repo.create_project("Empty", "").unwrap().id.unwrap();
@@ -602,7 +615,7 @@ mod tests {
         dashboard.init().unwrap();
         assert_eq!(
             plain(&dashboard.versions()[0].line(0)),
-            "v0 [Open]  ▱▱▱▱▱▱▱▱▱▱ (0%)  todo(0) in-progress(0) done(0)"
+            "v0 [Backlog]  ░░░░░░░░░░ (0%)  todo(0) in-progress(0) done(0)"
         );
     }
 
@@ -616,7 +629,7 @@ mod tests {
             .map(|line| {
                 plain(line)
                     .chars()
-                    .position(|c| c == '█' || c == '▱')
+                    .position(|c| c == '█' || c == '░')
                     .unwrap()
             })
             .collect();
@@ -634,6 +647,54 @@ mod tests {
     fn gauge_shows_done_over_total_across_versions() {
         let (_repo, dashboard, _id) = setup_with_tasks();
         assert!(render_text(&dashboard).contains("2/6 tasks (33%)"));
+    }
+
+    #[test]
+    fn status_rows_show_each_status_with_count_and_share() {
+        let (_repo, dashboard, _id) = setup_with_tasks();
+        let text = render_text(&dashboard);
+        assert!(
+            text.contains("Todo") && text.contains("  3  ( 50%)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("In Progress") && text.contains("  1  ( 17%)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Done") && text.contains("  2  ( 33%)"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn status_bar_survives_narrow_widths() {
+        let (_repo, dashboard, _id) = setup_with_tasks();
+        let backend = TestBackend::new(12, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| dashboard.render(frame, frame.area()))
+            .unwrap();
+    }
+
+    #[test]
+    fn activity_sparkline_sits_beside_the_gauge_when_wide_enough() {
+        let (_repo, dashboard, _) = setup_with_tasks();
+        let wide = render_text(&dashboard);
+        assert!(wide.contains("14 days"), "{wide}");
+        assert!(wide.contains("2/6 tasks"), "{wide}");
+
+        let backend = TestBackend::new(40, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| dashboard.render(frame, frame.area()))
+            .unwrap();
+        let narrow = buffer_to_string(terminal.backend().buffer());
+        assert!(!narrow.contains("14 days"));
+        assert!(
+            narrow.contains("tasks ("),
+            "gauge label must stay: {narrow}"
+        );
     }
 
     #[test]
@@ -674,6 +735,36 @@ mod tests {
     }
 
     #[test]
+    fn v_opens_edit_version_form_for_selected_version() {
+        let (_repo, mut dashboard, project_id) = setup_with_tasks();
+        let version_id = dashboard.versions()[0].version.id.unwrap();
+        let action = dashboard.handle_event(&key_event(KeyCode::Char('v')));
+        assert_eq!(
+            action,
+            Some(Action::Navigate(Screen::VersionForm {
+                project_id,
+                version_id: Some(version_id),
+            }))
+        );
+    }
+
+    #[test]
+    fn v_does_nothing_without_versions() {
+        let repo = Arc::new(StubRepository::default());
+        let project_id = repo.create_project("Empty", "").unwrap().id.unwrap();
+        let mut dashboard = ProjectDashboard::new(repo.clone());
+        dashboard.set_project_id(project_id);
+        dashboard.init().unwrap();
+        repo.delete_version(dashboard.versions()[0].version.id.unwrap())
+            .unwrap();
+        dashboard.refresh().unwrap();
+        assert!(dashboard.versions().is_empty());
+
+        let action = dashboard.handle_event(&key_event(KeyCode::Char('v')));
+        assert_eq!(action, None);
+    }
+
+    #[test]
     fn e_opens_project_edit_form() {
         let (_repo, mut dashboard, project_id) = setup_with_tasks();
         let action = dashboard.handle_event(&key_event(KeyCode::Char('e')));
@@ -709,12 +800,21 @@ mod tests {
     }
 
     #[test]
-    fn d_then_other_key_cancels_delete() {
+    fn d_then_n_cancels_delete() {
         let (_repo, mut dashboard, _id) = setup_with_tasks();
         dashboard.handle_event(&key_event(KeyCode::Char('d')));
         let action = dashboard.handle_event(&key_event(KeyCode::Char('n')));
         assert_eq!(action, None);
         assert!(!dashboard.is_confirming_delete());
+    }
+
+    #[test]
+    fn d_then_other_key_keeps_confirming_delete() {
+        let (_repo, mut dashboard, _id) = setup_with_tasks();
+        dashboard.handle_event(&key_event(KeyCode::Char('d')));
+        let action = dashboard.handle_event(&key_event(KeyCode::Char('x')));
+        assert_eq!(action, None);
+        assert!(dashboard.is_confirming_delete());
     }
 
     #[test]
@@ -762,7 +862,9 @@ mod tests {
         repo.delete_version(dashboard.versions()[0].version.id.unwrap())
             .unwrap();
         dashboard.refresh().unwrap();
-        assert!(render_text(&dashboard).contains("No versions yet. Press c to create one."));
+        let text = render_text(&dashboard);
+        assert!(text.contains("No versions yet"), "{text}");
+        assert!(text.contains("Press c to create one."), "{text}");
     }
 
     #[test]
@@ -810,6 +912,7 @@ mod tests {
             .map(|(event, label)| (event.code, *label))
             .collect();
         assert!(keys.contains(&(KeyCode::Char('c'), "New Version")));
+        assert!(keys.contains(&(KeyCode::Char('v'), "Edit Version")));
         assert!(keys.contains(&(KeyCode::Char('r'), "Cycle Status")));
         assert!(keys.contains(&(KeyCode::Char('e'), "Edit Project")));
         assert!(keys.contains(&(KeyCode::Char('d'), "Delete")));

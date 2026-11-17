@@ -7,8 +7,12 @@
 use ratatui::{
     Frame,
     layout::Rect,
+    style::{Modifier, Style},
+    text::Line,
     widgets::{Block, Borders, Clear},
 };
+
+use crate::screens::components::theme;
 
 /// Returns the `width`x`height` rect centered inside `area`, clamped to
 /// `area` when the requested size exceeds it.
@@ -37,11 +41,43 @@ pub fn centered_rect_percent(percent: u16, area: Rect) -> Rect {
     }
 }
 
+/// Adds `Modifier::DIM` to every cell of the frame, so the screen drawn
+/// behind a modal recedes without losing its content.
+pub fn dim_area(frame: &mut Frame) {
+    let area = frame.area();
+    let buffer = frame.buffer_mut();
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            buffer[(x, y)].modifier.insert(Modifier::DIM);
+        }
+    }
+}
+
 /// Clears `area`, draws a `Borders::ALL` block titled `title` over it and
 /// returns the block's inner rect for the caller's content.
 pub fn render_popup_scaffold(frame: &mut Frame, area: Rect, title: &str) -> Rect {
+    render_popup_scaffold_with(
+        frame,
+        area,
+        Line::from(title.to_string()),
+        theme::theme().border_style(),
+    )
+}
+
+/// Same as [`render_popup_scaffold`], but the caller supplies the styled title
+/// line and the border style. Used by popups whose severity is semantic, such
+/// as the destructive confirmation dialog.
+pub fn render_popup_scaffold_with(
+    frame: &mut Frame,
+    area: Rect,
+    title: Line<'static>,
+    border_style: Style,
+) -> Rect {
     frame.render_widget(Clear, area);
-    let block = Block::default().title(title).borders(Borders::ALL);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(border_style);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     inner

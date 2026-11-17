@@ -31,6 +31,7 @@ With PMP, you get a local, blazing-fast, keyboard-driven project manager powered
 - 🔒 **Total Privacy**: All your data is stored locally using SQLite. Your data is yours alone!
 - 🔗 **Task Dependencies**: Prevents moving tasks to "Done" if their dependencies haven't been resolved yet.
 - 🏷️ **Versions**: Group a project's tasks into versions (for example `v0.2.0`), follow each version's progress, and mark it as released. Tasks and dependencies stay within their version.
+- 🧊 **Version Compaction**: Freeze a released version into a summary snapshot; review it from the TUI or export it as Markdown with Mermaid charts.
 
 ---
 
@@ -79,7 +80,39 @@ To open the interactive interface, simply run:
 pmp
 ```
 
-Use the **arrow keys** to navigate, **Tab** to change statuses or jump between panels, and follow the on-screen keyboard shortcuts to manage your projects.
+Use the **arrow keys** to navigate, **Tab** to change statuses or jump between panels, and follow the on-screen keyboard shortcuts to manage your projects. Press **?** on any screen to see the full list of shortcuts.
+
+#### Appearance
+
+PMP uses the terminal's own ANSI palette, so it adapts to light and dark themes without extra configuration. These environment variables are available:
+
+| Variable | Effect |
+| --- | --- |
+| `NO_COLOR` | When set to a non-empty value, colors are disabled and only shapes and bold text are used. |
+| `PMP_THEME` | Selects a built-in palette: `default` or `bright` (the high-contrast ANSI variants). Unknown names fall back to `default`. |
+| `PMP_ASCII` | When set to a non-empty value, the ASCII glyph set replaces the Unicode one, for terminals without Unicode support. |
+| `PMP_REDUCED_MOTION` | When set to a non-empty value other than `0`, turns off animations: gauges and bars jump to their value, the in-progress spinner stays still, and toasts appear without sliding. |
+
+```bash
+NO_COLOR=1 pmp        # monochrome
+PMP_THEME=bright pmp  # high contrast
+PMP_ASCII=1 pmp        # ASCII glyphs
+PMP_REDUCED_MOTION=1 pmp  # no animations
+```
+
+#### Theme file
+
+To keep a custom palette, create `~/.config/pmp/theme.toml` (on Linux, under `$XDG_CONFIG_HOME` if set). It picks a base palette and overrides individual colors:
+
+```toml
+palette = "bright"
+
+[colors]
+accent = "#7aa2f7"
+muted = "dark gray"
+```
+
+`palette` accepts `default` or `bright`. Each key in `[colors]` is a semantic token such as `bg`, `text`, `muted`, `accent`, `success`, `warning`, `danger`, `selection_bg`, `status_done` or `priority_high`. Colors can be names (such as `dark gray`) or hex values (`#rrggbb`). `PMP_THEME` takes precedence over the file's `palette`. A missing or malformed file, unknown token names and invalid colors never stop PMP: the default values are kept.
 
 ### MCP Server
 

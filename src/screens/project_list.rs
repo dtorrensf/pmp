@@ -7,32 +7,39 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::db::repository::Repository;
-use crate::screens::components::confirm_dialog::ConfirmDialog;
+use crate::domain::task::Status;
+use crate::screens::components::confirm_dialog::{ConfirmDialog, ConfirmState};
+use crate::screens::components::empty_state::EmptyState;
+use crate::screens::components::glyphs;
+use crate::screens::components::help::{self, HelpSection};
 use crate::screens::components::keys::key;
 use crate::screens::components::list_navigation::move_selection;
-use crate::screens::components::progress::completion_percentage;
-use crate::screens::components::scroll::{ListScroll, render_scrollbar};
+use crate::screens::components::motion::Tween;
+use crate::screens::components::progress::percent;
+use crate::screens::components::progress_bar::ProgressBar;
+use crate::screens::components::scroll::{ListScroll, list_rows, render_list_scrollbar};
+use crate::screens::components::stacked_bar::status_counts;
+use crate::screens::components::theme::{self, status_style};
 use crate::screens::{AUTO_REFRESH_INTERVAL, Action, Component, Screen};
-
-pub enum ProjectListMode {
-    Browsing,
-    ConfirmDelete(ConfirmDialog),
-}
 
 pub struct ProjectListScreen {
     repo: Arc<dyn Repository>,
     projects: Vec<crate::domain::project::Project>,
-    progress: Vec<u64>,
+    /// Tasks per status for each project, see `status_counts`.
+    task_counts: Vec<[u64; 3]>,
     version_counts: Vec<usize>,
+    /// Eased fill of each project's progress bar, indexed like `projects`.
+    bars: Vec<Tween>,
     selected: usize,
     scroll: ListScroll,
-    mode: ProjectListMode,
+    confirm: ConfirmState,
 }
 
 impl ProjectListScreen {
@@ -51,11 +58,12 @@ impl ProjectListScreen {
         Self {
             repo,
             projects: Vec::new(),
-            progress: Vec::new(),
+            task_counts: Vec::new(),
             version_counts: Vec::new(),
+            bars: Vec::new(),
             selected: 0,
             scroll: ListScroll::new(),
-            mode: ProjectListMode::Browsing,
+            confirm: ConfirmState::default(),
         }
     }
 
@@ -65,9 +73,27 @@ impl ProjectListScreen {
 }
 
 impl Component for ProjectListScreen {
+    fn tick(&mut self) {
+        let targets: Vec<f64> = self
+            .task_counts
+            .iter()
+            .map(|counts| {
+                let tasks: u64 = counts.iter().sum();
+                percent(counts[2], tasks) as f64 / 100.0
+            })
+            .collect();
+        for (i, target) in targets.iter().enumerate() {
+            match self.bars.get_mut(i) {
+                Some(bar) => bar.set(*target),
+                None => self.bars.push(Tween::settled(*target)),
+            }
+        }
+        self.bars.truncate(targets.len());
+    }
+
     fn init(&mut self) -> anyhow::Result<()> {
         self.projects = self.repo.list_projects()?;
-        self.progress = self
+        self.task_counts = self
             .projects
             .iter()
             .map(|project| {
@@ -76,7 +102,7 @@ impl Component for ProjectListScreen {
                     .repo
                     .list_tasks_by_project(project_id)
                     .unwrap_or_default();
-                completion_percentage(&tasks)
+                status_counts(&tasks)
             })
             .collect();
         self.version_counts = self
@@ -90,8 +116,17 @@ impl Component for ProjectListScreen {
             })
             .collect();
         self.selected = self.selected.min(self.projects.len().saturating_sub(1));
-        self.mode = ProjectListMode::Browsing;
+        self.confirm.close();
         Ok(())
+    }
+
+    /// Projects are the subject here, so create/edit/delete go under Projects.
+    fn help_sections(&self) -> Vec<HelpSection> {
+        help::sections(self.keybindings(), |label| match label {
+            "Down" | "Up" | "Open" => help::NAVIGATION,
+            "Create" | "Edit" | "Delete" => help::PROJECTS,
+            _ => help::APPLICATION,
+        })
     }
 
     fn keybindings(&self) -> &'static [(KeyEvent, &'static str)] {
@@ -99,7 +134,7 @@ impl Component for ProjectListScreen {
     }
 
     fn auto_refresh_interval(&self) -> Option<Duration> {
-        matches!(&self.mode, ProjectListMode::Browsing).then_some(AUTO_REFRESH_INTERVAL)
+        (!self.confirm.is_open()).then_some(AUTO_REFRESH_INTERVAL)
     }
 
     fn handle_event(&mut self, event: &Event) -> Option<Action> {
@@ -109,47 +144,43 @@ impl Component for ProjectListScreen {
             ..
         }) = event
         {
-            match &self.mode {
-                ProjectListMode::Browsing => match code {
-                    KeyCode::Char('q') => Some(Action::Quit),
-                    KeyCode::Char('r') => Some(Action::Refresh),
-                    KeyCode::Char('c') => {
-                        Some(Action::Navigate(Screen::ProjectForm { project_id: None }))
-                    }
-                    KeyCode::Char('d') => {
-                        if let Some(project) = self.projects.get(self.selected) {
-                            let project_id = project.id.unwrap_or(0);
-                            let message = format!(
-                                "Delete project {}? This will remove all its tasks ⚠️. (y/N)",
-                                project.name
-                            );
-                            self.mode = ProjectListMode::ConfirmDelete(ConfirmDialog::new(
-                                message,
-                                Action::DeleteProject { project_id },
-                            ));
-                        }
-                        None
-                    }
-                    KeyCode::Char('e') => self
-                        .projects
-                        .get(self.selected)
-                        .map(|p| Action::Navigate(Screen::ProjectForm { project_id: p.id })),
-                    KeyCode::Enter => self.projects.get(self.selected).map(|p| {
-                        Action::Navigate(Screen::ProjectDashboard {
-                            project_id: p.id.unwrap_or(0),
-                        })
-                    }),
-                    KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k') => {
-                        move_selection(&mut self.selected, self.projects.len(), *code);
-                        None
-                    }
-                    _ => None,
-                },
-                ProjectListMode::ConfirmDelete(dialog) => {
-                    let action = dialog.handle_key(*code);
-                    self.mode = ProjectListMode::Browsing;
-                    action
+            if self.confirm.is_open() {
+                return self.confirm.answer(*code);
+            }
+            match code {
+                KeyCode::Char('q') => Some(Action::Quit),
+                KeyCode::Char('r') => Some(Action::Refresh),
+                KeyCode::Char('c') => {
+                    Some(Action::Navigate(Screen::ProjectForm { project_id: None }))
                 }
+                KeyCode::Char('d') => {
+                    if let Some(project) = self.projects.get(self.selected) {
+                        let project_id = project.id.unwrap_or(0);
+                        let message = format!(
+                            "Delete project {}? This will remove all its tasks.",
+                            project.name
+                        );
+                        self.confirm.open(
+                            ConfirmDialog::new(message, Action::DeleteProject { project_id })
+                                .with_title("Delete project"),
+                        );
+                    }
+                    None
+                }
+                KeyCode::Char('e') => self
+                    .projects
+                    .get(self.selected)
+                    .map(|p| Action::Navigate(Screen::ProjectForm { project_id: p.id })),
+                KeyCode::Enter => self.projects.get(self.selected).map(|p| {
+                    Action::Navigate(Screen::ProjectDashboard {
+                        project_id: p.id.unwrap_or(0),
+                    })
+                }),
+                KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k') => {
+                    move_selection(&mut self.selected, self.projects.len(), *code);
+                    None
+                }
+                _ => None,
             }
         } else {
             None
@@ -157,9 +188,10 @@ impl Component for ProjectListScreen {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect) {
-        match &self.mode {
-            ProjectListMode::Browsing => render_list(self, frame, area),
-            ProjectListMode::ConfirmDelete(dialog) => dialog.render(frame, area),
+        // The list stays visible, dimmed, behind the confirmation modal.
+        render_list(self, frame, area);
+        if let Some(dialog) = self.confirm.dialog() {
+            dialog.render(frame, area);
         }
     }
 }
@@ -167,53 +199,84 @@ impl Component for ProjectListScreen {
 fn render_list(screen: &ProjectListScreen, frame: &mut Frame, area: Rect) {
     let block = Block::default().title("Projects").borders(Borders::ALL);
     if screen.projects.is_empty() {
-        let paragraph = Paragraph::new("No projects yet. Create one? (press 'c')")
-            .block(block)
-            .wrap(Wrap { trim: true });
-        frame.render_widget(paragraph, area);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        EmptyState::new("No projects yet")
+            .with_icon(glyphs::glyphs().status_todo)
+            .with_hint("Press c to create one.")
+            .render(frame, inner);
         return;
     }
 
     // Rows that fit inside the top and bottom borders.
-    let row_height = area.height.saturating_sub(2) as usize;
+    let row_height = list_rows(area, 0);
     let range = screen
         .scroll
         .visible_range(screen.projects.len(), screen.selected, row_height);
+
+    // The name column is padded to the longest name so the bars line up.
+    let name_width = screen
+        .projects
+        .iter()
+        .map(|p| p.name.width())
+        .max()
+        .unwrap_or(0);
 
     let items: Vec<ListItem> = screen.projects[range.clone()]
         .iter()
         .enumerate()
         .map(|(offset, p)| {
             let i = range.start + offset;
-            let style = if i == screen.selected {
-                Style::default().add_modifier(Modifier::REVERSED)
+            let (style, marker) = if i == screen.selected {
+                (theme::theme().selection_style(), glyphs::glyphs().selection)
             } else {
-                Style::default()
+                (Style::default(), " ")
             };
-            let progress = screen.progress.get(i).copied().unwrap_or(0);
+            let counts = screen.task_counts.get(i).copied().unwrap_or([0; 3]);
+            let tasks: u64 = counts.iter().sum();
+            let percentage = percent(counts[2], tasks);
             let versions = screen.version_counts.get(i).copied().unwrap_or(0);
-            let label = format!(
-                "{} ({} {} · {}%)",
-                p.name,
-                versions,
+            // The label shows the real percentage; the bar eases toward it.
+            let ratio = screen
+                .bars
+                .get(i)
+                .map_or(percentage as f64 / 100.0, Tween::value);
+            let bar = ProgressBar::new(ratio, PROGRESS_BAR_WIDTH)
+                .with_filled_style(status_style(Status::Done))
+                .with_empty_style(theme::theme().muted_style());
+
+            let mut spans = vec![
+                Span::raw(format!("{marker} {}", pad_display(&p.name, name_width))),
+                Span::raw("  "),
+            ];
+            spans.extend(bar.line().spans);
+            spans.push(Span::raw(format!(" {percentage:>3}%  ")));
+            spans.push(Span::raw(format!(
+                "{tasks} {} · {versions} {}",
+                if tasks == 1 { "task" } else { "tasks" },
                 if versions == 1 { "version" } else { "versions" },
-                progress
-            );
-            ListItem::new(Line::from(Span::styled(label, style)))
+            )));
+            ListItem::new(Line::from(spans).style(style))
         })
         .collect();
     let list = List::new(items).block(block);
     frame.render_widget(list, area);
 
-    // Scrollbar on the right border, aligned with the data rows.
-    if row_height > 0 && area.width > 0 {
-        let track = Rect::new(area.x + area.width - 1, area.y + 1, 1, row_height as u16);
-        render_scrollbar(frame, track, screen.projects.len(), row_height, range.start);
-    }
+    render_list_scrollbar(frame, area, 0, screen.projects.len(), range.start);
+}
+
+/// Width, in cells, of the progress bar of each project.
+const PROGRESS_BAR_WIDTH: usize = 10;
+
+/// Right-pads `text` with spaces to `width` terminal columns.
+fn pad_display(text: &str, width: usize) -> String {
+    let fill = width.saturating_sub(text.width());
+    format!("{text}{}", " ".repeat(fill))
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::db::repository::*;
     use std::sync::Arc;
 
     use crossterm::event::KeyCode;
@@ -221,6 +284,7 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     use crate::db::stub::StubRepository;
+    use crate::domain::task::{Priority, Status};
     use crate::screens::test_utils::{buffer_to_string, char_event, key_event, render_to_string};
     use crate::screens::{Component, Screen};
 
@@ -238,7 +302,7 @@ mod tests {
         let buffer = terminal.backend().buffer().clone();
         let text = buffer_to_string(&buffer);
         assert!(text.contains("No projects yet"));
-        assert!(text.contains("press 'c'"));
+        assert!(text.contains("Press c to create one."), "{text}");
     }
 
     #[test]
@@ -348,6 +412,23 @@ mod tests {
     }
 
     #[test]
+    fn delete_confirmation_avoids_the_two_column_warning_emoji() {
+        let repo = Arc::new(StubRepository::default());
+        repo.create_project("Alpha", "").unwrap();
+        let mut screen = ProjectListScreen::new(repo);
+        screen.init().unwrap();
+
+        screen.handle_event(&char_event('d'));
+        let text = render_to_string(&screen, 60, 20);
+
+        // The `⚠️` emoji measures two columns and misaligns the text; the
+        // plain warning sign is exactly one column wide.
+        assert!(!text.contains("⚠️"), "{text}");
+        assert!(text.contains('⚠'), "{text}");
+        assert!(text.contains("Delete project Alpha?"), "{text}");
+    }
+
+    #[test]
     fn auto_refresh_pauses_while_confirm_delete_is_open() {
         let repo = Arc::new(StubRepository::default());
         repo.create_project("Alpha", "").unwrap();
@@ -390,5 +471,56 @@ mod tests {
         let repo = Arc::new(StubRepository::default());
         let screen = ProjectListScreen::new(repo);
         insta::assert_snapshot!(render_to_string(&screen, 60, 20));
+    }
+
+    #[test]
+    fn rows_show_progress_bar_and_task_count() {
+        let repo = Arc::new(StubRepository::default());
+        let project = repo.create_project("Alpha", "").unwrap();
+        let pid = project.id.unwrap();
+        let vid = repo.default_version_id(pid).unwrap();
+        repo.create_task(pid, vid, "A", "", Status::Done, Priority::Low)
+            .unwrap();
+        repo.create_task(pid, vid, "B", "", Status::Todo, Priority::Low)
+            .unwrap();
+        let mut screen = ProjectListScreen::new(repo);
+        screen.init().unwrap();
+        let backend = TestBackend::new(70, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| screen.render(frame, frame.area()))
+            .unwrap();
+        let text = buffer_to_string(terminal.backend().buffer());
+        assert!(text.contains("█████░░░░░  50%  2 tasks"), "{text}");
+    }
+
+    #[test]
+    fn project_without_tasks_shows_empty_bar() {
+        let repo = Arc::new(StubRepository::default());
+        repo.create_project("Empty", "").unwrap();
+        let mut screen = ProjectListScreen::new(repo);
+        screen.init().unwrap();
+        let backend = TestBackend::new(70, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| screen.render(frame, frame.area()))
+            .unwrap();
+        let text = buffer_to_string(terminal.backend().buffer());
+        assert!(text.contains("░░░░░░░░░░   0%  0 tasks"), "{text}");
+    }
+
+    #[test]
+    fn narrow_rows_do_not_panic() {
+        let repo = Arc::new(StubRepository::default());
+        repo.create_project("A very long project name", "").unwrap();
+        let mut screen = ProjectListScreen::new(repo);
+        screen.init().unwrap();
+        for width in [1, 5, 12] {
+            let backend = TestBackend::new(width, 4);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| screen.render(frame, frame.area()))
+                .unwrap();
+        }
     }
 }

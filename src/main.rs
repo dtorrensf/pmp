@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use std::sync::Arc;
 
+use anyhow::Context;
 use pmp::app::App;
 use pmp::db::sqlite::SqliteRepository;
-
 const HELP: &str = include_str!("../help.txt");
 
 #[tokio::main(flavor = "current_thread")]
@@ -28,7 +28,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn open_repo() -> anyhow::Result<Arc<SqliteRepository>> {
-    let data_dir = dirs::data_dir().unwrap_or_else(|| std::env::current_dir().expect("cwd"));
+    let data_dir = dirs::data_dir().context("locate data directory")?;
     let db_path = data_dir.join("pmp").join("pmp.db");
     std::fs::create_dir_all(db_path.parent().unwrap())?;
     Ok(Arc::new(SqliteRepository::open(&db_path)?))

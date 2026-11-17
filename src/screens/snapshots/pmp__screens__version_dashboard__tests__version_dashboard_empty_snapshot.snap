@@ -1,10 +1,11 @@
 ---
 source: src/screens/version_dashboard.rs
-assertion_line: 567
 expression: "render_to_string(&screen, 60, 24)"
 ---
-┌v0 · Open─────────────────────────────────────────────────┐
-│             No tasks. Press c to create one.             │
+┌Empty › v0 › Backlog──────────────────────────────────────┐
+│                             ○                            │
+│                         No tasks                         │
+│                  Press c to create one.                  │
 │                                                          │
 │                                                          │
 │                                                          │
@@ -24,6 +25,4 @@ expression: "render_to_string(&screen, 60, 24)"
 │                                                          │
 │                                                          │
 │                                                          │
-│                                                          │
-│                                                          │
-└──────────────────────────────────────────────────────────┘
+└Tasks─────────────────────────────────────────────────────┘

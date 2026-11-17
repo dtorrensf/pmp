@@ -1,6 +1,5 @@
 // Copyright (C) 2026 Diego Torréns Farias
 // SPDX-License-Identifier: AGPL-3.0-or-later
-use ratatui::style::{Color, Style};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::error::AppError;
@@ -8,20 +7,23 @@ use crate::domain::error::AppError;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum VersionStatus {
+    Backlog,
     Open,
     Released,
 }
 
-impl VersionStatus {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            VersionStatus::Open => "open",
-            VersionStatus::Released => "released",
-        }
+impl From<VersionStatus> for &'static str {
+    fn from(status: VersionStatus) -> Self {
+        status.as_str()
     }
+}
 
-    pub fn try_from_str(value: &str) -> Result<Self, AppError> {
+impl TryFrom<&str> for VersionStatus {
+    type Error = AppError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value {
+            "backlog" => Ok(VersionStatus::Backlog),
             "open" => Ok(VersionStatus::Open),
             "released" => Ok(VersionStatus::Released),
             _ => Err(AppError::Validation(format!(
@@ -29,30 +31,58 @@ impl VersionStatus {
             ))),
         }
     }
+}
 
-    /// Wrapping toggle between `Open` and `Released`.
+impl VersionStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            VersionStatus::Backlog => "backlog",
+            VersionStatus::Open => "open",
+            VersionStatus::Released => "released",
+        }
+    }
+
+    /// Wrapping cycle `Backlog -> Open -> Released -> Backlog`.
     pub fn next(self) -> VersionStatus {
         match self {
+            VersionStatus::Backlog => VersionStatus::Open,
             VersionStatus::Open => VersionStatus::Released,
+            VersionStatus::Released => VersionStatus::Backlog,
+        }
+    }
+
+    /// Reverse wrapping cycle `Backlog <- Open <- Released <- Backlog`.
+    pub fn prev(self) -> VersionStatus {
+        match self {
+            VersionStatus::Backlog => VersionStatus::Released,
+            VersionStatus::Open => VersionStatus::Backlog,
             VersionStatus::Released => VersionStatus::Open,
         }
     }
 
-    pub fn all() -> [VersionStatus; 2] {
-        [VersionStatus::Open, VersionStatus::Released]
+    pub fn all() -> [VersionStatus; 3] {
+        [
+            VersionStatus::Backlog,
+            VersionStatus::Open,
+            VersionStatus::Released,
+        ]
+    }
+
+    /// Position used when listing versions: active (`Open`) versions first,
+    /// then planned (`Backlog`) ones, then `Released` ones.
+    pub fn list_rank(&self) -> u8 {
+        match self {
+            VersionStatus::Open => 0,
+            VersionStatus::Backlog => 1,
+            VersionStatus::Released => 2,
+        }
     }
 
     pub fn label(&self) -> &'static str {
         match self {
+            VersionStatus::Backlog => "Backlog",
             VersionStatus::Open => "Open",
             VersionStatus::Released => "Released",
-        }
-    }
-
-    pub fn style(&self) -> Style {
-        match self {
-            VersionStatus::Open => Style::default().fg(Color::Blue),
-            VersionStatus::Released => Style::default().fg(Color::Green),
         }
     }
 }
@@ -63,16 +93,6 @@ pub const DEFAULT_VERSION_NAME: &str = "v0";
 
 /// Name suggested when a project has no valid semver version yet.
 pub const FIRST_VERSION_NAME: &str = "v0.1.0";
-
-/// Rejects names that are empty or only whitespace.
-pub fn validate_version_name(name: &str) -> Result<(), AppError> {
-    if name.trim().is_empty() {
-        return Err(AppError::Validation(
-            "version name cannot be empty".to_string(),
-        ));
-    }
-    Ok(())
-}
 
 /// Suggests the next version name: the highest valid semver name among
 /// `existing` with its minor bumped (`v1.2.3` -> `v1.3.0`). Names that are not
@@ -149,6 +169,10 @@ mod tests {
     #[test]
     fn version_status_serializes_to_snake_case_strings() {
         assert_eq!(
+            serde_json::to_string(&VersionStatus::Backlog).unwrap(),
+            "\"backlog\""
+        );
+        assert_eq!(
             serde_json::to_string(&VersionStatus::Open).unwrap(),
             "\"open\""
         );
@@ -168,63 +192,72 @@ mod tests {
     }
 
     #[test]
-    fn version_status_as_str_and_try_from_str_round_trip() {
+    fn version_status_as_str_and_try_from_round_trip() {
         for status in VersionStatus::all() {
-            assert_eq!(
-                VersionStatus::try_from_str(status.as_str()).unwrap(),
-                status
-            );
+            assert_eq!(VersionStatus::try_from(status.as_str()).unwrap(), status);
+            assert_eq!(<&str>::from(status), status.as_str());
         }
     }
 
     #[test]
-    fn version_status_try_from_str_rejects_invalid_values() {
+    fn version_status_try_from_rejects_invalid_values() {
         assert!(matches!(
-            VersionStatus::try_from_str("closed"),
+            VersionStatus::try_from("closed"),
             Err(AppError::Validation(_))
         ));
         assert!(matches!(
-            VersionStatus::try_from_str(""),
+            VersionStatus::try_from(""),
             Err(AppError::Validation(_))
         ));
     }
 
     #[test]
-    fn version_status_next_toggles() {
+    fn version_status_next_cycles_through_all_variants() {
+        assert_eq!(VersionStatus::Backlog.next(), VersionStatus::Open);
         assert_eq!(VersionStatus::Open.next(), VersionStatus::Released);
-        assert_eq!(VersionStatus::Released.next(), VersionStatus::Open);
+        assert_eq!(VersionStatus::Released.next(), VersionStatus::Backlog);
+        // The cycle returns to the starting point after every variant.
+        let start = VersionStatus::Backlog;
+        assert_eq!(start.next().next().next(), start);
+    }
+
+    #[test]
+    fn version_status_prev_cycles_backwards_through_all_variants() {
+        assert_eq!(VersionStatus::Open.prev(), VersionStatus::Backlog);
+        assert_eq!(VersionStatus::Released.prev(), VersionStatus::Open);
+        assert_eq!(VersionStatus::Backlog.prev(), VersionStatus::Released);
+        // The cycle returns to the starting point after every variant.
+        let start = VersionStatus::Backlog;
+        assert_eq!(start.prev().prev().prev(), start);
+    }
+
+    #[test]
+    fn version_status_prev_is_the_inverse_of_next() {
+        for status in VersionStatus::all() {
+            assert_eq!(status.prev().next(), status);
+            assert_eq!(status.next().prev(), status);
+        }
     }
 
     #[test]
     fn version_status_all_contains_all_variants() {
-        assert_eq!(VersionStatus::all().len(), 2);
+        assert_eq!(VersionStatus::all().len(), 3);
+        assert!(VersionStatus::all().contains(&VersionStatus::Backlog));
         assert!(VersionStatus::all().contains(&VersionStatus::Open));
         assert!(VersionStatus::all().contains(&VersionStatus::Released));
     }
 
     #[test]
+    fn version_status_list_rank_orders_open_backlog_released() {
+        assert!(VersionStatus::Open.list_rank() < VersionStatus::Backlog.list_rank());
+        assert!(VersionStatus::Backlog.list_rank() < VersionStatus::Released.list_rank());
+    }
+
+    #[test]
     fn version_status_label_returns_human_readable_name() {
+        assert_eq!(VersionStatus::Backlog.label(), "Backlog");
         assert_eq!(VersionStatus::Open.label(), "Open");
         assert_eq!(VersionStatus::Released.label(), "Released");
-    }
-
-    #[test]
-    fn version_status_style_returns_colored_style() {
-        assert_eq!(VersionStatus::Open.style().fg, Some(Color::Blue));
-        assert_eq!(VersionStatus::Released.style().fg, Some(Color::Green));
-    }
-
-    #[test]
-    fn validate_version_name_rejects_blank() {
-        assert!(matches!(
-            validate_version_name(""),
-            Err(AppError::Validation(_))
-        ));
-        assert!(matches!(
-            validate_version_name("   "),
-            Err(AppError::Validation(_))
-        ));
-        assert!(validate_version_name("v1.0.0").is_ok());
     }
 
     #[test]

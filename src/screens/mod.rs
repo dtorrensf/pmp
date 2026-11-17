@@ -5,6 +5,8 @@ use std::time::Duration;
 use crossterm::event::{Event, KeyEvent};
 use ratatui::{Frame, layout::Rect};
 
+use crate::screens::components::help::{self, HelpSection};
+
 pub const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 pub mod components;
@@ -18,6 +20,7 @@ pub mod task_list_view;
 pub mod test_utils;
 pub mod version_dashboard;
 pub mod version_form;
+pub mod version_summary;
 
 pub use dashboard::ProjectDashboard;
 pub use project_form::ProjectForm;
@@ -25,6 +28,7 @@ pub use project_list::ProjectListScreen;
 pub use task_form::TaskForm;
 pub use version_dashboard::VersionDashboard;
 pub use version_form::VersionForm;
+pub use version_summary::VersionSummaryScreen;
 
 pub trait Component {
     fn init(&mut self) -> anyhow::Result<()> {
@@ -35,15 +39,22 @@ pub trait Component {
     fn refresh(&mut self) -> anyhow::Result<()> {
         self.init()
     }
+    /// Advances time-driven state (eased values, pending celebrations). Called
+    /// by the event loop about every 100 ms for the active component. Reads the
+    /// frame time published through `components::motion`; does nothing by default.
+    fn tick(&mut self) {}
     fn handle_event(&mut self, _event: &Event) -> Option<Action> {
-        None
-    }
-    fn update(&mut self, _action: Action) -> Option<Action> {
         None
     }
     fn render(&self, frame: &mut Frame, area: Rect);
     fn keybindings(&self) -> &'static [(KeyEvent, &'static str)] {
         &[]
+    }
+    /// Shortcuts grouped for the `?` overlay. By default every shortcut goes
+    /// under the application section; screens override it to place their
+    /// actions in the right section.
+    fn help_sections(&self) -> Vec<HelpSection> {
+        help::sections(self.keybindings(), |_| help::APPLICATION)
     }
     /// Interval at which this component refreshes itself automatically when
     /// idle, or `None` if it never auto-refreshes.
@@ -72,6 +83,11 @@ pub enum Screen {
     VersionForm {
         project_id: i64,
         version_id: Option<i64>,
+    },
+    VersionSummary {
+        project_id: i64,
+        version_id: i64,
+        summary_id: i64,
     },
 }
 
@@ -110,6 +126,10 @@ pub enum Action {
         task_id: i64,
         new_status: crate::domain::task::Status,
     },
+    MoveTask {
+        task_id: i64,
+        version_id: i64,
+    },
     SaveVersion {
         version_id: Option<i64>,
         project_id: i64,
@@ -130,12 +150,17 @@ pub enum Action {
         task_id: i64,
         content: String,
     },
+    ExportVersionSummary {
+        summary_id: i64,
+    },
     Refresh,
 }
 
 #[cfg(test)]
 pub mod tests {
-    use crate::db::repository::Repository;
+    use crate::db::repository::{
+        DependencyRepository, ProjectRepository, RepositoryPolicy, TaskRepository,
+    };
     use crate::db::stub::StubRepository;
     use crate::domain::task::{Priority, Status};
 
