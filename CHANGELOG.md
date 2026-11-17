@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/dtorrensf/pmp/compare/pmp-v0.5.0...pmp-v0.6.0) (2026-11-17)
+
+
+### Features
+
+* Adds version management and improves UI components ([#40](https://github.com/dtorrensf/pmp/issues/40)) ([8864ef1](https://github.com/dtorrensf/pmp/commit/8864ef11cf2e0ce464db2d79499a7f182c6e5f40))
+
 ## [Unreleased]
 
 ### Features
