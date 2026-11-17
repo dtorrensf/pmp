@@ -100,6 +100,20 @@ PMP_ASCII=1 pmp        # ASCII glyphs
 PMP_REDUCED_MOTION=1 pmp  # no animations
 ```
 
+#### Theme file
+
+To keep a custom palette, create `~/.config/pmp/theme.toml` (on Linux, under `$XDG_CONFIG_HOME` if set). It picks a base palette and overrides individual colors:
+
+```toml
+palette = "bright"
+
+[colors]
+accent = "#7aa2f7"
+muted = "dark gray"
+```
+
+`palette` accepts `default` or `bright`. Each key in `[colors]` is a semantic token such as `bg`, `text`, `muted`, `accent`, `success`, `warning`, `danger`, `selection_bg`, `status_done` or `priority_high`. Colors can be names (such as `dark gray`) or hex values (`#rrggbb`). `PMP_THEME` takes precedence over the file's `palette`. A missing or malformed file, unknown token names and invalid colors never stop PMP: the default values are kept.
+
 ### MCP Server
 
 If you want to integrate PMP with LLM-based assistants or other MCP-compatible applications, run:
