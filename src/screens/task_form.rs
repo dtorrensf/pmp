@@ -10,7 +10,7 @@ use ratatui::{
     style::{Modifier, Style},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
-use ratatui_textarea::TextArea;
+use ratatui_textarea::{CursorMove, TextArea};
 
 use crate::db::repository::Repository;
 use crate::domain::task::{Priority, Status, Task, TaskNote};
@@ -310,6 +310,7 @@ impl Component for TaskForm {
             self.name = task.name;
             self.description = TextArea::default();
             self.description.insert_str(&task.description);
+            self.description.move_cursor(CursorMove::Jump(0, 0));
             self.status = task.status;
             self.priority = task.priority;
             self.selected_deps = self.repo.get_dependencies(id)?.into_iter().collect();
@@ -1664,8 +1665,8 @@ mod tests {
             "Description row 2 should hold wrapped text, got {row:?}"
         );
         assert!(
-            text.contains("zulu"),
-            "last word of long description must be visible:\n{text}"
+            text.contains("alpha"),
+            "first word of long description must be visible:\n{text}"
         );
     }
 
