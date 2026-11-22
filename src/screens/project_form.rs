@@ -7,7 +7,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
 };
-use ratatui_textarea::TextArea;
+use ratatui_textarea::{CursorMove, TextArea};
 
 use crate::db::repository::Repository;
 use crate::screens::components::fields::{field_cursor_x, render_description_field, render_field};
@@ -73,6 +73,7 @@ impl Component for ProjectForm {
             self.name = project.name;
             let mut textarea = TextArea::default();
             textarea.insert_str(&project.description);
+            textarea.move_cursor(CursorMove::Jump(0, 0));
             self.description = textarea;
         } else {
             self.name.clear();
@@ -208,6 +209,12 @@ mod tests {
         form.set_return_to(&Screen::ProjectList);
         assert_eq!(form.name, "Alpha");
         assert_eq!(form.description.lines().join("\n"), "Description");
+    }
+
+    #[test]
+    fn edit_places_cursor_at_start_of_description() {
+        let form = form_for_edit();
+        assert_eq!(form.description.cursor(), (0, 0));
     }
 
     #[test]

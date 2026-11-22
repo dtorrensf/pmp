@@ -7,7 +7,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
 };
-use ratatui_textarea::TextArea;
+use ratatui_textarea::{CursorMove, TextArea};
 
 use crate::db::repository::{Repository, RepositoryPolicy};
 use crate::domain::version::VersionStatus;
@@ -94,6 +94,7 @@ impl Component for VersionForm {
             self.name = version.name;
             let mut textarea = TextArea::default();
             textarea.insert_str(&version.description);
+            textarea.move_cursor(CursorMove::Jump(0, 0));
             self.description = textarea;
             self.status = version.status;
         } else {

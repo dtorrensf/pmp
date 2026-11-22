@@ -1615,6 +1615,11 @@ mod tests {
         app.components
             .task_form
             .handle_event(&key_event(KeyCode::Tab)); // -> description
+        for _ in 0.."desc".len() {
+            app.components
+                .task_form
+                .handle_event(&key_event(KeyCode::Right));
+        }
         app.components.task_form.handle_event(&char_event(' '));
         app.components.task_form.handle_event(&char_event('m'));
         app.components.task_form.handle_event(&char_event('o'));
