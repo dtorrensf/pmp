@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/dtorrensf/pmp/compare/pmp-v0.6.0...pmp-v0.6.1) (2026-11-22)
+
+
+### Bug Fixes
+
+* Move description cursos ([#42](https://github.com/dtorrensf/pmp/issues/42)) ([a17a8ae](https://github.com/dtorrensf/pmp/commit/a17a8aedffed9573c26c3e3cedf796d7870e8082))
+
 ## [0.6.0](https://github.com/dtorrensf/pmp/compare/pmp-v0.5.0...pmp-v0.6.0) (2026-11-17)
 
 
