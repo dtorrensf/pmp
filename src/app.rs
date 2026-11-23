@@ -2251,3 +2251,166 @@ mod tests {
         assert_eq!(app.toasts().len(), 1);
     }
 }
+
+#[cfg(test)]
+mod characterization_tests {
+    use std::sync::Arc;
+
+    use crate::db::repository::{
+        DependencyRepository, NoteRepository, ProjectRepository, RepositoryPolicy, TaskRepository,
+    };
+    use crate::db::stub::StubRepository;
+    use crate::domain::task::{Priority, Status};
+    use crate::screens::components::toast::Severity;
+    use crate::screens::{Action, Screen};
+
+    use super::App;
+
+    fn setup() -> (Arc<StubRepository>, App, i64, i64) {
+        let repo = Arc::new(StubRepository::default());
+        let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version_id = repo.default_version_id(project_id).unwrap();
+        let app = App::new(repo.clone());
+        (repo, app, project_id, version_id)
+    }
+
+    fn task(repo: &StubRepository, project_id: i64, version_id: i64, name: &str) -> i64 {
+        repo.create_task(project_id, version_id, name, "", Status::Todo, Priority::Medium)
+            .unwrap()
+            .id
+            .unwrap()
+    }
+
+    #[test]
+    fn save_task_syncs_dependencies_added_and_removed() {
+        let (repo, mut app, project_id, version_id) = setup();
+        let a = task(&repo, project_id, version_id, "A");
+        let b = task(&repo, project_id, version_id, "B");
+        let c = task(&repo, project_id, version_id, "C");
+        repo.add_dependency(a, b).unwrap();
+
+        app.dispatch(Action::SaveTask {
+            task_id: Some(a),
+            version_id,
+            name: "A".to_string(),
+            description: String::new(),
+            status: Status::Todo,
+            priority: Priority::Medium,
+            depends_on_ids: vec![c],
+        });
+
+        assert_eq!(repo.get_dependencies(a).unwrap(), vec![c]);
+    }
+
+    #[test]
+    fn save_task_returns_navigate_and_success_toast() {
+        let (repo, mut app, project_id, version_id) = setup();
+        let a = task(&repo, project_id, version_id, "A");
+
+        let next = app.dispatch(Action::SaveTask {
+            task_id: Some(a),
+            version_id,
+            name: "A2".to_string(),
+            description: String::new(),
+            status: Status::Todo,
+            priority: Priority::High,
+            depends_on_ids: vec![],
+        });
+
+        assert!(matches!(next, Some(Action::Navigate(_))));
+        let toast = app.toasts().current().unwrap();
+        assert_eq!(toast.severity, Severity::Success);
+        assert_eq!(toast.message, "Task saved");
+    }
+
+    #[test]
+    fn delete_project_navigates_to_list_with_confirmation() {
+        let (repo, mut app, project_id, _) = setup();
+        app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id }));
+
+        let next = app.dispatch(Action::DeleteProject { project_id });
+        assert_eq!(next, Some(Action::Navigate(Screen::ProjectList)));
+        if let Some(action) = next {
+            app.dispatch(action);
+        }
+
+        assert_eq!(app.screen, Screen::ProjectList);
+        assert!(repo.get_project(project_id).is_err());
+        assert_eq!(app.toasts().current().unwrap().message, "Project deleted");
+    }
+
+    #[test]
+    fn task_status_change_outside_dashboards_is_ignored() {
+        let (repo, mut app, project_id, version_id) = setup();
+        let a = task(&repo, project_id, version_id, "A");
+
+        let next = app.dispatch(Action::UpdateTaskStatus {
+            task_id: a,
+            new_status: Status::Done,
+        });
+
+        assert_eq!(next, None);
+        assert_eq!(repo.get_task(a).unwrap().status, Status::Todo);
+        assert!(app.toasts().is_empty());
+    }
+
+    #[test]
+    fn delete_task_from_project_dashboard_refreshes_it() {
+        let (repo, mut app, project_id, version_id) = setup();
+        let a = task(&repo, project_id, version_id, "A");
+        app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id }));
+
+        let next = app.dispatch(Action::DeleteTask { task_id: a });
+
+        assert_eq!(next, Some(Action::Navigate(Screen::ProjectDashboard { project_id })));
+        assert!(repo.get_task(a).is_err());
+    }
+
+    #[test]
+    fn add_note_success_requests_refresh_with_confirmation() {
+        let (repo, mut app, project_id, version_id) = setup();
+        let a = task(&repo, project_id, version_id, "A");
+
+        let next = app.dispatch(Action::AddTaskNote {
+            task_id: a,
+            content: "progreso".to_string(),
+        });
+
+        assert_eq!(next, Some(Action::Refresh));
+        assert_eq!(app.toasts().current().unwrap().message, "Note added");
+        assert_eq!(repo.list_task_notes(a).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn noop_and_quit_keep_an_unread_error() {
+        let (_repo, mut app, _, _) = setup();
+        app.dispatch(Action::SaveProject {
+            project_id: None,
+            name: " ".to_string(),
+            description: String::new(),
+        });
+
+        assert_eq!(app.dispatch(Action::Noop), None);
+        assert_eq!(app.dispatch(Action::Quit), None);
+
+        assert_eq!(app.error(), Some("Project name cannot be empty"));
+    }
+
+    #[test]
+    fn successful_save_clears_a_previous_error() {
+        let (_repo, mut app, _, _) = setup();
+        app.dispatch(Action::SaveProject {
+            project_id: None,
+            name: " ".to_string(),
+            description: String::new(),
+        });
+
+        app.dispatch(Action::SaveProject {
+            project_id: None,
+            name: "Beta".to_string(),
+            description: String::new(),
+        });
+
+        assert_eq!(app.error(), None);
+    }
+}
