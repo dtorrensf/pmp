@@ -1,5 +1,7 @@
 // Copyright (C) 2026 Diego Torréns Farias
 // SPDX-License-Identifier: AGPL-3.0-or-later
+//! Version use cases dispatched from the TUI: save (create or edit) and
+//! delete.
 use anyhow::{Result, anyhow};
 
 use crate::db::repository::Repository;

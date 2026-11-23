@@ -1,5 +1,7 @@
 // Copyright (C) 2026 Diego Torréns Farias
 // SPDX-License-Identifier: AGPL-3.0-or-later
+//! Task use cases dispatched from the TUI: save (with dependency
+//! synchronisation), status change, move between versions, delete and notes.
 use anyhow::{Result, anyhow};
 
 use crate::db::repository::Repository;

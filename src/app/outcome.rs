@@ -1,5 +1,7 @@
 // Copyright (C) 2026 Diego Torréns Farias
 // SPDX-License-Identifier: AGPL-3.0-or-later
+//! What a use case returns before it becomes user feedback: an optional
+//! confirmation plus the follow-up action, if any.
 use crate::screens::Action;
 
 /// Result of a use case that succeeded: an optional confirmation for the user
