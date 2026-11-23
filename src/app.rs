@@ -7,12 +7,19 @@ use std::time::Instant;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::db::repository::Repository;
-use crate::domain::error::AppError;
 use crate::screens::components::toast::{Severity, Toasts};
 use crate::screens::{
     Action, Component, ProjectDashboard, ProjectForm, ProjectListScreen, Screen, TaskForm,
     VersionDashboard, VersionForm, VersionSummaryScreen,
 };
+
+mod outcome;
+mod project_actions;
+mod summary_actions;
+mod task_actions;
+mod version_actions;
+
+use outcome::Outcome;
 
 /// Returns the current time. Boxed so tests can substitute their own clock.
 type Clock = Box<dyn Fn() -> Instant + Send>;
@@ -311,26 +318,7 @@ impl App {
         }
         match action {
             Action::Navigate(screen) => {
-                let previous = self.screen.clone();
-                match self.init_screen(&screen) {
-                    Ok(()) => {
-                        if matches!(screen, Screen::TaskForm { .. }) {
-                            self.components.task_form.set_return_to(&previous);
-                        }
-                        if matches!(screen, Screen::ProjectForm { .. }) {
-                            self.components.project_form.set_return_to(&previous);
-                        }
-                        if matches!(screen, Screen::VersionForm { .. }) {
-                            self.components.version_form.set_return_to(&previous);
-                        }
-                        self.previous_screen = Some(previous);
-                        self.screen = screen;
-                    }
-                    Err(e) => {
-                        self.push_error(e.to_string());
-                        self.screen = self.previous_screen.take().unwrap_or(Screen::ProjectList);
-                    }
-                }
+                self.navigate(screen);
                 None
             }
             Action::SaveProject {
@@ -338,29 +326,15 @@ impl App {
                 name,
                 description,
             } => {
-                if name.trim().is_empty() {
-                    self.push_error("Project name cannot be empty");
-                    return None;
-                }
-                let result = match project_id {
-                    Some(id) => self.repo.update_project(id, &name, &description),
-                    None => self.repo.create_project(&name, &description),
-                };
-                match result {
-                    Ok(project) => {
-                        self.push_success("Project saved");
-                        Some(Action::Navigate(match project_id {
-                            Some(_) => self.components.project_form.return_to().clone(),
-                            None => Screen::ProjectDashboard {
-                                project_id: project.id.unwrap_or(0),
-                            },
-                        }))
-                    }
-                    Err(e) => {
-                        self.push_error(e.to_string());
-                        None
-                    }
-                }
+                let return_to = self.components.project_form.return_to().clone();
+                let result = project_actions::save(
+                    self.repo.as_ref(),
+                    project_id,
+                    &name,
+                    &description,
+                    &return_to,
+                );
+                self.settle(result)
             }
             Action::SaveTask {
                 task_id,
@@ -371,77 +345,32 @@ impl App {
                 priority,
                 depends_on_ids,
             } => {
-                if name.trim().is_empty() {
-                    self.push_error("Task name cannot be empty");
-                    return None;
-                }
-                let project_id = match self.repo.get_version(version_id) {
-                    Ok(version) => version.project_id,
-                    Err(e) => {
-                        self.push_error(e.to_string());
-                        return None;
-                    }
-                };
-                let result = match task_id {
-                    Some(id) => self
-                        .repo
-                        .update_task(id, &name, &description, status, priority),
-                    None => self.repo.create_task(
-                        project_id,
-                        version_id,
-                        &name,
-                        &description,
-                        status,
-                        priority,
-                    ),
-                };
-                match result {
-                    Ok(task) => {
-                        let saved_id = task.id.unwrap_or(0);
-                        if let Err(e) = self.sync_dependencies(saved_id, &depends_on_ids) {
-                            self.push_error(e.to_string());
-                            return None;
-                        }
-                        self.push_success("Task saved");
-                        Some(Action::Navigate(
-                            self.components.task_form.return_to().clone(),
-                        ))
-                    }
-                    Err(e) => {
-                        self.push_error(e.to_string());
-                        None
-                    }
-                }
+                let return_to = self.components.task_form.return_to().clone();
+                let result = task_actions::save(
+                    self.repo.as_ref(),
+                    task_id,
+                    version_id,
+                    &name,
+                    &description,
+                    status,
+                    priority,
+                    &depends_on_ids,
+                    &return_to,
+                );
+                self.settle(result)
             }
             Action::UpdateTaskStatus {
                 task_id,
                 new_status,
             } => {
-                let refresh = match &self.screen {
-                    Screen::ProjectDashboard { project_id } => Screen::ProjectDashboard {
-                        project_id: *project_id,
-                    },
-                    Screen::VersionDashboard {
-                        project_id,
-                        version_id,
-                    } => Screen::VersionDashboard {
-                        project_id: *project_id,
-                        version_id: *version_id,
-                    },
-                    _ => return None,
-                };
-                match self.repo.update_task_status(task_id, new_status) {
-                    Ok(_) => {
-                        self.push_success(format!("Status set to {}", new_status.label()));
-                        // Refresh the source screen so init_screen re-runs its init()
-                        // and the cached task list is updated in place.
-                        Some(Action::Navigate(refresh))
-                    }
-                    Err(e) => {
-                        self.push_error(e.to_string());
-                        None
-                    }
+                // Only dashboards list tasks, so only they can change a status.
+                if !self.on_dashboard() {
+                    return None;
                 }
+                let refresh = self.screen.clone();
+                let result =
+                    task_actions::update_status(self.repo.as_ref(), task_id, new_status, refresh);
+                self.settle(result)
             }
             Action::SaveVersion {
                 version_id,
@@ -450,111 +379,44 @@ impl App {
                 description,
                 status,
             } => {
-                if name.trim().is_empty() {
-                    self.push_error("Version name cannot be empty");
-                    return None;
-                }
-                let result = match version_id {
-                    Some(id) => self.repo.update_version(id, &name, &description, status),
-                    // The version is created with the chosen status in a single
-                    // write, so it never exists in an intermediate state.
-                    None => self.repo.create_version_with_status(
-                        project_id,
-                        &name,
-                        &description,
-                        status,
-                    ),
-                };
-                match result {
-                    Ok(_) => {
-                        self.push_success("Version saved");
-                        Some(Action::Navigate(Screen::ProjectDashboard { project_id }))
-                    }
-                    Err(e) => {
-                        self.push_error(e.to_string());
-                        None
-                    }
-                }
+                let result = version_actions::save(
+                    self.repo.as_ref(),
+                    version_id,
+                    project_id,
+                    &name,
+                    &description,
+                    status,
+                );
+                self.settle(result)
             }
             Action::DeleteVersion { version_id } => {
-                let project_id = match self.repo.get_version(version_id) {
-                    Ok(version) => version.project_id,
-                    Err(e) => {
-                        self.push_error(e.to_string());
-                        return None;
-                    }
-                };
-                match self.repo.delete_version(version_id) {
-                    Ok(()) => {
-                        self.push_success("Version deleted");
-                        Some(Action::Navigate(Screen::ProjectDashboard { project_id }))
-                    }
-                    Err(e) => {
-                        self.push_error(e.to_string());
-                        None
-                    }
-                }
+                let result = version_actions::delete(self.repo.as_ref(), version_id);
+                self.settle(result)
             }
-            Action::DeleteProject { project_id } => match self.repo.delete_project(project_id) {
-                Ok(()) => {
-                    self.push_success("Project deleted");
-                    Some(Action::Navigate(Screen::ProjectList))
-                }
-                Err(e) => {
-                    self.push_error(e.to_string());
-                    None
-                }
-            },
+            Action::DeleteProject { project_id } => {
+                let result = project_actions::delete(self.repo.as_ref(), project_id);
+                self.settle(result)
+            }
             Action::MoveTask {
                 task_id,
                 version_id,
             } => {
-                let refresh = match &self.screen {
-                    Screen::VersionDashboard {
-                        project_id,
-                        version_id,
-                    } => Screen::VersionDashboard {
-                        project_id: *project_id,
-                        version_id: *version_id,
-                    },
-                    _ => return None,
-                };
-                match self.repo.move_task(task_id, version_id) {
-                    Ok(_) => {
-                        self.push_success("Task moved");
-                        // Re-running init reloads the list without the moved task.
-                        Some(Action::Navigate(refresh))
-                    }
-                    Err(e) => {
-                        self.push_error(e.to_string());
-                        None
-                    }
+                // Moving only makes sense from the version it leaves.
+                if !matches!(self.screen, Screen::VersionDashboard { .. }) {
+                    return None;
                 }
+                let refresh = self.screen.clone();
+                let result =
+                    task_actions::move_to_version(self.repo.as_ref(), task_id, version_id, refresh);
+                self.settle(result)
             }
             Action::DeleteTask { task_id } => {
-                let refresh = match &self.screen {
-                    Screen::ProjectDashboard { project_id } => Screen::ProjectDashboard {
-                        project_id: *project_id,
-                    },
-                    Screen::VersionDashboard {
-                        project_id,
-                        version_id,
-                    } => Screen::VersionDashboard {
-                        project_id: *project_id,
-                        version_id: *version_id,
-                    },
-                    _ => return None,
-                };
-                match self.repo.delete_task(task_id) {
-                    Ok(()) => {
-                        self.push_success("Task deleted");
-                        Some(Action::Navigate(refresh))
-                    }
-                    Err(e) => {
-                        self.push_error(e.to_string());
-                        None
-                    }
+                if !self.on_dashboard() {
+                    return None;
                 }
+                let refresh = self.screen.clone();
+                let result = task_actions::delete(self.repo.as_ref(), task_id, refresh);
+                self.settle(result)
             }
             Action::Refresh => {
                 if let Err(e) = self.active_component().refresh() {
@@ -563,53 +425,64 @@ impl App {
                 None
             }
             Action::AddTaskNote { task_id, content } => {
-                match self.repo.add_task_note(task_id, &content) {
-                    Ok(_) => {
-                        self.push_success("Note added");
-                        Some(Action::Refresh)
-                    }
-                    Err(AppError::Validation(_)) => {
-                        self.push_error("Note content cannot be empty");
-                        None
-                    }
-                    Err(e) => {
-                        self.push_error(e.to_string());
-                        None
-                    }
-                }
+                let result = task_actions::add_note(self.repo.as_ref(), task_id, &content);
+                self.settle(result)
             }
             Action::ExportVersionSummary { summary_id } => {
-                match crate::mcp::export::export_version_summary_markdown(
-                    self.repo.as_ref(),
-                    summary_id,
-                ) {
-                    Ok(path) => {
-                        self.push_success(format!("Exported to {}", path.display()));
-                    }
-                    Err(e) => {
-                        self.push_error(e.to_string());
-                    }
-                }
-                None
+                let result = summary_actions::export(self.repo.as_ref(), summary_id);
+                self.settle(result)
             }
             Action::Quit => None,
             Action::Noop => None,
         }
     }
 
-    fn sync_dependencies(&self, task_id: i64, depends_on_ids: &[i64]) -> anyhow::Result<()> {
-        let current = self.repo.get_dependencies(task_id)?;
-        for &dep_id in &current {
-            if !depends_on_ids.contains(&dep_id) {
-                self.repo.remove_dependency(task_id, dep_id)?;
+    /// Turns a use case result into user feedback: a confirmation on success,
+    /// an error toast on failure. Returns the follow-up action, if any.
+    fn settle(&mut self, result: anyhow::Result<Outcome>) -> Option<Action> {
+        match result {
+            Ok(outcome) => {
+                if let Some(message) = outcome.confirmation {
+                    self.push_success(message);
+                }
+                outcome.next
+            }
+            Err(e) => {
+                self.push_error(e.to_string());
+                None
             }
         }
-        for &dep_id in depends_on_ids {
-            if !current.contains(&dep_id) {
-                self.repo.add_dependency(task_id, dep_id)?;
+    }
+
+    /// Applies a navigation, restoring the previous screen if it cannot load.
+    fn navigate(&mut self, screen: Screen) {
+        let previous = self.screen.clone();
+        match self.init_screen(&screen) {
+            Ok(()) => {
+                if matches!(screen, Screen::TaskForm { .. }) {
+                    self.components.task_form.set_return_to(&previous);
+                }
+                if matches!(screen, Screen::ProjectForm { .. }) {
+                    self.components.project_form.set_return_to(&previous);
+                }
+                if matches!(screen, Screen::VersionForm { .. }) {
+                    self.components.version_form.set_return_to(&previous);
+                }
+                self.previous_screen = Some(previous);
+                self.screen = screen;
+            }
+            Err(e) => {
+                self.push_error(e.to_string());
+                self.screen = self.previous_screen.take().unwrap_or(Screen::ProjectList);
             }
         }
-        Ok(())
+    }
+
+    fn on_dashboard(&self) -> bool {
+        matches!(
+            self.screen,
+            Screen::ProjectDashboard { .. } | Screen::VersionDashboard { .. }
+        )
     }
 
     fn init_screen(&mut self, screen: &Screen) -> anyhow::Result<()> {
@@ -2275,10 +2148,17 @@ mod characterization_tests {
     }
 
     fn task(repo: &StubRepository, project_id: i64, version_id: i64, name: &str) -> i64 {
-        repo.create_task(project_id, version_id, name, "", Status::Todo, Priority::Medium)
-            .unwrap()
-            .id
-            .unwrap()
+        repo.create_task(
+            project_id,
+            version_id,
+            name,
+            "",
+            Status::Todo,
+            Priority::Medium,
+        )
+        .unwrap()
+        .id
+        .unwrap()
     }
 
     #[test]
@@ -2362,7 +2242,10 @@ mod characterization_tests {
 
         let next = app.dispatch(Action::DeleteTask { task_id: a });
 
-        assert_eq!(next, Some(Action::Navigate(Screen::ProjectDashboard { project_id })));
+        assert_eq!(
+            next,
+            Some(Action::Navigate(Screen::ProjectDashboard { project_id }))
+        );
         assert!(repo.get_task(a).is_err());
     }
 
