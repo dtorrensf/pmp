@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Project use cases dispatched from the TUI: save (create or edit) and
 //! delete.
+
 use anyhow::{Result, anyhow};
 
+use crate::application::projects::{self, NewProject, ProjectEdit};
 use crate::db::repository::Repository;
 use crate::screens::{Action, Screen};
 
@@ -21,14 +23,28 @@ pub(super) fn save(
     if name.trim().is_empty() {
         return Err(anyhow!("Project name cannot be empty"));
     }
-    let project = match project_id {
-        Some(id) => repo.update_project(id, name, description)?,
-        None => repo.create_project(name, description)?,
-    };
     let next = match project_id {
-        Some(_) => return_to.clone(),
+        Some(id) => {
+            projects::edit(
+                repo,
+                id,
+                ProjectEdit {
+                    name: name.to_string(),
+                    description: Some(description.to_string()),
+                },
+            )?;
+            return_to.clone()
+        }
         None => Screen::ProjectDashboard {
-            project_id: project.id.unwrap_or(0),
+            project_id: projects::create(
+                repo,
+                NewProject {
+                    name: name.to_string(),
+                    description: description.to_string(),
+                },
+            )?
+            .id
+            .unwrap_or(0),
         },
     };
     Ok(Outcome::confirmed(
@@ -38,7 +54,7 @@ pub(super) fn save(
 }
 
 pub(super) fn delete(repo: &dyn Repository, project_id: i64) -> Result<Outcome> {
-    repo.delete_project(project_id)?;
+    projects::delete(repo, project_id)?;
     Ok(Outcome::confirmed(
         "Project deleted",
         Some(Action::Navigate(Screen::ProjectList)),

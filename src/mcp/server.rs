@@ -17,12 +17,15 @@ use rmcp::{tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
 use tokio::task;
 
-use crate::db::repository::{Repository, RepositoryPolicy, TaskFilter};
+use crate::application::projects::{NewProject, ProjectEdit};
+use crate::application::tasks::{NewTask, TaskEdit};
+use crate::application::versions::{NewVersion, VersionEdit};
+use crate::db::repository::{Repository, TaskFilter};
 use crate::domain::error::AppError;
 use crate::domain::task::{Priority, Status};
-use crate::domain::validation::{validate_name, validate_text};
+use crate::domain::task_description::compose_description;
+use crate::domain::validation::validate_text;
 use crate::domain::version::VersionStatus;
-use crate::mcp::task_description::{compose_description, split_description};
 
 /// Tool-error texts for missing records.
 const PROJECT_NOT_FOUND: &str = "project not found";
@@ -100,15 +103,6 @@ pub struct ListTasksParams {
     pub limit: Option<u32>,
     /// Number of matching tasks to skip. Defaults to 0.
     pub offset: Option<u32>,
-}
-
-#[derive(Serialize)]
-struct TaskPage {
-    tasks: Vec<crate::domain::task::Task>,
-    total: u64,
-    limit: u32,
-    offset: u32,
-    has_more: bool,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -317,28 +311,42 @@ impl PmpServer {
         let repo = self.repo.clone();
 
         match uri {
-            PROJECTS_URI => read_json_resource(repo, uri, |repo| repo.list_projects()).await,
+            PROJECTS_URI => {
+                read_json_resource(repo, uri, |repo| {
+                    crate::application::projects::list(repo.as_ref())
+                })
+                .await
+            }
             uri if uri.starts_with(VERSIONS_PREFIX) => {
                 let tail = &uri[VERSIONS_PREFIX.len()..];
                 if let Some(prefix) = tail.strip_suffix("/summaries") {
                     let id = prefix
                         .parse::<i64>()
                         .map_err(|_| ErrorData::invalid_params("invalid version id", None))?;
-                    read_json_resource(repo, uri, move |repo| repo.list_version_summaries(id)).await
+                    read_json_resource(repo, uri, move |repo| {
+                        crate::application::summaries::list(repo.as_ref(), id)
+                    })
+                    .await
                 } else {
                     let id = tail
                         .strip_suffix("/tasks")
                         .ok_or_else(|| ErrorData::invalid_params("unsupported resource uri", None))?
                         .parse::<i64>()
                         .map_err(|_| ErrorData::invalid_params("invalid version id", None))?;
-                    read_json_resource(repo, uri, move |repo| repo.list_tasks_by_version(id)).await
+                    read_json_resource(repo, uri, move |repo| {
+                        crate::application::tasks::list_by_version(repo.as_ref(), id)
+                    })
+                    .await
                 }
             }
             uri if uri.starts_with(SUMMARIES_PREFIX) => {
                 let id = uri[SUMMARIES_PREFIX.len()..]
                     .parse::<i64>()
                     .map_err(|_| ErrorData::invalid_params("invalid summary id", None))?;
-                read_json_resource(repo, uri, move |repo| repo.get_version_summary(id)).await
+                read_json_resource(repo, uri, move |repo| {
+                    crate::application::summaries::get(repo.as_ref(), id)
+                })
+                .await
             }
             uri if uri.starts_with(PROJECTS_PREFIX) => {
                 let tail = &uri[PROJECTS_PREFIX.len()..];
@@ -346,18 +354,26 @@ impl PmpServer {
                     let id = prefix
                         .parse::<i64>()
                         .map_err(|_| ErrorData::invalid_params("invalid project id", None))?;
-                    read_json_resource(repo, uri, move |repo| repo.list_versions_by_project(id))
-                        .await
+                    read_json_resource(repo, uri, move |repo| {
+                        crate::application::versions::list(repo.as_ref(), id)
+                    })
+                    .await
                 } else if let Some(prefix) = tail.strip_suffix("/tasks") {
                     let id = prefix
                         .parse::<i64>()
                         .map_err(|_| ErrorData::invalid_params("invalid project id", None))?;
-                    read_json_resource(repo, uri, move |repo| repo.list_tasks_by_project(id)).await
+                    read_json_resource(repo, uri, move |repo| {
+                        crate::application::tasks::list_by_project(repo.as_ref(), id)
+                    })
+                    .await
                 } else {
                     let id = tail
                         .parse::<i64>()
                         .map_err(|_| ErrorData::invalid_params("invalid project id", None))?;
-                    read_json_resource(repo, uri, move |repo| repo.get_project(id)).await
+                    read_json_resource(repo, uri, move |repo| {
+                        crate::application::projects::get(repo.as_ref(), id)
+                    })
+                    .await
                 }
             }
             _ => Err(ErrorData::invalid_params("unsupported resource uri", None)),
@@ -388,27 +404,7 @@ impl PmpServer {
             priority,
         };
         let result = execute_repository(self.repo.clone(), move |repo| {
-            repo.get_project(project_id)?;
-            if let Some(version_id) = version_id {
-                let version = repo.get_version(version_id).map_err(|_| {
-                    AppError::Validation("version does not belong to the project".to_string())
-                })?;
-                if version.project_id != project_id {
-                    return Err(AppError::Validation(
-                        "version does not belong to the project".to_string(),
-                    ));
-                }
-            }
-            let tasks = repo.list_tasks_page(&filter, limit, offset)?;
-            let total = repo.count_tasks(&filter)?;
-            let has_more = (u64::from(offset) + tasks.len() as u64) < total;
-            Ok(TaskPage {
-                tasks,
-                total,
-                limit,
-                offset,
-                has_more,
-            })
+            crate::application::tasks::page(repo.as_ref(), &filter, limit, offset)
         })
         .await?;
         tool_result(result, PROJECT_NOT_FOUND)
@@ -420,7 +416,7 @@ impl PmpServer {
     )]
     async fn list_projects(&self) -> Result<CallToolResult, ErrorData> {
         run_tool(self.repo.clone(), PROJECT_NOT_FOUND, |repo| {
-            repo.list_projects()
+            crate::application::projects::list(repo.as_ref())
         })
         .await
     }
@@ -434,10 +430,13 @@ impl PmpServer {
         Parameters(params): Parameters<CreateProjectParams>,
     ) -> Result<CallToolResult, ErrorData> {
         run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
-            validate_name("project", &params.name)?;
-            let description = params.description.unwrap_or_default();
-            validate_text("project", "description", &description)?;
-            repo.create_project(&params.name, &description)
+            crate::application::projects::create(
+                repo.as_ref(),
+                NewProject {
+                    name: params.name,
+                    description: params.description.unwrap_or_default(),
+                },
+            )
         })
         .await
     }
@@ -451,11 +450,14 @@ impl PmpServer {
         Parameters(params): Parameters<UpdateProjectParams>,
     ) -> Result<CallToolResult, ErrorData> {
         run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
-            validate_name("project", &params.name)?;
-            let current = repo.get_project(params.project_id)?;
-            let description = params.description.unwrap_or(current.description);
-            validate_text("project", "description", &description)?;
-            repo.update_project(params.project_id, &params.name, &description)
+            crate::application::projects::edit(
+                repo.as_ref(),
+                params.project_id,
+                ProjectEdit {
+                    name: params.name,
+                    description: params.description,
+                },
+            )
         })
         .await
     }
@@ -469,8 +471,7 @@ impl PmpServer {
         Parameters(params): Parameters<ListVersionsParams>,
     ) -> Result<CallToolResult, ErrorData> {
         run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
-            repo.get_project(params.project_id)?;
-            repo.list_versions_by_project(params.project_id)
+            crate::application::versions::list(repo.as_ref(), params.project_id)
         })
         .await
     }
@@ -484,12 +485,15 @@ impl PmpServer {
         Parameters(params): Parameters<CreateVersionParams>,
     ) -> Result<CallToolResult, ErrorData> {
         run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
-            validate_name("version", &params.name)?;
-            let status = params.status.unwrap_or(VersionStatus::Backlog);
-            repo.get_project(params.project_id)?;
-            let description = params.description.unwrap_or_default();
-            validate_text("version", "description", &description)?;
-            repo.create_version_with_status(params.project_id, &params.name, &description, status)
+            crate::application::versions::create(
+                repo.as_ref(),
+                NewVersion {
+                    project_id: params.project_id,
+                    name: params.name,
+                    description: params.description.unwrap_or_default(),
+                    status: params.status.unwrap_or(VersionStatus::Backlog),
+                },
+            )
         })
         .await
     }
@@ -503,12 +507,15 @@ impl PmpServer {
         Parameters(params): Parameters<UpdateVersionParams>,
     ) -> Result<CallToolResult, ErrorData> {
         run_tool(self.repo.clone(), VERSION_NOT_FOUND, move |repo| {
-            validate_name("version", &params.name)?;
-            let current = repo.get_version(params.version_id)?;
-            let description = params.description.unwrap_or(current.description);
-            validate_text("version", "description", &description)?;
-            let status = params.status.unwrap_or(current.status);
-            repo.update_version(params.version_id, &params.name, &description, status)
+            crate::application::versions::edit(
+                repo.as_ref(),
+                params.version_id,
+                VersionEdit {
+                    name: params.name,
+                    description: params.description,
+                    status: params.status,
+                },
+            )
         })
         .await
     }
@@ -522,7 +529,11 @@ impl PmpServer {
         Parameters(params): Parameters<MoveTaskParams>,
     ) -> Result<CallToolResult, ErrorData> {
         run_tool(self.repo.clone(), TASK_OR_VERSION_NOT_FOUND, move |repo| {
-            repo.move_task(params.task_id, params.version_id)
+            crate::application::tasks::move_to_version(
+                repo.as_ref(),
+                params.task_id,
+                params.version_id,
+            )
         })
         .await
     }
@@ -538,7 +549,7 @@ impl PmpServer {
         let task_id = params.task_id;
         let priority = params.priority;
         run_tool(self.repo.clone(), TASK_NOT_FOUND, move |repo| {
-            repo.update_task_priority(task_id, priority.into())
+            crate::application::tasks::set_priority(repo.as_ref(), task_id, priority.into())
         })
         .await
     }
@@ -552,44 +563,16 @@ impl PmpServer {
         Parameters(params): Parameters<UpdateTaskParams>,
     ) -> Result<CallToolResult, ErrorData> {
         run_tool(self.repo.clone(), TASK_NOT_FOUND, move |repo| {
-            if let Some(name) = &params.name {
-                validate_name("task", name)?;
-            }
-            let current = repo.get_task(params.task_id)?;
-            let name = params.name.clone().unwrap_or_else(|| current.name.clone());
-            let description = if params.context.is_none()
-                && params.requirements.is_none()
-                && params.benefits.is_none()
-            {
-                current.description.clone()
-            } else {
-                let mut sections = split_description(&current.description);
-                if let Some(context) = params.context {
-                    validate_text("task", "context", &context)?;
-                    sections.context = context;
-                }
-                if let Some(requirements) = params.requirements {
-                    validate_text("task", "requirements", &requirements)?;
-                    sections.requirements = requirements;
-                }
-                if let Some(benefits) = params.benefits {
-                    validate_text("task", "benefits", &benefits)?;
-                    sections.benefits = benefits;
-                }
-                let description = compose_description(
-                    &sections.context,
-                    &sections.requirements,
-                    &sections.benefits,
-                );
-                validate_text("task", "description", &description)?;
-                description
-            };
-            repo.update_task(
+            crate::application::tasks::edit(
+                repo.as_ref(),
                 params.task_id,
-                &name,
-                &description,
-                current.status,
-                current.priority,
+                TaskEdit {
+                    name: params.name,
+                    context: params.context,
+                    requirements: params.requirements,
+                    benefits: params.benefits,
+                    ..TaskEdit::default()
+                },
             )
         })
         .await
@@ -604,21 +587,23 @@ impl PmpServer {
         Parameters(params): Parameters<CreateTaskParams>,
     ) -> Result<CallToolResult, ErrorData> {
         run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
-            validate_name("task", &params.name)?;
             validate_text("task", "context", &params.context)?;
             validate_text("task", "requirements", &params.requirements)?;
             validate_text("task", "benefits", &params.benefits)?;
-            repo.get_project(params.project_id)?;
             let description =
                 compose_description(&params.context, &params.requirements, &params.benefits);
             validate_text("task", "description", &description)?;
-            repo.create_task(
-                params.project_id,
-                params.version_id,
-                &params.name,
-                &description,
-                Status::Todo,
-                params.priority.into(),
+            crate::application::tasks::create(
+                repo.as_ref(),
+                NewTask {
+                    project_id: Some(params.project_id),
+                    version_id: params.version_id,
+                    name: params.name,
+                    description,
+                    status: Status::Todo,
+                    priority: params.priority.into(),
+                    depends_on: Vec::new(),
+                },
             )
         })
         .await
@@ -635,7 +620,7 @@ impl PmpServer {
         let task_id = params.task_id;
         let new_status = params.status;
         run_tool(self.repo.clone(), TASK_NOT_FOUND, move |repo| {
-            repo.update_task_status(task_id, new_status)
+            crate::application::tasks::set_status(repo.as_ref(), task_id, new_status)
         })
         .await
     }
@@ -650,8 +635,7 @@ impl PmpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let task_id = params.task_id;
         let result = execute_repository(self.repo.clone(), move |repo| {
-            repo.get_task(task_id)?;
-            repo.get_dependencies(task_id)
+            crate::application::dependencies::list(repo.as_ref(), task_id)
         })
         .await?;
         tool_result(
@@ -675,8 +659,7 @@ impl PmpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let task_id = params.task_id;
         let result = execute_repository(self.repo.clone(), move |repo| {
-            repo.get_task(task_id)?;
-            repo.get_dependents(task_id)
+            crate::application::dependencies::dependents(repo.as_ref(), task_id)
         })
         .await?;
         tool_result(
@@ -701,9 +684,7 @@ impl PmpServer {
         let task_id = params.task_id;
         let depends_on_id = params.depends_on_id;
         let result = execute_repository(self.repo.clone(), move |repo| {
-            repo.get_task(task_id)?;
-            repo.get_task(depends_on_id)?;
-            repo.add_dependency(task_id, depends_on_id)
+            crate::application::dependencies::add(repo.as_ref(), task_id, depends_on_id)
         })
         .await?;
         tool_result(
@@ -727,8 +708,7 @@ impl PmpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let task_id = params.task_id;
         let result = execute_repository(self.repo.clone(), move |repo| {
-            repo.set_dependencies(task_id, &params.depends_on_ids)?;
-            repo.get_dependencies(task_id)
+            crate::application::dependencies::set(repo.as_ref(), task_id, &params.depends_on_ids)
         })
         .await?;
         tool_result(
@@ -753,9 +733,7 @@ impl PmpServer {
         let task_id = params.task_id;
         let depends_on_id = params.depends_on_id;
         let result = execute_repository(self.repo.clone(), move |repo| {
-            repo.get_task(task_id)?;
-            repo.get_task(depends_on_id)?;
-            repo.remove_dependency(task_id, depends_on_id)
+            crate::application::dependencies::remove(repo.as_ref(), task_id, depends_on_id)
         })
         .await?;
         tool_result(
@@ -779,8 +757,7 @@ impl PmpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let task_id = params.task_id;
         run_tool(self.repo.clone(), TASK_NOT_FOUND, move |repo| {
-            repo.get_task(task_id)?;
-            repo.list_task_notes(task_id)
+            crate::application::notes::list(repo.as_ref(), task_id)
         })
         .await
     }
@@ -796,9 +773,7 @@ impl PmpServer {
         let task_id = params.task_id;
         let content = params.content;
         run_tool(self.repo.clone(), TASK_NOT_FOUND, move |repo| {
-            repo.get_task(task_id)?;
-            validate_text("note", "content", &content)?;
-            repo.add_task_note(task_id, &content)
+            crate::application::notes::add(repo.as_ref(), task_id, &content)
         })
         .await
     }
@@ -813,7 +788,7 @@ impl PmpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let note_id = params.note_id;
         let result = execute_repository(self.repo.clone(), move |repo| {
-            repo.delete_task_note(note_id)
+            crate::application::notes::delete(repo.as_ref(), note_id)
         })
         .await?;
         tool_result(
@@ -832,10 +807,7 @@ impl PmpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let version_id = params.version_id;
         run_tool(self.repo.clone(), VERSION_NOT_FOUND, move |repo| {
-            repo.get_version(version_id)?;
-            let snapshot = repo.build_compact_snapshot(version_id)?;
-            serde_json::from_str::<serde_json::Value>(&snapshot)
-                .map_err(|e| AppError::Validation(format!("snapshot parse error: {e}")))
+            crate::application::summaries::preview(repo.as_ref(), version_id)
         })
         .await
     }
@@ -852,29 +824,12 @@ impl PmpServer {
         let summary = params.summary;
         let mark_released = params.mark_released.unwrap_or(true);
         run_tool(self.repo.clone(), VERSION_NOT_FOUND, move |repo| {
-            validate_text("version summary", "summary", &summary)?;
-            repo.can_compact(version_id)?;
-            let snapshot = repo.build_compact_snapshot(version_id)?;
-            // Replaces the previous summary, stores the new one and deletes the
-            // done tasks in one transaction: a failure leaves everything intact.
-            let created = repo.compact_version(version_id, &summary, &snapshot)?;
-            // Pending (todo) tasks keep the version open for further work;
-            // otherwise the version is released unless the caller opts out.
-            let has_remaining_tasks = !repo.list_tasks_by_version(version_id)?.is_empty();
-            let target_status = if has_remaining_tasks {
-                Some(VersionStatus::Open)
-            } else if mark_released {
-                Some(VersionStatus::Released)
-            } else {
-                None
-            };
-            if let Some(status) = target_status {
-                let version = repo.get_version(version_id)?;
-                if version.status != status {
-                    repo.update_version(version_id, &version.name, &version.description, status)?;
-                }
-            }
-            Ok(created)
+            crate::application::summaries::compact(
+                repo.as_ref(),
+                version_id,
+                &summary,
+                mark_released,
+            )
         })
         .await
     }
@@ -889,8 +844,7 @@ impl PmpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let version_id = params.version_id;
         run_tool(self.repo.clone(), VERSION_NOT_FOUND, move |repo| {
-            repo.get_version(version_id)?;
-            repo.list_version_summaries(version_id)
+            crate::application::summaries::list(repo.as_ref(), version_id)
         })
         .await
     }
@@ -906,11 +860,7 @@ impl PmpServer {
         let version_id = params.version_id;
         let summary_id = params.summary_id;
         run_tool(self.repo.clone(), SUMMARY_NOT_FOUND, move |repo| {
-            let summary = repo.get_version_summary(summary_id)?;
-            if summary.version_id != version_id {
-                return Err(AppError::NotFound);
-            }
-            Ok(summary)
+            crate::application::summaries::read(repo.as_ref(), version_id, summary_id)
         })
         .await
     }
@@ -926,11 +876,7 @@ impl PmpServer {
         let version_id = params.version_id;
         let summary_id = params.summary_id;
         run_tool(self.repo.clone(), SUMMARY_NOT_FOUND, move |repo| {
-            let summary = repo.get_version_summary(summary_id)?;
-            if summary.version_id != version_id {
-                return Err(AppError::NotFound);
-            }
-            repo.delete_version_summary(summary_id)?;
+            crate::application::summaries::delete(repo.as_ref(), version_id, summary_id)?;
             Ok(serde_json::json!({ "summary_id": summary_id }))
         })
         .await
@@ -946,7 +892,7 @@ impl PmpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let summary_id = params.summary_id;
         let result = execute_repository(self.repo.clone(), move |repo| {
-            crate::mcp::export::export_version_summary_markdown(repo.as_ref(), summary_id)
+            crate::application::summaries::export_markdown(repo.as_ref(), summary_id)
         })
         .await?;
         tool_result(
@@ -1206,7 +1152,7 @@ mod tests {
         UpdateTaskStatusParams, UpdateVersionParams, VersionIdParams, app_error_to_mcp,
         json_content, paginate_page,
     };
-    use crate::mcp::task_description::compose_description;
+    use crate::domain::task_description::compose_description;
 
     fn server() -> (PmpServer, Arc<StubRepository>) {
         let repo = Arc::new(StubRepository::default());

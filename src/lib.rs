@@ -1,6 +1,7 @@
 // Copyright (C) 2026 Diego Torréns Farias
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pub mod app;
+pub mod application;
 pub mod db;
 pub mod domain;
 pub mod screens;
@@ -16,6 +17,6 @@ mod tests {
     #[test]
     #[allow(unused_imports)]
     fn lib_reexports_public_modules() {
-        use crate::{app, db, domain, mcp, repository, screens, tui};
+        use crate::{app, application, db, domain, mcp, repository, screens, tui};
     }
 }

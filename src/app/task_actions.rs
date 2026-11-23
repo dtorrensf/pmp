@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Task use cases dispatched from the TUI: save (with dependency
 //! synchronisation), status change, move between versions, delete and notes.
+
 use anyhow::{Result, anyhow};
 
+use crate::application::notes;
+use crate::application::tasks::{self, NewTask, TaskEdit};
 use crate::db::repository::Repository;
 use crate::domain::error::AppError;
 use crate::domain::task::{Priority, Status};
@@ -26,33 +29,36 @@ pub(super) fn save(
     if name.trim().is_empty() {
         return Err(anyhow!("Task name cannot be empty"));
     }
-    let project_id = repo.get_version(version_id)?.project_id;
-    let task = match task_id {
-        Some(id) => repo.update_task(id, name, description, status, priority)?,
-        None => repo.create_task(project_id, version_id, name, description, status, priority)?,
+    match task_id {
+        Some(id) => tasks::edit(
+            repo,
+            id,
+            TaskEdit {
+                name: Some(name.to_string()),
+                description: Some(description.to_string()),
+                status: Some(status),
+                priority: Some(priority),
+                depends_on: Some(depends_on_ids.to_vec()),
+                ..TaskEdit::default()
+            },
+        )?,
+        None => tasks::create(
+            repo,
+            NewTask {
+                project_id: None,
+                version_id,
+                name: name.to_string(),
+                description: description.to_string(),
+                status,
+                priority,
+                depends_on: depends_on_ids.to_vec(),
+            },
+        )?,
     };
-    sync_dependencies(repo, task.id.unwrap_or(0), depends_on_ids)?;
     Ok(Outcome::confirmed(
         "Task saved",
         Some(Action::Navigate(return_to.clone())),
     ))
-}
-
-/// Moves the task's dependency set to `depends_on_ids`, adding and removing
-/// only the links that differ.
-fn sync_dependencies(repo: &dyn Repository, task_id: i64, depends_on_ids: &[i64]) -> Result<()> {
-    let current = repo.get_dependencies(task_id)?;
-    for &dep_id in &current {
-        if !depends_on_ids.contains(&dep_id) {
-            repo.remove_dependency(task_id, dep_id)?;
-        }
-    }
-    for &dep_id in depends_on_ids {
-        if !current.contains(&dep_id) {
-            repo.add_dependency(task_id, dep_id)?;
-        }
-    }
-    Ok(())
 }
 
 /// Changes a task's status, then reloads `refresh` so its cached list updates.
@@ -62,7 +68,7 @@ pub(super) fn update_status(
     new_status: Status,
     refresh: Screen,
 ) -> Result<Outcome> {
-    repo.update_task_status(task_id, new_status)?;
+    tasks::set_status(repo, task_id, new_status)?;
     Ok(Outcome::confirmed(
         format!("Status set to {}", new_status.label()),
         Some(Action::Navigate(refresh)),
@@ -75,7 +81,7 @@ pub(super) fn move_to_version(
     version_id: i64,
     refresh: Screen,
 ) -> Result<Outcome> {
-    repo.move_task(task_id, version_id)?;
+    tasks::move_to_version(repo, task_id, version_id)?;
     // Re-running init reloads the list without the moved task.
     Ok(Outcome::confirmed(
         "Task moved",
@@ -84,7 +90,7 @@ pub(super) fn move_to_version(
 }
 
 pub(super) fn delete(repo: &dyn Repository, task_id: i64, refresh: Screen) -> Result<Outcome> {
-    repo.delete_task(task_id)?;
+    tasks::delete(repo, task_id)?;
     Ok(Outcome::confirmed(
         "Task deleted",
         Some(Action::Navigate(refresh)),
@@ -92,7 +98,7 @@ pub(super) fn delete(repo: &dyn Repository, task_id: i64, refresh: Screen) -> Re
 }
 
 pub(super) fn add_note(repo: &dyn Repository, task_id: i64, content: &str) -> Result<Outcome> {
-    match repo.add_task_note(task_id, content) {
+    match notes::add(repo, task_id, content) {
         Ok(_) => Ok(Outcome::confirmed("Note added", Some(Action::Refresh))),
         Err(AppError::Validation(_)) => Err(anyhow!("Note content cannot be empty")),
         Err(e) => Err(e.into()),

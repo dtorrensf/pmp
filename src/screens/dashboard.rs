@@ -12,6 +12,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
+use crate::application;
 use crate::db::repository::Repository;
 use crate::domain::project::Project;
 use crate::domain::task::{Status, Task};
@@ -177,9 +178,12 @@ impl ProjectDashboard {
     }
 
     fn load(&mut self) -> anyhow::Result<()> {
-        self.project = Some(self.repo.get_project(self.project_id)?);
-        self.all_tasks = self.repo.list_tasks_by_project(self.project_id)?;
-        let versions = self.repo.list_versions_by_project(self.project_id)?;
+        self.project = Some(application::projects::get(
+            self.repo.as_ref(),
+            self.project_id,
+        )?);
+        self.all_tasks = application::tasks::list_by_project(self.repo.as_ref(), self.project_id)?;
+        let versions = application::versions::list(self.repo.as_ref(), self.project_id)?;
         self.versions = versions
             .into_iter()
             .map(|version| {

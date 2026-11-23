@@ -9,6 +9,7 @@ use ratatui::{
 };
 use ratatui_textarea::{CursorMove, TextArea};
 
+use crate::application;
 use crate::db::repository::Repository;
 use crate::screens::components::fields::{field_cursor_x, render_description_field, render_field};
 use crate::screens::components::form::{
@@ -69,7 +70,7 @@ impl ProjectForm {
 impl Component for ProjectForm {
     fn init(&mut self) -> anyhow::Result<()> {
         if let Some(id) = self.project_id {
-            let project = self.repo.get_project(id)?;
+            let project = application::projects::get(self.repo.as_ref(), id)?;
             self.name = project.name;
             let mut textarea = TextArea::default();
             textarea.insert_str(&project.description);

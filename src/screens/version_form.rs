@@ -9,7 +9,8 @@ use ratatui::{
 };
 use ratatui_textarea::{CursorMove, TextArea};
 
-use crate::db::repository::{Repository, RepositoryPolicy};
+use crate::application;
+use crate::db::repository::Repository;
 use crate::domain::version::VersionStatus;
 use crate::screens::components::fields::{
     field_cursor_x, render_description_field, render_field, render_readonly_field,
@@ -89,7 +90,7 @@ impl VersionForm {
 impl Component for VersionForm {
     fn init(&mut self) -> anyhow::Result<()> {
         if let Some(id) = self.version_id {
-            let version = self.repo.get_version(id)?;
+            let version = application::versions::get(self.repo.as_ref(), id)?;
             self.project_id = version.project_id;
             self.name = version.name;
             let mut textarea = TextArea::default();
@@ -98,7 +99,7 @@ impl Component for VersionForm {
             self.description = textarea;
             self.status = version.status;
         } else {
-            self.name = self.repo.next_version_name(self.project_id)?;
+            self.name = application::versions::next_name(self.repo.as_ref(), self.project_id)?;
             self.description = TextArea::default();
             self.status = VersionStatus::Backlog;
         }

@@ -12,6 +12,7 @@ use ratatui::{
 };
 use ratatui_textarea::{CursorMove, TextArea};
 
+use crate::application;
 use crate::db::repository::Repository;
 use crate::domain::task::{Priority, Status, Task, TaskNote};
 use crate::screens::components::badge::Badge;
@@ -201,7 +202,13 @@ impl TaskForm {
                     if task_id == id {
                         return false;
                     }
-                    if self.repo.would_create_cycle(task_id, id).unwrap_or(true) {
+                    if application::dependencies::would_create_cycle(
+                        self.repo.as_ref(),
+                        task_id,
+                        id,
+                    )
+                    .unwrap_or(true)
+                    {
                         return false;
                     }
                 }
@@ -298,7 +305,8 @@ impl TaskForm {
 
 impl Component for TaskForm {
     fn init(&mut self) -> anyhow::Result<()> {
-        self.project_id = self.repo.get_version(self.version_id)?.project_id;
+        self.project_id =
+            application::versions::get(self.repo.as_ref(), self.version_id)?.project_id;
         self.available_tasks = self
             .repo
             .list_tasks_by_version(self.version_id)?
@@ -306,15 +314,17 @@ impl Component for TaskForm {
             .filter(|t| t.id != self.task_id)
             .collect();
         if let Some(id) = self.task_id {
-            let task = self.repo.get_task(id)?;
+            let task = application::tasks::get(self.repo.as_ref(), id)?;
             self.name = task.name;
             self.description = TextArea::default();
             self.description.insert_str(&task.description);
             self.description.move_cursor(CursorMove::Jump(0, 0));
             self.status = task.status;
             self.priority = task.priority;
-            self.selected_deps = self.repo.get_dependencies(id)?.into_iter().collect();
-            self.notes = self.repo.list_task_notes(id)?;
+            self.selected_deps = application::dependencies::list(self.repo.as_ref(), id)?
+                .into_iter()
+                .collect();
+            self.notes = application::notes::list(self.repo.as_ref(), id)?;
         } else {
             self.name.clear();
             self.description = TextArea::default();
@@ -345,8 +355,10 @@ impl Component for TaskForm {
             .filter(|t| t.id != self.task_id)
             .collect();
         if let Some(id) = self.task_id {
-            self.selected_deps = self.repo.get_dependencies(id)?.into_iter().collect();
-            self.notes = self.repo.list_task_notes(id)?;
+            self.selected_deps = application::dependencies::list(self.repo.as_ref(), id)?
+                .into_iter()
+                .collect();
+            self.notes = application::notes::list(self.repo.as_ref(), id)?;
         }
         self.recompute_filtered_tasks();
         Ok(())

@@ -14,6 +14,7 @@ use ratatui::{
     widgets::{Block, Borders},
 };
 
+use crate::application;
 use crate::db::repository::Repository;
 use crate::domain::task::{Priority, Status, Task};
 use crate::domain::version::{Version, VersionStatus};
@@ -132,12 +133,13 @@ impl VersionDashboard {
     }
 
     fn load_tasks(&mut self) -> anyhow::Result<()> {
-        let version = self.repo.get_version(self.version_id)?;
+        let version = application::versions::get(self.repo.as_ref(), self.version_id)?;
         self.project_id = version.project_id;
-        self.project_name = Some(self.repo.get_project(version.project_id)?.name);
+        self.project_name =
+            Some(application::projects::get(self.repo.as_ref(), version.project_id)?.name);
         self.version = Some(version);
-        self.summaries = self.repo.list_version_summaries(self.version_id)?;
-        let tasks = self.repo.list_tasks_by_version(self.version_id)?;
+        self.summaries = application::summaries::list(self.repo.as_ref(), self.version_id)?;
+        let tasks = application::tasks::list_by_version(self.repo.as_ref(), self.version_id)?;
         // Dependencies live in the same version, so their status is known
         // from the tasks just loaded.
         let statuses: std::collections::HashMap<i64, Status> = tasks
@@ -148,7 +150,8 @@ impl VersionDashboard {
             .iter()
             .filter_map(|task| task.id)
             .map(|id| {
-                let dependencies = self.repo.get_dependencies(id).unwrap_or_default();
+                let dependencies =
+                    application::dependencies::list(self.repo.as_ref(), id).unwrap_or_default();
                 let pending = dependencies
                     .iter()
                     .filter(|dep| statuses.get(dep) != Some(&Status::Done))

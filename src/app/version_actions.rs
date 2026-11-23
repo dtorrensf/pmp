@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Version use cases dispatched from the TUI: save (create or edit) and
 //! delete.
+
 use anyhow::{Result, anyhow};
 
+use crate::application::versions::{self, NewVersion, VersionEdit};
 use crate::db::repository::Repository;
 use crate::domain::version::VersionStatus;
 use crate::screens::{Action, Screen};
@@ -22,10 +24,26 @@ pub(super) fn save(
         return Err(anyhow!("Version name cannot be empty"));
     }
     match version_id {
-        Some(id) => repo.update_version(id, name, description, status)?,
+        Some(id) => versions::edit(
+            repo,
+            id,
+            VersionEdit {
+                name: name.to_string(),
+                description: Some(description.to_string()),
+                status: Some(status),
+            },
+        )?,
         // The version is created with the chosen status in a single
         // write, so it never exists in an intermediate state.
-        None => repo.create_version_with_status(project_id, name, description, status)?,
+        None => versions::create(
+            repo,
+            NewVersion {
+                project_id,
+                name: name.to_string(),
+                description: description.to_string(),
+                status,
+            },
+        )?,
     };
     Ok(Outcome::confirmed(
         "Version saved",
@@ -34,8 +52,8 @@ pub(super) fn save(
 }
 
 pub(super) fn delete(repo: &dyn Repository, version_id: i64) -> Result<Outcome> {
-    let project_id = repo.get_version(version_id)?.project_id;
-    repo.delete_version(version_id)?;
+    let project_id = versions::get(repo, version_id)?.project_id;
+    versions::delete(repo, version_id)?;
     Ok(Outcome::confirmed(
         "Version deleted",
         Some(Action::Navigate(Screen::ProjectDashboard { project_id })),

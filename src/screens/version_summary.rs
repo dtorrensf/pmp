@@ -13,6 +13,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
+use crate::application;
 use crate::db::repository::Repository;
 use crate::domain::snapshot::CompactSnapshot;
 use crate::domain::task::{Priority, Status};
@@ -68,8 +69,8 @@ impl VersionSummaryScreen {
     }
 
     fn load(&mut self) -> anyhow::Result<()> {
-        let summary = self.repo.get_version_summary(self.summary_id)?;
-        let version = self.repo.get_version(summary.version_id)?;
+        let summary = application::summaries::get(self.repo.as_ref(), self.summary_id)?;
+        let version = application::versions::get(self.repo.as_ref(), summary.version_id)?;
         self.project_id = version.project_id;
         self.version_id = version.id.unwrap_or(self.version_id);
         self.chart = serde_json::from_str::<CompactSnapshot>(&summary.snapshot_json)

@@ -13,6 +13,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
+use crate::application;
 use crate::db::repository::Repository;
 use crate::domain::task::Status;
 use crate::screens::components::confirm_dialog::{ConfirmDialog, ConfirmState};
@@ -92,7 +93,7 @@ impl Component for ProjectListScreen {
     }
 
     fn init(&mut self) -> anyhow::Result<()> {
-        self.projects = self.repo.list_projects()?;
+        self.projects = application::projects::list(self.repo.as_ref())?;
         self.task_counts = self
             .projects
             .iter()

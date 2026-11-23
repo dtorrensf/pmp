@@ -12,6 +12,7 @@ use ratatui::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use crate::application;
 use crate::db::repository::Repository;
 use crate::domain::task::{Priority, Status, Task};
 use crate::domain::version::Version;
@@ -313,7 +314,9 @@ impl TaskListView {
                 if let Some(task) = self.tasks.get(self.selected) {
                     let task_id = task.id.unwrap_or(0);
                     let task_name = task.name.clone();
-                    let dependents_count = repo.get_dependents(task_id).unwrap_or_default().len();
+                    let dependents_count = application::dependencies::dependents(repo, task_id)
+                        .unwrap_or_default()
+                        .len();
                     let message = if dependents_count > 0 {
                         format!(
                             "Deleting will remove {} dependency links. Continue?",
