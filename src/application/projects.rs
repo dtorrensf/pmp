@@ -19,6 +19,7 @@ pub struct NewProject {
 /// Changes to apply to an existing project. `description: None` keeps the
 /// current one, so a client can rename without resending the whole record.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ProjectEdit {
     pub name: String,
     pub description: Option<String>,

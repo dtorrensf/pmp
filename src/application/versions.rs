@@ -22,6 +22,7 @@ pub struct NewVersion {
 /// Changes to apply to an existing version. `None` fields keep their current
 /// value.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct VersionEdit {
     pub name: String,
     pub description: Option<String>,

@@ -37,6 +37,7 @@ pub struct NewTask {
 /// sections rewrites the description from the three sections, keeping those
 /// that were not sent.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TaskEdit {
     pub name: Option<String>,
     pub description: Option<String>,
@@ -414,5 +415,40 @@ mod tests {
         );
         assert_eq!(get(&repo, task_id).unwrap().id, Some(task_id));
         assert_eq!(list_by_version(&repo, version_id).unwrap().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod wire_tests {
+    use super::{TaskEdit, TaskPage};
+    use crate::domain::task::Status;
+
+    #[test]
+    fn task_edit_accepts_an_empty_javascript_object() {
+        let edit: TaskEdit = serde_json::from_str("{}").unwrap();
+        assert_eq!(edit, TaskEdit::default());
+    }
+
+    #[test]
+    fn task_edit_deserializes_partial_updates() {
+        let edit: TaskEdit =
+            serde_json::from_str(r#"{"status":"in_progress","name":"Renamed"}"#).unwrap();
+        assert_eq!(edit.name.as_deref(), Some("Renamed"));
+        assert_eq!(edit.status, Some(Status::InProgress));
+        assert_eq!(edit.description, None);
+    }
+
+    #[test]
+    fn task_page_round_trips_as_json() {
+        let page = TaskPage {
+            tasks: Vec::new(),
+            total: 0,
+            limit: 10,
+            offset: 0,
+            has_more: false,
+        };
+        let json = serde_json::to_string(&page).unwrap();
+        let back: TaskPage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, page);
     }
 }
