@@ -8,9 +8,9 @@ use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, Value, ValueRef};
 use rusqlite::{Connection, Row, params, params_from_iter};
 
 use crate::db::repository::{
-    DependencyRepository, LIST_LIMIT, NoteRepository, ProjectRepository, SummaryRepository,
-    TaskFilter, TaskRepository, VersionRepository, check_dependency_set, check_done_transition,
-    check_list_size, check_task_move, unique_ids,
+    DependencyRepository, LIST_LIMIT, NoteRepository, ProjectRepository, Repository,
+    SummaryRepository, TaskFilter, TaskRepository, VersionRepository, check_dependency_set,
+    check_done_transition, check_list_size, check_task_move, unique_ids,
 };
 use crate::domain::error::AppError;
 use crate::domain::project::Project;
@@ -367,9 +367,7 @@ impl TaskRepository for SqliteRepository {
         validation::validate_name("task", name)?;
         validation::validate_text("task", "description", description)?;
         let current = self.get_task(id)?;
-        check_done_transition(current.status, status, || {
-            self.has_incomplete_dependencies(id)
-        })?;
+        check_done_transition(current.status, status, || self.incomplete_dependencies(id))?;
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         match status {
             Status::Done => {
@@ -398,7 +396,7 @@ impl TaskRepository for SqliteRepository {
     fn update_task_status(&self, id: i64, new_status: Status) -> Result<Task, AppError> {
         let current = self.get_task(id)?;
         check_done_transition(current.status, new_status, || {
-            self.has_incomplete_dependencies(id)
+            self.incomplete_dependencies(id)
         })?;
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         match new_status {
@@ -785,7 +783,7 @@ fn version_write_error(err: rusqlite::Error, name: &str) -> AppError {
         rusqlite::Error::SqliteFailure(ref failure, _)
             if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
         {
-            AppError::Validation(format!("version already exists: {name}"))
+            AppError::DuplicateName(format!("version already exists: {name}"))
         }
         other => other.into(),
     }
@@ -817,7 +815,7 @@ fn version_summary_write_error(err: rusqlite::Error) -> AppError {
         rusqlite::Error::SqliteFailure(ref failure, _)
             if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
         {
-            AppError::Validation("version already has a summary".to_string())
+            AppError::DuplicateName("version already has a summary".to_string())
         }
         other => other.into(),
     }

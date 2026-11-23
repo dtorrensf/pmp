@@ -3,8 +3,9 @@
 use std::sync::Mutex;
 
 use crate::db::repository::{
-    DependencyRepository, NoteRepository, ProjectRepository, SummaryRepository, TaskRepository,
-    VersionRepository, check_dependency_set, check_done_transition, check_task_move, unique_ids,
+    DependencyRepository, NoteRepository, ProjectRepository, Repository, SummaryRepository,
+    TaskRepository, VersionRepository, check_dependency_set, check_done_transition,
+    check_task_move, unique_ids,
 };
 use crate::domain::error::AppError;
 use crate::domain::project::Project;
@@ -257,7 +258,7 @@ impl VersionRepository for StubRepository {
             .iter()
             .any(|v| v.project_id == project_id && v.name == name)
         {
-            return Err(AppError::Validation(format!(
+            return Err(AppError::DuplicateName(format!(
                 "version already exists: {name}"
             )));
         }
@@ -306,7 +307,7 @@ impl VersionRepository for StubRepository {
             .iter()
             .any(|v| v.id != Some(id) && v.project_id == project_id && v.name == name)
         {
-            return Err(AppError::Validation(format!(
+            return Err(AppError::DuplicateName(format!(
                 "version already exists: {name}"
             )));
         }
@@ -422,9 +423,7 @@ impl TaskRepository for StubRepository {
         validation::validate_name("task", name)?;
         validation::validate_text("task", "description", description)?;
         let current = self.get_task(id)?;
-        check_done_transition(current.status, status, || {
-            self.has_incomplete_dependencies(id)
-        })?;
+        check_done_transition(current.status, status, || self.incomplete_dependencies(id))?;
         let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
         let task = tasks
             .iter_mut()
@@ -447,7 +446,7 @@ impl TaskRepository for StubRepository {
     fn update_task_status(&self, id: i64, new_status: Status) -> Result<Task, AppError> {
         let current = self.get_task(id)?;
         check_done_transition(current.status, new_status, || {
-            self.has_incomplete_dependencies(id)
+            self.incomplete_dependencies(id)
         })?;
         let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
         let task = tasks
@@ -737,7 +736,7 @@ impl SummaryRepository for StubRepository {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         if summaries.iter().any(|s| s.version_id == version_id) {
-            return Err(AppError::Validation(
+            return Err(AppError::DuplicateName(
                 "version already has a summary".to_string(),
             ));
         }

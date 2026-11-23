@@ -3,8 +3,6 @@
 //! Task use cases dispatched from the TUI: save (with dependency
 //! synchronisation), status change, move between versions, delete and notes.
 
-use anyhow::{Result, anyhow};
-
 use crate::application::notes;
 use crate::application::tasks::{self, NewTask, TaskEdit};
 use crate::db::repository::Repository;
@@ -25,10 +23,7 @@ pub(super) fn save(
     priority: Priority,
     depends_on_ids: &[i64],
     return_to: &Screen,
-) -> Result<Outcome> {
-    if name.trim().is_empty() {
-        return Err(anyhow!("Task name cannot be empty"));
-    }
+) -> Result<Outcome, AppError> {
     match task_id {
         Some(id) => tasks::edit(
             repo,
@@ -67,7 +62,7 @@ pub(super) fn update_status(
     task_id: i64,
     new_status: Status,
     refresh: Screen,
-) -> Result<Outcome> {
+) -> Result<Outcome, AppError> {
     tasks::set_status(repo, task_id, new_status)?;
     Ok(Outcome::confirmed(
         format!("Status set to {}", new_status.label()),
@@ -80,7 +75,7 @@ pub(super) fn move_to_version(
     task_id: i64,
     version_id: i64,
     refresh: Screen,
-) -> Result<Outcome> {
+) -> Result<Outcome, AppError> {
     tasks::move_to_version(repo, task_id, version_id)?;
     // Re-running init reloads the list without the moved task.
     Ok(Outcome::confirmed(
@@ -89,7 +84,11 @@ pub(super) fn move_to_version(
     ))
 }
 
-pub(super) fn delete(repo: &dyn Repository, task_id: i64, refresh: Screen) -> Result<Outcome> {
+pub(super) fn delete(
+    repo: &dyn Repository,
+    task_id: i64,
+    refresh: Screen,
+) -> Result<Outcome, AppError> {
     tasks::delete(repo, task_id)?;
     Ok(Outcome::confirmed(
         "Task deleted",
@@ -97,10 +96,11 @@ pub(super) fn delete(repo: &dyn Repository, task_id: i64, refresh: Screen) -> Re
     ))
 }
 
-pub(super) fn add_note(repo: &dyn Repository, task_id: i64, content: &str) -> Result<Outcome> {
-    match notes::add(repo, task_id, content) {
-        Ok(_) => Ok(Outcome::confirmed("Note added", Some(Action::Refresh))),
-        Err(AppError::Validation(_)) => Err(anyhow!("Note content cannot be empty")),
-        Err(e) => Err(e.into()),
-    }
+pub(super) fn add_note(
+    repo: &dyn Repository,
+    task_id: i64,
+    content: &str,
+) -> Result<Outcome, AppError> {
+    notes::add(repo, task_id, content)?;
+    Ok(Outcome::confirmed("Note added", Some(Action::Refresh)))
 }

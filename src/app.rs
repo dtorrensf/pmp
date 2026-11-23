@@ -7,6 +7,7 @@ use std::time::Instant;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::db::repository::Repository;
+use crate::domain::error::AppError;
 use crate::screens::components::toast::{Severity, Toasts};
 use crate::screens::{
     Action, Component, ProjectDashboard, ProjectForm, ProjectListScreen, Screen, TaskForm,
@@ -23,6 +24,16 @@ use outcome::Outcome;
 
 /// Returns the current time. Boxed so tests can substitute their own clock.
 type Clock = Box<dyn Fn() -> Instant + Send>;
+
+/// Toasts start with a capital letter while the underlying error keeps its
+/// canonical, lowercase message (the same one MCP sends).
+fn capitalize(message: &str) -> String {
+    let mut chars = message.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
 
 pub struct App {
     pub screen: Screen,
@@ -176,7 +187,8 @@ impl App {
 
     fn push_error(&mut self, message: impl Into<String>) {
         let now = (self.clock)();
-        self.toasts.push(Severity::Error, message, now);
+        self.toasts
+            .push(Severity::Error, capitalize(&message.into()), now);
     }
 
     fn push_success(&mut self, message: impl Into<String>) {
@@ -439,7 +451,11 @@ impl App {
 
     /// Turns a use case result into user feedback: a confirmation on success,
     /// an error toast on failure. Returns the follow-up action, if any.
-    fn settle(&mut self, result: anyhow::Result<Outcome>) -> Option<Action> {
+    ///
+    /// The toast shows [`AppError::user_message`], so storage details stay in
+    /// the log and the user sees the same wording for the same failure code
+    /// the MCP server reports.
+    fn settle(&mut self, result: Result<Outcome, AppError>) -> Option<Action> {
         match result {
             Ok(outcome) => {
                 if let Some(message) = outcome.confirmation {
@@ -447,8 +463,8 @@ impl App {
                 }
                 outcome.next
             }
-            Err(e) => {
-                self.push_error(e.to_string());
+            Err(error) => {
+                self.push_error(error.user_message());
                 None
             }
         }

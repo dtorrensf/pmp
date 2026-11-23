@@ -6,6 +6,8 @@ use crate::screens::components::toast::Severity;
 use crate::screens::{Action, Screen};
 use crossterm::event::KeyCode;
 
+use crate::domain::error::AppError;
+
 use super::*;
 
 #[test]
@@ -145,4 +147,38 @@ fn successful_save_clears_a_previous_error() {
         description: String::new(),
     });
     assert_eq!(app.error(), None);
+}
+
+#[test]
+fn storage_failures_show_a_generic_message_and_never_sqlite_details() {
+    let (_repo, mut app) = setup_app();
+
+    let next = app.settle(Err(AppError::DbError(rusqlite::Error::InvalidQuery)));
+
+    assert_eq!(next, None);
+    assert_eq!(app.error(), Some("Internal error"));
+}
+
+#[test]
+fn dependency_errors_surface_the_canonical_message_capitalized() {
+    let (_repo, mut app) = setup_app();
+
+    app.settle(Err(AppError::DependencyBlocked {
+        message: "cannot mark task as done: it has incomplete dependencies".to_string(),
+        blockers: vec![2],
+    }));
+
+    assert_eq!(
+        app.error(),
+        Some("Cannot mark task as done: it has incomplete dependencies")
+    );
+}
+
+#[test]
+fn toast_messages_start_with_a_capital_letter() {
+    assert_eq!(
+        crate::app::capitalize("project name cannot be empty"),
+        "Project name cannot be empty"
+    );
+    assert_eq!(crate::app::capitalize(""), "");
 }

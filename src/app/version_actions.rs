@@ -3,10 +3,9 @@
 //! Version use cases dispatched from the TUI: save (create or edit) and
 //! delete.
 
-use anyhow::{Result, anyhow};
-
 use crate::application::versions::{self, NewVersion, VersionEdit};
 use crate::db::repository::Repository;
+use crate::domain::error::AppError;
 use crate::domain::version::VersionStatus;
 use crate::screens::{Action, Screen};
 
@@ -19,10 +18,7 @@ pub(super) fn save(
     name: &str,
     description: &str,
     status: VersionStatus,
-) -> Result<Outcome> {
-    if name.trim().is_empty() {
-        return Err(anyhow!("Version name cannot be empty"));
-    }
+) -> Result<Outcome, AppError> {
     match version_id {
         Some(id) => versions::edit(
             repo,
@@ -51,7 +47,7 @@ pub(super) fn save(
     ))
 }
 
-pub(super) fn delete(repo: &dyn Repository, version_id: i64) -> Result<Outcome> {
+pub(super) fn delete(repo: &dyn Repository, version_id: i64) -> Result<Outcome, AppError> {
     let project_id = versions::get(repo, version_id)?.project_id;
     versions::delete(repo, version_id)?;
     Ok(Outcome::confirmed(

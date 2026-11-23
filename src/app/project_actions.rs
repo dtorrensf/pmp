@@ -3,10 +3,9 @@
 //! Project use cases dispatched from the TUI: save (create or edit) and
 //! delete.
 
-use anyhow::{Result, anyhow};
-
 use crate::application::projects::{self, NewProject, ProjectEdit};
 use crate::db::repository::Repository;
+use crate::domain::error::AppError;
 use crate::screens::{Action, Screen};
 
 use super::outcome::Outcome;
@@ -19,10 +18,7 @@ pub(super) fn save(
     name: &str,
     description: &str,
     return_to: &Screen,
-) -> Result<Outcome> {
-    if name.trim().is_empty() {
-        return Err(anyhow!("Project name cannot be empty"));
-    }
+) -> Result<Outcome, AppError> {
     let next = match project_id {
         Some(id) => {
             projects::edit(
@@ -53,7 +49,7 @@ pub(super) fn save(
     ))
 }
 
-pub(super) fn delete(repo: &dyn Repository, project_id: i64) -> Result<Outcome> {
+pub(super) fn delete(repo: &dyn Repository, project_id: i64) -> Result<Outcome, AppError> {
     projects::delete(repo, project_id)?;
     Ok(Outcome::confirmed(
         "Project deleted",

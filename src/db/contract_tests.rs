@@ -274,7 +274,7 @@ fn create_version_rejects_empty_and_duplicate_names() {
         assert!(
             matches!(
                 repo.create_version(pid, "v1.0.0", ""),
-                Err(AppError::Validation(_))
+                Err(AppError::DuplicateName(_))
             ),
             "{name}: duplicate name"
         );
@@ -330,7 +330,7 @@ fn update_version_rejects_duplicate_name_and_missing_id() {
         assert!(
             matches!(
                 repo.update_version(a.id.unwrap(), "v1.1.0", "", VersionStatus::Open),
-                Err(AppError::Validation(_))
+                Err(AppError::DuplicateName(_))
             ),
             "{name}: rename to existing"
         );
@@ -731,9 +731,15 @@ fn move_task_rejects_tasks_with_dependencies_or_dependents() {
 
         // b depends on a: both are blocked from moving.
         let err = repo.move_task(b, v2).unwrap_err();
-        assert!(matches!(err, AppError::Validation(_)), "{name}: {err:?}");
+        assert!(
+            matches!(err, AppError::InvalidTransition(_)),
+            "{name}: {err:?}"
+        );
         let err = repo.move_task(a, v2).unwrap_err();
-        assert!(matches!(err, AppError::Validation(_)), "{name}: {err:?}");
+        assert!(
+            matches!(err, AppError::InvalidTransition(_)),
+            "{name}: {err:?}"
+        );
         assert_eq!(repo.get_task(a).unwrap().version_id, v1, "{name}");
         assert_eq!(repo.get_task(b).unwrap().version_id, v1, "{name}");
         assert_eq!(repo.get_dependencies(b).unwrap(), vec![a], "{name}");
@@ -984,7 +990,7 @@ fn create_version_summary_rejects_duplicate_for_same_version() {
         assert!(
             matches!(
                 repo.create_version_summary(v, "Second", &snapshot),
-                Err(AppError::Validation(_))
+                Err(AppError::DuplicateName(_))
             ),
             "{name}"
         );
@@ -1143,15 +1149,30 @@ fn done_is_rejected_while_a_dependency_is_incomplete() {
         repo.add_dependency(a, b).unwrap();
 
         match repo.update_task_status(a, Status::Done) {
-            Err(AppError::Validation(message)) => {
-                assert!(message.contains("incomplete dependencies"), "{name}");
+            Err(error @ AppError::DependencyBlocked { .. }) => {
+                assert!(
+                    error.to_string().contains("incomplete dependencies"),
+                    "{name}"
+                );
+                assert_eq!(
+                    error.blockers(),
+                    [b],
+                    "{name}: blockers travel with the error"
+                );
+                assert_eq!(
+                    error.code(),
+                    crate::domain::error::ErrorCode::DependencyBlocked
+                );
             }
-            other => panic!("{name}: expected validation error, got {other:?}"),
+            other => panic!("{name}: expected dependency blocked, got {other:?}"),
         }
         assert_eq!(repo.get_task(a).unwrap().status, Status::Todo, "{name}");
 
         let edit = repo.update_task(a, "A", "", Status::Done, Priority::Medium);
-        assert!(matches!(edit, Err(AppError::Validation(_))), "{name}");
+        assert!(
+            matches!(edit, Err(AppError::DependencyBlocked { .. })),
+            "{name}"
+        );
         assert_eq!(repo.get_task(a).unwrap().status, Status::Todo, "{name}");
     });
 }

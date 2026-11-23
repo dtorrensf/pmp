@@ -88,7 +88,7 @@ fn update_task_status_to_done_with_incomplete_deps_is_blocked() {
     });
     assert_eq!(
         app.error(),
-        Some("cannot mark task as done: it has incomplete dependencies")
+        Some("Cannot mark task as done: it has incomplete dependencies")
     );
     // transition was blocked — task stays Todo
     let task = repo.get_task(a.id.unwrap()).unwrap();
@@ -286,7 +286,7 @@ fn save_task_with_task_id_and_done_status_blocked_by_incomplete_deps() {
     });
     assert_eq!(
         app.error(),
-        Some("cannot mark task as done: it has incomplete dependencies")
+        Some("Cannot mark task as done: it has incomplete dependencies")
     );
     // transition was blocked — task stays Todo
     let task = repo.get_task(a_id).unwrap();

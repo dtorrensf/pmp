@@ -896,7 +896,10 @@ impl PmpServer {
 /// only: it can contain file paths or SQL text.
 fn internal_error(detail: impl std::fmt::Display) -> ErrorData {
     tracing::error!(error = %detail, "internal MCP error");
-    ErrorData::internal_error("internal error", None::<serde_json::Value>)
+    ErrorData::internal_error(
+        "internal error",
+        Some(serde_json::json!({ "code": "internal", "retryable": false })),
+    )
 }
 
 async fn execute_repository<T, F>(
@@ -1007,19 +1010,24 @@ fn tool_result<T: Serialize>(
     result: Result<T, AppError>,
     not_found_message: &str,
 ) -> Result<CallToolResult, ErrorData> {
-    match result {
-        Ok(value) => tool_success(&value),
-        Err(AppError::NotFound) => Ok(CallToolResult::error(vec![ContentBlock::text(
-            not_found_message.to_string(),
-        )])),
-        Err(AppError::Validation(message)) => {
-            Ok(CallToolResult::error(vec![ContentBlock::text(message)]))
+    let error = match result {
+        Ok(value) => return tool_success(&value),
+        Err(error) => error,
+    };
+    // Failures a client can act on stay in the tool result: the human text
+    // comes first, followed by the machine-readable `ErrorInfo`.
+    let message = match &error {
+        AppError::NotFound => not_found_message.to_string(),
+        AppError::DependencyCycle => "dependency cycle detected".to_string(),
+        AppError::DbBusy | AppError::DbError(_) | AppError::Internal => {
+            return Err(app_error_to_mcp(error));
         }
-        Err(AppError::DependencyCycle) => Ok(CallToolResult::error(vec![ContentBlock::text(
-            "dependency cycle detected",
-        )])),
-        Err(error) => Err(app_error_to_mcp(error)),
-    }
+        other => other.user_message(),
+    };
+    Ok(CallToolResult::error(vec![
+        ContentBlock::text(message),
+        json_content(&error.info())?,
+    ]))
 }
 
 /// Runs a repository operation for a tool and maps the outcome to a tool
@@ -1102,12 +1110,14 @@ fn app_error_to_mcp(err: AppError) -> ErrorData {
         AppError::NotFound => ErrorData::new(
             ErrorCode::RESOURCE_NOT_FOUND,
             RESOURCE_NOT_FOUND_MESSAGE.to_string(),
-            None::<serde_json::Value>,
+            Some(serde_json::json!({ "code": err.code() })),
         ),
         AppError::DbError(source) => internal_error(source),
-        AppError::Validation(_) | AppError::DependencyCycle => {
-            ErrorData::invalid_params(err.to_string(), None::<serde_json::Value>)
-        }
+        AppError::Internal => internal_error("internal error"),
+        other => ErrorData::invalid_params(
+            other.user_message(),
+            Some(serde_json::to_value(other.info()).unwrap_or_default()),
+        ),
     }
 }
 
@@ -1181,6 +1191,17 @@ mod tests {
         )
         .unwrap();
         (server, repo, pid)
+    }
+
+    /// The structured `ErrorInfo` block a tool error carries next to its text.
+    fn tool_error_info(result: &CallToolResult) -> serde_json::Value {
+        let raw = result
+            .content
+            .iter()
+            .skip(1)
+            .find_map(|content| content.as_text().map(|text| text.text.clone()))
+            .expect("tool error should carry a structured block");
+        serde_json::from_str(&raw).expect("structured block should be json")
     }
 
     fn tool_text(result: CallToolResult) -> String {
@@ -1675,13 +1696,34 @@ mod tests {
         assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
         assert_eq!(err.message, "internal error");
         assert!(!err.message.contains("InvalidQuery"));
-        assert!(err.data.is_none());
+        assert_eq!(
+            err.data.as_ref().and_then(|d| d.get("code")),
+            Some(&serde_json::json!("internal"))
+        );
     }
 
     #[test]
     fn app_error_mapping_is_stable_for_each_variant() {
         let not_found = app_error_to_mcp(AppError::NotFound);
         assert_eq!(not_found.code, ErrorCode::RESOURCE_NOT_FOUND);
+        let duplicate = app_error_to_mcp(AppError::DuplicateName("version already exists".into()));
+        let data = duplicate.data.unwrap();
+        assert_eq!(data["code"], "duplicate_name");
+        assert_eq!(data["retryable"], false);
+
+        let busy = app_error_to_mcp(AppError::DbBusy);
+        let data = busy.data.unwrap();
+        assert_eq!(data["code"], "db_busy");
+        assert_eq!(data["retryable"], true);
+
+        let blocked = app_error_to_mcp(AppError::DependencyBlocked {
+            message: "cannot mark task as done: it has incomplete dependencies".into(),
+            blockers: vec![3],
+        });
+        let data = blocked.data.unwrap();
+        assert_eq!(data["code"], "dependency_blocked");
+        assert_eq!(data["blockers"], serde_json::json!([3]));
+
         let db = app_error_to_mcp(AppError::DbError(rusqlite::Error::InvalidQuery));
         assert_eq!(db.code, ErrorCode::INTERNAL_ERROR);
         assert_eq!(db.message, "internal error");
@@ -2196,8 +2238,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.is_error, Some(true));
+        let info = tool_error_info(&result);
         let message = tool_text(result);
         assert!(message.contains("incomplete dependencies"));
+        assert_eq!(info["code"], "dependency_blocked");
+        assert_eq!(info["blockers"], serde_json::json!([task_a_id]));
+        assert_eq!(info["retryable"], false);
     }
 
     #[tokio::test]

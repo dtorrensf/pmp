@@ -4,5 +4,8 @@ expression: err
 ---
 {
   "code": -32002,
-  "message": "resource not found"
+  "message": "resource not found",
+  "data": {
+    "code": "not_found"
+  }
 }

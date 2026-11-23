@@ -246,6 +246,18 @@ pub trait Repository:
     + Send
     + Sync
 {
+    /// The dependencies of `task_id` that are not Done yet. Same rule as
+    /// [`DependencyRepository::has_incomplete_dependencies`], but returns the
+    /// blockers so an error can tell the client which tasks to finish first.
+    fn incomplete_dependencies(&self, task_id: i64) -> Result<Vec<i64>, AppError> {
+        let mut blockers = Vec::new();
+        for dependency in self.get_dependencies(task_id)? {
+            if self.get_task(dependency)?.status != Status::Done {
+                blockers.push(dependency);
+            }
+        }
+        Ok(blockers)
+    }
 }
 
 impl<T> Repository for T where
@@ -301,21 +313,24 @@ fn reaches(graph: &HashMap<i64, Vec<i64>>, from: i64, target: i64) -> bool {
 /// The rule for moving a task to `next_status`: a task cannot enter Done while
 /// it has incomplete dependencies. Done to Done is a no-op and always allowed,
 /// so a task finished before a new blocker was added keeps its status.
-/// `has_incomplete_dependencies` is only called when the move enters Done.
+/// `incomplete_dependencies` is only called when the move enters Done; the ids
+/// it returns travel with the error so a client can list the blockers.
 /// Every `update_task` and `update_task_status` implementation calls this, so
 /// the TUI and the MCP server get the same behaviour.
 pub(crate) fn check_done_transition(
     current_status: Status,
     next_status: Status,
-    has_incomplete_dependencies: impl FnOnce() -> Result<bool, AppError>,
+    incomplete_dependencies: impl FnOnce() -> Result<Vec<i64>, AppError>,
 ) -> Result<(), AppError> {
     if next_status != Status::Done || current_status == Status::Done {
         return Ok(());
     }
-    if has_incomplete_dependencies()? {
-        return Err(AppError::Validation(
-            "cannot mark task as done: it has incomplete dependencies".to_string(),
-        ));
+    let blockers = incomplete_dependencies()?;
+    if !blockers.is_empty() {
+        return Err(AppError::DependencyBlocked {
+            message: "cannot mark task as done: it has incomplete dependencies".to_string(),
+            blockers,
+        });
     }
     Ok(())
 }
@@ -334,7 +349,7 @@ pub(crate) fn check_task_move(
         ));
     }
     if !dependencies.is_empty() || !dependents.is_empty() {
-        return Err(AppError::Validation(
+        return Err(AppError::InvalidTransition(
             "task has dependencies or dependents; remove them before moving it, \
              because they must stay within the same version"
                 .to_string(),
@@ -425,19 +440,19 @@ mod tests {
 
     #[test]
     fn done_transition_rule_covers_every_case() {
-        let blocked = || Ok(true);
-        let clear = || Ok(false);
-        // Entering Done with incomplete dependencies is rejected.
-        assert!(matches!(
-            check_done_transition(Status::Todo, Status::Done, blocked),
-            Err(AppError::Validation(_))
-        ));
+        let blocked = || Ok(vec![2, 5]);
+        let clear = || Ok(Vec::new());
+        // Entering Done with incomplete dependencies is rejected, with the ids.
+        match check_done_transition(Status::Todo, Status::Done, blocked) {
+            Err(AppError::DependencyBlocked { blockers, .. }) => assert_eq!(blockers, [2, 5]),
+            other => panic!("expected dependency blocked, got {other:?}"),
+        }
         // Entering Done without incomplete dependencies is allowed.
         assert!(check_done_transition(Status::Todo, Status::Done, clear).is_ok());
         // Done to Done is a no-op and is allowed even when blocked.
         assert!(check_done_transition(Status::Done, Status::Done, blocked).is_ok());
         // Leaving Done or moving between open states never consults dependencies.
-        let fail = || -> Result<bool, AppError> { panic!("dependencies must not be checked") };
+        let fail = || -> Result<Vec<i64>, AppError> { panic!("dependencies must not be checked") };
         assert!(check_done_transition(Status::Done, Status::Todo, fail).is_ok());
         assert!(check_done_transition(Status::Todo, Status::InProgress, fail).is_ok());
     }
