@@ -124,6 +124,25 @@ pmp mcp
 
 The server will start and interact smoothly with your environment.
 
+### Error codes
+
+Every failure carries a stable code, shared by the TUI (as the error toast) and
+the MCP server (as the `code` field of the error data). A client can react to
+the code instead of matching message text:
+
+| Code | Retryable | Meaning |
+|---|---|---|
+| `not_found` | no | The record does not exist or is not visible. |
+| `validation` | no | Input rejected: blank name, oversized text, wrong relationship. |
+| `duplicate_name` | no | Another record already uses that name in the same scope. |
+| `dependency_blocked` | no | The task has incomplete dependencies; `blockers` lists their ids. |
+| `dependency_cycle` | no | The dependency edge would close a cycle. |
+| `invalid_transition` | no | The state change is not allowed (for example, moving a task that has edges). |
+| `db_busy` | yes | The store is locked; retrying later may succeed. |
+| `agent_unavailable` | yes | The configured agent could not be started. |
+| `agent_failed` | no | The agent started but the session failed. |
+| `internal` | no | Unexpected failure. Details are logged, never sent to clients. |
+
 ### Command-line options
 
 ```bash
