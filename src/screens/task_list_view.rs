@@ -177,8 +177,7 @@ impl TaskListView {
         match keys::browsing(&mut self.state, code) {
             BrowsingOutcome::Action(action) => Some(action),
             BrowsingOutcome::DeleteRequested { task_id, name } => {
-                self.open_delete_confirm(task_id, &name, repo);
-                None
+                self.open_delete_confirm(task_id, &name, repo)
             }
             BrowsingOutcome::OpenFilter => {
                 self.mode =
@@ -191,10 +190,24 @@ impl TaskListView {
 
     /// Asks for the dependency impact of deleting the task and opens the
     /// confirmation with the matching message.
-    fn open_delete_confirm(&mut self, task_id: i64, name: &str, repo: &dyn Repository) {
-        let dependents_count = application::dependencies::dependents(repo, task_id)
-            .unwrap_or_default()
-            .len();
+    ///
+    /// If the query fails the dialog is *not* opened: confirming a destructive
+    /// action without knowing its impact is worse than showing the failure.
+    /// The error travels to the app as [`Action::ReportError`].
+    fn open_delete_confirm(
+        &mut self,
+        task_id: i64,
+        name: &str,
+        repo: &dyn Repository,
+    ) -> Option<Action> {
+        let dependents_count = match application::dependencies::dependents(repo, task_id) {
+            Ok(dependents) => dependents.len(),
+            Err(error) => {
+                return Some(Action::ReportError {
+                    message: error.user_message(),
+                });
+            }
+        };
         let message = if dependents_count > 0 {
             format!(
                 "Deleting will remove {} dependency links. Continue?",
@@ -206,6 +219,7 @@ impl TaskListView {
         self.mode = TaskListMode::ConfirmDelete(
             ConfirmDialog::new(message, Action::DeleteTask { task_id }).with_title("Delete task"),
         );
+        None
     }
 
     /// Caption for the enclosing block: one chip per active filter, the sort

@@ -73,6 +73,9 @@ impl VersionSummaryScreen {
         let version = application::versions::get(self.repo.as_ref(), summary.version_id)?;
         self.project_id = version.project_id;
         self.version_id = version.id.unwrap_or(self.version_id);
+        // Intentional fallback: a snapshot that cannot be parsed only loses the
+        // optional chart. The summary prose still renders, so the user sees
+        // the content instead of an error for a missing decoration.
         self.chart = serde_json::from_str::<CompactSnapshot>(&summary.snapshot_json)
             .ok()
             .as_ref()
@@ -147,6 +150,7 @@ impl Component for VersionSummaryScreen {
             .constraints([Constraint::Min(1), Constraint::Length(chart_height)])
             .split(inner);
 
+        // Intentional fallback: no summary means no prose, not an error.
         let prose = self
             .summary
             .as_ref()

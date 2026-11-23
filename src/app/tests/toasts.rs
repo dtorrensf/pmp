@@ -182,3 +182,32 @@ fn toast_messages_start_with_a_capital_letter() {
     );
     assert_eq!(crate::app::capitalize(""), "");
 }
+
+#[test]
+fn report_error_from_a_screen_becomes_an_error_toast() {
+    let (_repo, mut app) = setup_app();
+
+    let next = app.dispatch(Action::ReportError {
+        message: "internal error".to_string(),
+    });
+
+    assert_eq!(next, None);
+    assert_eq!(app.error(), Some("Internal error"));
+}
+
+#[test]
+fn report_error_replaces_a_previous_error_instead_of_piling_up() {
+    let (_repo, mut app) = setup_app();
+    app.dispatch(Action::SaveProject {
+        project_id: None,
+        name: " ".to_string(),
+        description: String::new(),
+    });
+
+    app.dispatch(Action::ReportError {
+        message: "database is busy; retry the operation".to_string(),
+    });
+
+    assert_eq!(app.toasts().len(), 1);
+    assert_eq!(app.error(), Some("Database is busy; retry the operation"));
+}

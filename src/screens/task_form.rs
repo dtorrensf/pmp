@@ -202,6 +202,9 @@ impl TaskForm {
                     if task_id == id {
                         return false;
                     }
+                    // Fail-safe fallback: if the cycle check cannot be run,
+                    // hide the candidate instead of offering a dependency that
+                    // might be rejected (or, worse, accepted).
                     if application::dependencies::would_create_cycle(
                         self.repo.as_ref(),
                         task_id,

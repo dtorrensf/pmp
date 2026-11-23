@@ -7,6 +7,17 @@ use ratatui::{Frame, layout::Rect};
 
 use crate::screens::components::help::{self, HelpSection};
 
+// Error-propagation policy for screens:
+//
+// - A query whose result is shown as real data (counts, dependency markers) or
+//   that gates a destructive action fails the flow: `init`/`refresh` return the
+//   error, and key handling returns [`Action::ReportError`]. The app turns it
+//   into an error toast.
+// - A failed query is never rendered as legitimate empty data ("only one
+//   version", zero dependencies, zero tasks).
+// - Fallbacks are only used for optional presentation (for example a missing
+//   chart) and are commented where they happen.
+
 pub const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 pub mod components;
@@ -154,6 +165,12 @@ pub enum Action {
         summary_id: i64,
     },
     Refresh,
+    /// Surfaces a failure that happened while handling a key (for example a
+    /// repository query needed to build a dialog) as an error toast. Screens
+    /// emit it instead of silently degrading to empty data.
+    ReportError {
+        message: String,
+    },
 }
 
 #[cfg(test)]

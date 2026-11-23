@@ -575,3 +575,60 @@ fn table_title_shows_the_active_id_direction() {
     view.handle_key(KeyCode::Char('o'), &repo);
     assert_eq!(caption_of(&view), "Tasks · ID ↓");
 }
+
+mod error_propagation {
+    use super::*;
+    use crate::screens::test_utils::FaultyRepository;
+
+    /// The delete confirmation needs the number of dependent tasks. If that
+    /// query fails, the dialog must not open: confirming would hide the impact
+    /// of a destructive action.
+    #[test]
+    fn delete_reports_the_error_and_opens_no_dialog() {
+        let repo = FaultyRepository {
+            fail_dependents: true,
+            ..FaultyRepository::default()
+        };
+        let mut with_id = task("Alpha", Status::Todo);
+        with_id.id = Some(7);
+        let mut view = TaskListView::new();
+        view.set_tasks(vec![with_id]);
+
+        let action = view.handle_key(KeyCode::Char('d'), &repo);
+
+        assert!(
+            matches!(action, Some(Action::ReportError { .. })),
+            "expected an error action, got {action:?}"
+        );
+        assert!(
+            view.is_browsing(),
+            "no confirmation may open without the dependency impact"
+        );
+        assert_ne!(action, Some(Action::DeleteTask { task_id: 7 }));
+    }
+
+    /// With a working query the dialog still opens with the impact message.
+    #[test]
+    fn delete_opens_the_dialog_when_the_query_works() {
+        use crate::db::repository::{ProjectRepository, RepositoryPolicy, TaskRepository};
+        let repo = StubRepository::default();
+        let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let stored = repo
+            .create_task(
+                project_id,
+                repo.default_version_id(project_id).unwrap(),
+                "Alpha",
+                "",
+                Status::Todo,
+                Priority::Low,
+            )
+            .unwrap();
+        let mut view = TaskListView::new();
+        view.set_tasks(vec![stored]);
+
+        let action = view.handle_key(KeyCode::Char('d'), &repo);
+
+        assert_eq!(action, None);
+        assert!(matches!(view.mode(), TaskListMode::ConfirmDelete(_)));
+    }
+}

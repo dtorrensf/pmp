@@ -119,17 +119,26 @@ impl VersionDashboard {
     }
 
     /// Opens the move popup for the selected task with every other version of
-    /// the project as destination. A failed version lookup leaves the popup
-    /// with no targets, which shows the "only version" message.
-    fn open_move_popup(&mut self) {
-        let targets = self
-            .repo
-            .list_versions_by_project(self.project_id)
-            .unwrap_or_default()
+    /// the project as destination.
+    ///
+    /// The popup is not opened when the version lookup fails: showing "this is
+    /// the only version" would be a lie and would hide the failure. The error
+    /// travels to the app as [`Action::ReportError`].
+    fn open_move_popup(&mut self) -> Option<Action> {
+        let versions = match application::versions::list(self.repo.as_ref(), self.project_id) {
+            Ok(versions) => versions,
+            Err(error) => {
+                return Some(Action::ReportError {
+                    message: error.user_message(),
+                });
+            }
+        };
+        let targets = versions
             .into_iter()
             .filter(|v| v.id != Some(self.version_id))
             .collect();
         self.view.open_move(targets);
+        None
     }
 
     fn load_tasks(&mut self) -> anyhow::Result<()> {
@@ -146,23 +155,21 @@ impl VersionDashboard {
             .iter()
             .filter_map(|task| task.id.map(|id| (id, task.status)))
             .collect();
-        let dependency_summaries = tasks
-            .iter()
-            .filter_map(|task| task.id)
-            .map(|id| {
-                let dependencies =
-                    application::dependencies::list(self.repo.as_ref(), id).unwrap_or_default();
-                let pending = dependencies
-                    .iter()
-                    .filter(|dep| statuses.get(dep) != Some(&Status::Done))
-                    .count();
-                let summary = DependencySummary {
+        let mut dependency_summaries = std::collections::HashMap::new();
+        for id in tasks.iter().filter_map(|task| task.id) {
+            let dependencies = application::dependencies::list(self.repo.as_ref(), id)?;
+            let pending = dependencies
+                .iter()
+                .filter(|dep| statuses.get(dep) != Some(&Status::Done))
+                .count();
+            dependency_summaries.insert(
+                id,
+                DependencySummary {
                     total: dependencies.len(),
                     pending,
-                };
-                (id, summary)
-            })
-            .collect::<std::collections::HashMap<_, _>>();
+                },
+            );
+        }
         self.view.set_tasks(tasks);
         self.view.set_dependency_summaries(dependency_summaries);
         self.observe_milestones();
@@ -244,10 +251,7 @@ impl Component for VersionDashboard {
             if self.view.is_browsing() {
                 match code {
                     KeyCode::Char('r') => return Some(Action::Refresh),
-                    KeyCode::Char('m') => {
-                        self.open_move_popup();
-                        return None;
-                    }
+                    KeyCode::Char('m') => return self.open_move_popup(),
                     KeyCode::Char('c') => {
                         return Some(Action::Navigate(Screen::TaskForm {
                             version_id: self.version_id,
@@ -1246,5 +1250,99 @@ mod tests {
         screen.refresh().unwrap();
 
         assert!(!motion::celebrating(screen.celebration));
+    }
+}
+
+#[cfg(test)]
+mod error_propagation_tests {
+    use std::sync::Arc;
+
+    use crossterm::event::KeyCode;
+
+    use crate::db::repository::{
+        ProjectRepository, RepositoryPolicy, TaskRepository, VersionRepository,
+    };
+    use crate::db::stub::StubRepository;
+    use crate::domain::task::{Priority, Status};
+    use crate::screens::test_utils::{FaultyRepository, key_event};
+
+    use super::*;
+
+    /// Seeds a stub with one project, two versions and one task in the first.
+    fn seeded() -> (StubRepository, i64, i64) {
+        let repo = StubRepository::default();
+        let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let version_id = repo.default_version_id(project_id).unwrap();
+        repo.create_version(project_id, "v0.2.0", "").unwrap();
+        repo.create_task(
+            project_id,
+            version_id,
+            "T1",
+            "",
+            Status::Todo,
+            Priority::Medium,
+        )
+        .unwrap();
+        (repo, project_id, version_id)
+    }
+
+    fn dashboard(repo: Arc<dyn Repository>, project_id: i64, version_id: i64) -> VersionDashboard {
+        let mut screen = VersionDashboard::new(repo);
+        screen.set_ids(project_id, version_id);
+        screen
+    }
+
+    /// A failed version lookup must surface as an error action and must not
+    /// open the popup, which would claim "this is the only version".
+    #[test]
+    fn move_popup_reports_the_error_instead_of_opening() {
+        let (inner, project_id, version_id) = seeded();
+        let repo = Arc::new(FaultyRepository {
+            inner,
+            fail_versions: true,
+            ..FaultyRepository::default()
+        });
+        let mut screen = dashboard(repo.clone(), project_id, version_id);
+        screen.init().unwrap();
+
+        let action = screen.handle_event(&key_event(KeyCode::Char('m')));
+
+        assert!(
+            matches!(action, Some(Action::ReportError { .. })),
+            "expected an error action, got {action:?}"
+        );
+        assert!(
+            screen.view.is_browsing(),
+            "the move popup must not open without the target list"
+        );
+    }
+
+    /// A failed dependency query must fail the load instead of rendering the
+    /// list with misleading (zero) dependency markers.
+    #[test]
+    fn dependency_query_failure_fails_the_load() {
+        let (inner, project_id, version_id) = seeded();
+        let repo = Arc::new(FaultyRepository {
+            inner,
+            fail_dependencies: true,
+            ..FaultyRepository::default()
+        });
+        let mut screen = dashboard(repo, project_id, version_id);
+
+        assert!(screen.init().is_err());
+    }
+
+    /// The same load succeeds when the query works, so the test above fails
+    /// for the right reason.
+    #[test]
+    fn dependency_markers_load_when_the_query_works() {
+        let (inner, project_id, version_id) = seeded();
+        let repo = Arc::new(FaultyRepository {
+            inner,
+            ..FaultyRepository::default()
+        });
+        let mut screen = dashboard(repo, project_id, version_id);
+
+        assert!(screen.init().is_ok());
     }
 }

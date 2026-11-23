@@ -444,6 +444,10 @@ impl App {
                 let result = summary_actions::export(self.repo.as_ref(), summary_id);
                 self.settle(result)
             }
+            Action::ReportError { message } => {
+                self.push_error(message);
+                None
+            }
             Action::Quit => None,
             Action::Noop => None,
         }

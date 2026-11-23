@@ -15,6 +15,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::application;
 use crate::db::repository::Repository;
+use crate::domain::error::AppError;
 use crate::domain::task::Status;
 use crate::screens::components::confirm_dialog::{ConfirmDialog, ConfirmState};
 use crate::screens::components::empty_state::EmptyState;
@@ -99,23 +100,17 @@ impl Component for ProjectListScreen {
             .iter()
             .map(|project| {
                 let project_id = project.id.unwrap_or(0);
-                let tasks = self
-                    .repo
-                    .list_tasks_by_project(project_id)
-                    .unwrap_or_default();
-                status_counts(&tasks)
+                let tasks = application::tasks::list_by_project(self.repo.as_ref(), project_id)?;
+                Ok(status_counts(&tasks))
             })
-            .collect();
+            .collect::<anyhow::Result<Vec<_>>>()?;
         self.version_counts = self
             .projects
             .iter()
             .map(|project| {
-                self.repo
-                    .list_versions_by_project(project.id.unwrap_or(0))
-                    .map(|versions| versions.len())
-                    .unwrap_or(0)
+                Ok(application::versions::list(self.repo.as_ref(), project.id.unwrap_or(0))?.len())
             })
-            .collect();
+            .collect::<Result<Vec<_>, AppError>>()?;
         self.selected = self.selected.min(self.projects.len().saturating_sub(1));
         self.confirm.close();
         Ok(())
