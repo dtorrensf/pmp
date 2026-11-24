@@ -32,7 +32,7 @@ fn for_each_repo(f: impl Fn(&str, &dyn Repository)) {
 }
 
 fn create_task(repo: &dyn Repository) -> i64 {
-    let project = repo.create_project("P", "").unwrap();
+    let project = repo.create_project("P", "", None).unwrap();
     repo.create_task(
         project.id.unwrap(),
         repo.default_version_id(project.id.unwrap()).unwrap(),
@@ -87,7 +87,7 @@ fn add_task_note_accepts_valid_content() {
 fn create_project_rejects_oversized_name() {
     for_each_repo(|name, repo| {
         let long = "a".repeat(MAX_NAME_LEN + 1);
-        let result = repo.create_project(&long, "");
+        let result = repo.create_project(&long, "", None);
         assert!(
             matches!(result, Err(AppError::Validation(_))),
             "{name}: expected Validation error for an oversized project name, got {result:?}"
@@ -98,7 +98,7 @@ fn create_project_rejects_oversized_name() {
 #[test]
 fn create_task_rejects_oversized_description() {
     for_each_repo(|name, repo| {
-        let project = repo.create_project("P", "").unwrap();
+        let project = repo.create_project("P", "", None).unwrap();
         let project_id = project.id.unwrap();
         let version_id = repo.default_version_id(project_id).unwrap();
         let long = "a".repeat(MAX_TEXT_LEN + 1);
@@ -133,7 +133,7 @@ fn add_task_note_rejects_oversized_content() {
 #[test]
 fn list_tasks_page_filters_in_storage_and_paginates() {
     for_each_repo(|name, repo| {
-        let project = repo.create_project("P", "").unwrap();
+        let project = repo.create_project("P", "", None).unwrap();
         let project_id = project.id.unwrap();
         let version_id = repo.default_version_id(project_id).unwrap();
         for (task_name, status, priority) in [
@@ -226,7 +226,7 @@ fn delete_task_cascades_notes() {
 #[test]
 fn create_version_round_trips_and_defaults_to_backlog() {
     for_each_repo(|name, repo| {
-        let project = repo.create_project("P", "").unwrap();
+        let project = repo.create_project("P", "", None).unwrap();
         let pid = project.id.unwrap();
         let version = repo.create_version(pid, "v1.0.0", "first").unwrap();
         assert!(version.id.is_some(), "{name}");
@@ -244,7 +244,7 @@ fn create_version_round_trips_and_defaults_to_backlog() {
 #[test]
 fn create_version_with_status_stores_the_status_in_a_single_write() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let version = repo
             .create_version_with_status(pid, "v1.0.0", "first", VersionStatus::Released)
             .unwrap();
@@ -262,7 +262,7 @@ fn create_version_with_status_stores_the_status_in_a_single_write() {
 #[test]
 fn create_version_rejects_empty_and_duplicate_names() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         assert!(
             matches!(
                 repo.create_version(pid, "  ", ""),
@@ -284,7 +284,7 @@ fn create_version_rejects_empty_and_duplicate_names() {
 #[test]
 fn new_project_has_default_version() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let versions = repo.list_versions_by_project(pid).unwrap();
         assert_eq!(versions.len(), 1, "{name}");
         assert_eq!(versions[0].name, "v0", "{name}");
@@ -294,7 +294,7 @@ fn new_project_has_default_version() {
 #[test]
 fn list_versions_orders_open_backlog_released_and_newest_first_within_each() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         // `v0` already exists as Backlog.
         let released = repo.create_version(pid, "v1.0.0", "").unwrap();
         repo.update_version(released.id.unwrap(), "v1.0.0", "", VersionStatus::Released)
@@ -324,7 +324,7 @@ fn list_versions_orders_open_backlog_released_and_newest_first_within_each() {
 #[test]
 fn update_version_rejects_duplicate_name_and_missing_id() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let a = repo.create_version(pid, "v1.0.0", "").unwrap();
         repo.create_version(pid, "v1.1.0", "").unwrap();
         assert!(
@@ -347,7 +347,7 @@ fn update_version_rejects_duplicate_name_and_missing_id() {
 #[test]
 fn next_version_name_follows_highest_semver() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         assert_eq!(repo.next_version_name(pid).unwrap(), "v0.1.0", "{name}");
         repo.create_version(pid, "v0.1.0", "").unwrap();
         repo.create_version(pid, "v1.2.3", "").unwrap();
@@ -358,8 +358,8 @@ fn next_version_name_follows_highest_semver() {
 #[test]
 fn create_task_rejects_version_from_another_project() {
     for_each_repo(|name, repo| {
-        let a = repo.create_project("A", "").unwrap().id.unwrap();
-        let b = repo.create_project("B", "").unwrap().id.unwrap();
+        let a = repo.create_project("A", "", None).unwrap().id.unwrap();
+        let b = repo.create_project("B", "", None).unwrap().id.unwrap();
         let foreign = repo.default_version_id(b).unwrap();
         assert!(
             matches!(
@@ -374,7 +374,7 @@ fn create_task_rejects_version_from_another_project() {
 #[test]
 fn add_dependency_rejects_cross_version_tasks() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v1 = repo.default_version_id(pid).unwrap();
         let v2 = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         let a = repo
@@ -397,10 +397,10 @@ fn add_dependency_rejects_cross_version_tasks() {
 #[test]
 fn delete_project_removes_its_versions_tasks_notes_dependencies_and_summaries() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v1 = repo.default_version_id(pid).unwrap();
         let v2 = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
-        let keep_pid = repo.create_project("Keep", "").unwrap().id.unwrap();
+        let keep_pid = repo.create_project("Keep", "", None).unwrap().id.unwrap();
         let keep_v = repo.default_version_id(keep_pid).unwrap();
 
         let v1_task = task_in_version(repo, pid, v1, "V1");
@@ -459,7 +459,7 @@ fn delete_project_removes_its_versions_tasks_notes_dependencies_and_summaries() 
 #[test]
 fn delete_version_removes_its_tasks_and_dependencies() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v1 = repo.default_version_id(pid).unwrap();
         let v2 = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         let keep = repo
@@ -505,7 +505,7 @@ fn task_in_version(repo: &dyn Repository, pid: i64, version: i64, name: &str) ->
 #[test]
 fn ids_are_scoped_per_table_like_sqlite_rowids() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let vid = repo.default_version_id(pid).unwrap();
         let tid = task_in_version(repo, pid, vid, "T");
         let note = repo.add_task_note(tid, "n").unwrap();
@@ -520,7 +520,7 @@ fn ids_are_scoped_per_table_like_sqlite_rowids() {
 #[test]
 fn set_dependencies_replaces_full_set_and_clears_on_empty() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v = repo.default_version_id(pid).unwrap();
         let a = task_in_version(repo, pid, v, "A");
         let b = task_in_version(repo, pid, v, "B");
@@ -538,7 +538,7 @@ fn set_dependencies_replaces_full_set_and_clears_on_empty() {
 #[test]
 fn set_dependencies_rejects_invalid_sets_without_changing_anything() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v1 = repo.default_version_id(pid).unwrap();
         let v2 = repo.create_version(pid, "v2", "").unwrap().id.unwrap();
         let a = task_in_version(repo, pid, v1, "A");
@@ -593,7 +593,7 @@ fn set_dependencies_rejects_invalid_sets_without_changing_anything() {
 #[test]
 fn set_dependencies_detects_cycles_inside_the_new_set() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v = repo.default_version_id(pid).unwrap();
         let a = task_in_version(repo, pid, v, "A");
         let b = task_in_version(repo, pid, v, "B");
@@ -642,7 +642,7 @@ fn update_task_priority_unknown_id_returns_not_found() {
 #[test]
 fn list_tasks_by_version_only_returns_that_version() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v1 = repo.default_version_id(pid).unwrap();
         let v2 = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         repo.create_task(pid, v1, "A", "", Status::Todo, Priority::Low)
@@ -659,7 +659,7 @@ fn list_tasks_by_version_only_returns_that_version() {
 #[test]
 fn move_task_reassigns_only_version_id() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v1 = repo.default_version_id(pid).unwrap();
         let v2 = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         let id = repo
@@ -685,7 +685,7 @@ fn move_task_reassigns_only_version_id() {
 #[test]
 fn move_task_keeps_notes() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v1 = repo.default_version_id(pid).unwrap();
         let v2 = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         let id = repo
@@ -704,8 +704,8 @@ fn move_task_keeps_notes() {
 #[test]
 fn move_task_rejects_version_from_another_project() {
     for_each_repo(|name, repo| {
-        let p1 = repo.create_project("P1", "").unwrap().id.unwrap();
-        let p2 = repo.create_project("P2", "").unwrap().id.unwrap();
+        let p1 = repo.create_project("P1", "", None).unwrap().id.unwrap();
+        let p2 = repo.create_project("P2", "", None).unwrap().id.unwrap();
         let v1 = repo.default_version_id(p1).unwrap();
         let foreign = repo.default_version_id(p2).unwrap();
         let id = repo
@@ -722,7 +722,7 @@ fn move_task_rejects_version_from_another_project() {
 #[test]
 fn move_task_rejects_tasks_with_dependencies_or_dependents() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v1 = repo.default_version_id(pid).unwrap();
         let v2 = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         let a = task_in_version(repo, pid, v1, "A");
@@ -753,7 +753,7 @@ fn move_task_rejects_tasks_with_dependencies_or_dependents() {
 #[test]
 fn move_task_to_current_version_is_noop() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v1 = repo.default_version_id(pid).unwrap();
         let a = task_in_version(repo, pid, v1, "A");
         let b = task_in_version(repo, pid, v1, "B");
@@ -768,7 +768,7 @@ fn move_task_to_current_version_is_noop() {
 #[test]
 fn move_task_unknown_task_or_version_returns_not_found() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v1 = repo.default_version_id(pid).unwrap();
         let id = task_in_version(repo, pid, v1, "A");
         let err = repo.move_task(999_999, v1).unwrap_err();
@@ -781,7 +781,7 @@ fn move_task_unknown_task_or_version_returns_not_found() {
 #[test]
 fn can_compact_rejects_non_done_tasks() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         let a = task_in_version(repo, pid, v, "A");
         assert!(
@@ -796,7 +796,7 @@ fn can_compact_rejects_non_done_tasks() {
 #[test]
 fn can_compact_rejects_empty_version_without_previous_summary() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         assert!(
             matches!(repo.can_compact(v), Err(AppError::Validation(_))),
@@ -808,7 +808,7 @@ fn can_compact_rejects_empty_version_without_previous_summary() {
 #[test]
 fn can_compact_accepts_empty_version_with_previous_summary() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         let a = task_in_version(repo, pid, v, "A");
         repo.update_task_status(a, Status::Done).unwrap();
@@ -822,7 +822,7 @@ fn can_compact_accepts_empty_version_with_previous_summary() {
 #[test]
 fn build_compact_snapshot_omits_previous_summary_on_first_compaction() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         let a = task_in_version(repo, pid, v, "A");
         repo.update_task_status(a, Status::Done).unwrap();
@@ -836,7 +836,7 @@ fn build_compact_snapshot_omits_previous_summary_on_first_compaction() {
 #[test]
 fn build_compact_snapshot_includes_previous_summary_recursively() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         let a = task_in_version(repo, pid, v, "A");
         repo.update_task_status(a, Status::Done).unwrap();
@@ -860,7 +860,7 @@ fn build_compact_snapshot_includes_previous_summary_recursively() {
 #[test]
 fn delete_done_tasks_by_version_cascades_notes_and_dependencies() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let keep_v = repo.default_version_id(pid).unwrap();
         let keep = task_in_version(repo, pid, keep_v, "Keep");
         let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
@@ -886,7 +886,7 @@ fn delete_done_tasks_by_version_cascades_notes_and_dependencies() {
 #[test]
 fn delete_done_tasks_by_version_keeps_todo_tasks_intact() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         let done = task_in_version(repo, pid, v, "Done");
         let todo = task_in_version(repo, pid, v, "Todo");
@@ -909,7 +909,7 @@ fn delete_done_tasks_by_version_keeps_todo_tasks_intact() {
 #[test]
 fn can_compact_rejects_in_progress_tasks() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         let done = task_in_version(repo, pid, v, "Done");
         let wip = task_in_version(repo, pid, v, "WIP");
@@ -925,7 +925,7 @@ fn can_compact_rejects_in_progress_tasks() {
 #[test]
 fn can_compact_rejects_only_todo_without_previous_summary() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         task_in_version(repo, pid, v, "A");
         task_in_version(repo, pid, v, "B");
@@ -939,7 +939,7 @@ fn can_compact_rejects_only_todo_without_previous_summary() {
 #[test]
 fn can_compact_accepts_mix_of_done_and_todo() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         let done = task_in_version(repo, pid, v, "Done");
         task_in_version(repo, pid, v, "Todo");
@@ -951,7 +951,7 @@ fn can_compact_accepts_mix_of_done_and_todo() {
 #[test]
 fn build_compact_snapshot_contains_only_done_tasks_with_their_notes_and_deps() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         let a = task_in_version(repo, pid, v, "A");
         let b = task_in_version(repo, pid, v, "B");
@@ -981,7 +981,7 @@ fn build_compact_snapshot_contains_only_done_tasks_with_their_notes_and_deps() {
 #[test]
 fn create_version_summary_rejects_duplicate_for_same_version() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         let a = task_in_version(repo, pid, v, "A");
         repo.update_task_status(a, Status::Done).unwrap();
@@ -1000,7 +1000,7 @@ fn create_version_summary_rejects_duplicate_for_same_version() {
 #[test]
 fn delete_version_summary_allows_recreate() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         let a = task_in_version(repo, pid, v, "A");
         repo.update_task_status(a, Status::Done).unwrap();
@@ -1022,7 +1022,7 @@ fn delete_version_summary_allows_recreate() {
 #[test]
 fn compact_flow_preserves_unique_invariant() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         let a = task_in_version(repo, pid, v, "A");
         repo.update_task_status(a, Status::Done).unwrap();
@@ -1092,7 +1092,7 @@ fn update_task_sets_and_clears_completed_at() {
 #[test]
 fn compact_version_replaces_summary_and_removes_only_done_tasks() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         let a = task_in_version(repo, pid, v, "A");
         let b = task_in_version(repo, pid, v, "B");
@@ -1118,7 +1118,7 @@ fn compact_version_replaces_summary_and_removes_only_done_tasks() {
 #[test]
 fn compact_version_on_unknown_version_changes_nothing() {
     for_each_repo(|name, repo| {
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         let a = task_in_version(repo, pid, v, "A");
         repo.update_task_status(a, Status::Done).unwrap();
@@ -1130,7 +1130,7 @@ fn compact_version_on_unknown_version_changes_nothing() {
 }
 
 fn two_tasks(repo: &dyn Repository) -> (i64, i64) {
-    let project = repo.create_project("P", "").unwrap();
+    let project = repo.create_project("P", "", None).unwrap();
     let pid = project.id.unwrap();
     let vid = repo.default_version_id(pid).unwrap();
     let create = |name: &str| {

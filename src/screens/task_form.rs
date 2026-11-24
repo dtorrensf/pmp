@@ -683,7 +683,7 @@ mod tests {
 
     fn setup() -> (Arc<StubRepository>, TaskForm, i64) {
         let repo = Arc::new(StubRepository::default());
-        let project = repo.create_project("Alpha", "").unwrap();
+        let project = repo.create_project("Alpha", "", None).unwrap();
         let project_id = project.id.unwrap();
         let mut form = TaskForm::new(repo.clone());
         form.set_version_id(repo.default_version_id(project_id).unwrap());
@@ -1516,7 +1516,7 @@ mod tests {
     #[test]
     fn dependency_picker_keeps_selected_task_visible() {
         let repo = Arc::new(StubRepository::default());
-        let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let project_id = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let version_id = repo.default_version_id(project_id).unwrap();
         for i in 0..30 {
             repo.create_task(
@@ -1554,7 +1554,7 @@ mod tests {
     #[test]
     fn page_keys_scroll_notes_only_when_notes_section_is_focused() {
         let repo = Arc::new(StubRepository::default());
-        let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let project_id = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let version_id = repo.default_version_id(project_id).unwrap();
         let task_id = repo
             .create_task(
@@ -1602,7 +1602,7 @@ mod tests {
     #[test]
     fn page_keys_scroll_dependencies_when_section_is_focused() {
         let repo = Arc::new(StubRepository::default());
-        let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let project_id = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let version_id = repo.default_version_id(project_id).unwrap();
         let task_id = repo
             .create_task(

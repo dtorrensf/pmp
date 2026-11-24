@@ -21,7 +21,7 @@ fn app_starts_at_entry_screen() {
 #[test]
 fn navigate_sets_previous_screen() {
     let (repo, mut app) = setup_app();
-    let project = repo.create_project("Alpha", "").unwrap();
+    let project = repo.create_project("Alpha", "", None).unwrap();
     let project_id = project.id.unwrap();
     app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id }));
     assert_eq!(app.screen, Screen::ProjectDashboard { project_id });
@@ -42,7 +42,7 @@ fn navigate_to_invalid_project_restores_previous_screen() {
 #[test]
 fn navigate_to_task_list_sets_screen_and_loads_tasks() {
     let (repo, mut app) = setup_app();
-    let project = repo.create_project("Alpha", "").unwrap();
+    let project = repo.create_project("Alpha", "", None).unwrap();
     let project_id = project.id.unwrap();
     repo.create_task(
         project_id,
@@ -71,7 +71,7 @@ fn navigate_to_task_list_sets_screen_and_loads_tasks() {
 #[test]
 fn active_component_returns_task_list_keybindings() {
     let (repo, mut app) = setup_app();
-    let project = repo.create_project("Alpha", "").unwrap();
+    let project = repo.create_project("Alpha", "", None).unwrap();
     let project_id = project.id.unwrap();
     app.dispatch(Action::Navigate(Screen::VersionDashboard {
         project_id,
@@ -92,7 +92,7 @@ fn refresh_reloads_entry_screen_projects() {
     let (repo, mut app) = setup_app();
     assert_eq!(app.screen, Screen::ProjectList);
     assert!(app.components.project_list.projects().is_empty());
-    repo.create_project("Alpha", "").unwrap();
+    repo.create_project("Alpha", "", None).unwrap();
     app.dispatch(Action::Refresh);
     assert_eq!(app.components.project_list.projects().len(), 1);
     assert!(app.error().is_none());
@@ -101,7 +101,7 @@ fn refresh_reloads_entry_screen_projects() {
 #[test]
 fn refresh_reloads_dashboard_tasks() {
     let (repo, mut app) = setup_app();
-    let project = repo.create_project("Alpha", "").unwrap();
+    let project = repo.create_project("Alpha", "", None).unwrap();
     let project_id = project.id.unwrap();
     app.dispatch(Action::Navigate(Screen::VersionDashboard {
         project_id,
@@ -125,7 +125,7 @@ fn refresh_reloads_dashboard_tasks() {
 #[test]
 fn refresh_reloads_task_list() {
     let (repo, mut app) = setup_app();
-    let project = repo.create_project("Alpha", "").unwrap();
+    let project = repo.create_project("Alpha", "", None).unwrap();
     let project_id = project.id.unwrap();
     app.dispatch(Action::Navigate(Screen::VersionDashboard {
         project_id,
@@ -149,7 +149,7 @@ fn refresh_reloads_task_list() {
 #[test]
 fn refresh_preserves_filter_dialog_and_reloads_tasks() {
     let (repo, mut app) = setup_app();
-    let project = repo.create_project("Alpha", "").unwrap();
+    let project = repo.create_project("Alpha", "", None).unwrap();
     let project_id = project.id.unwrap();
     app.dispatch(Action::Navigate(Screen::VersionDashboard {
         project_id,
@@ -187,7 +187,7 @@ fn refresh_preserves_filter_dialog_and_reloads_tasks() {
 #[test]
 fn refresh_after_add_task_note_preserves_form_state() {
     let (repo, mut app) = setup_app();
-    let project = repo.create_project("Alpha", "").unwrap();
+    let project = repo.create_project("Alpha", "", None).unwrap();
     let project_id = project.id.unwrap();
     let task = repo
         .create_task(
@@ -302,7 +302,7 @@ fn refresh_after_add_task_note_preserves_form_state() {
 #[test]
 fn esc_from_version_summary_returns_to_version_dashboard() {
     let (repo, mut app) = setup_app();
-    let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+    let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
     let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
     let task = repo
         .create_task(pid, v, "A", "", Status::Done, Priority::Low)

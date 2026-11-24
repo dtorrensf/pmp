@@ -337,6 +337,7 @@ impl App {
                 project_id,
                 name,
                 description,
+                working_dir,
             } => {
                 let return_to = self.components.project_form.return_to().clone();
                 let result = project_actions::save(
@@ -344,6 +345,7 @@ impl App {
                     project_id,
                     &name,
                     &description,
+                    &working_dir,
                     &return_to,
                 );
                 self.settle(result)

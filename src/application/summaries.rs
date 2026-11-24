@@ -104,7 +104,7 @@ mod tests {
 
     fn fixture(open_tasks: &[Status]) -> Fixture {
         let repo = StubRepository::default();
-        let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let project_id = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let version_id = repo
             .create_version(project_id, "1.0.0", "")
             .unwrap()

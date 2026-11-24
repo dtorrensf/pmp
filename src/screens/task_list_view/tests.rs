@@ -616,7 +616,7 @@ mod error_propagation {
     fn delete_opens_the_dialog_when_the_query_works() {
         use crate::db::repository::{ProjectRepository, RepositoryPolicy, TaskRepository};
         let repo = StubRepository::default();
-        let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let project_id = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let stored = repo
             .create_task(
                 project_id,

@@ -202,10 +202,16 @@ impl crate::db::repository::ProjectRepository for FaultyRepository {
     fn list_projects(&self) -> Result<Vec<Project>, AppError> {
         unexpected!("list_projects")
     }
-    fn create_project(&self, _: &str, _: &str) -> Result<Project, AppError> {
+    fn create_project(&self, _: &str, _: &str, _: Option<&str>) -> Result<Project, AppError> {
         unexpected!("create_project")
     }
-    fn update_project(&self, _: i64, _: &str, _: &str) -> Result<Project, AppError> {
+    fn update_project(
+        &self,
+        _: i64,
+        _: &str,
+        _: &str,
+        _: Option<&str>,
+    ) -> Result<Project, AppError> {
         unexpected!("update_project")
     }
     fn get_project(&self, id: i64) -> Result<Project, AppError> {

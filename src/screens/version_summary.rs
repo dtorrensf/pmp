@@ -226,7 +226,7 @@ mod tests {
 
     fn screen_with_summary() -> (VersionSummaryScreen, Arc<StubRepository>, i64, i64) {
         let repo = Arc::new(StubRepository::default());
-        let project = repo.create_project("Alpha", "").unwrap();
+        let project = repo.create_project("Alpha", "", None).unwrap();
         let pid = project.id.unwrap();
         let version = repo.create_version(pid, "v1.0.0", "").unwrap();
         let vid = version.id.unwrap();
@@ -304,7 +304,7 @@ mod tests {
     #[test]
     fn version_summary_scroll_snapshot() {
         let repo = Arc::new(StubRepository::default());
-        let project = repo.create_project("Alpha", "").unwrap();
+        let project = repo.create_project("Alpha", "", None).unwrap();
         let pid = project.id.unwrap();
         let version = repo.create_version(pid, "v1.0.0", "").unwrap();
         let vid = version.id.unwrap();

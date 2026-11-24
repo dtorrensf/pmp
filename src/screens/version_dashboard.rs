@@ -376,7 +376,7 @@ mod tests {
 
     fn setup_with_tasks() -> (Arc<StubRepository>, VersionDashboard, i64) {
         let repo = Arc::new(StubRepository::default());
-        let project = repo.create_project("Alpha", "First project").unwrap();
+        let project = repo.create_project("Alpha", "First project", None).unwrap();
         let project_id = project.id.unwrap();
         repo.create_task(
             project_id,
@@ -479,7 +479,7 @@ mod tests {
     #[test]
     fn init_clamps_selection_when_task_list_shrinks() {
         let repo = Arc::new(StubRepository::default());
-        let project = repo.create_project("Alpha", "").unwrap();
+        let project = repo.create_project("Alpha", "", None).unwrap();
         let project_id = project.id.unwrap();
         repo.create_task(
             project_id,
@@ -500,7 +500,7 @@ mod tests {
     #[test]
     fn init_on_empty_project_renders_no_tasks_message() {
         let repo = Arc::new(StubRepository::default());
-        let project = repo.create_project("Empty", "").unwrap();
+        let project = repo.create_project("Empty", "", None).unwrap();
         let project_id = project.id.unwrap();
         let mut screen = VersionDashboard::new(repo.clone());
         screen.set_ids(project_id, repo.default_version_id(project_id).unwrap());
@@ -533,7 +533,7 @@ mod tests {
     #[test]
     fn empty_list_renders_no_tasks_message() {
         let repo = Arc::new(StubRepository::default());
-        let project = repo.create_project("Empty", "").unwrap();
+        let project = repo.create_project("Empty", "", None).unwrap();
         let mut screen = VersionDashboard::new(repo.clone());
         screen.set_ids(
             project.id.unwrap(),
@@ -828,7 +828,7 @@ mod tests {
     #[test]
     fn tab_noop_when_empty_list() {
         let repo = Arc::new(StubRepository::default());
-        let project = repo.create_project("Empty", "").unwrap();
+        let project = repo.create_project("Empty", "", None).unwrap();
         let project_id = project.id.unwrap();
         let mut screen = VersionDashboard::new(repo.clone());
         screen.set_ids(project_id, repo.default_version_id(project_id).unwrap());
@@ -906,7 +906,7 @@ mod tests {
     #[test]
     fn long_task_list_scrolls_to_selected_task() {
         let repo = Arc::new(StubRepository::default());
-        let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let project_id = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let version_id = repo.default_version_id(project_id).unwrap();
         for i in 0..30 {
             repo.create_task(
@@ -971,7 +971,7 @@ mod tests {
     #[test]
     fn version_dashboard_empty_snapshot() {
         let repo = Arc::new(StubRepository::default());
-        let project = repo.create_project("Empty", "No tasks here").unwrap();
+        let project = repo.create_project("Empty", "No tasks here", None).unwrap();
         let mut screen = VersionDashboard::new(repo.clone());
         screen.set_ids(
             project.id.unwrap(),
@@ -1189,7 +1189,7 @@ mod tests {
     #[test]
     fn move_popup_without_selected_task_does_nothing() {
         let repo = Arc::new(StubRepository::default());
-        let project_id = repo.create_project("Empty", "").unwrap().id.unwrap();
+        let project_id = repo.create_project("Empty", "", None).unwrap().id.unwrap();
         repo.create_version(project_id, "v0.2.0", "").unwrap();
         let mut screen = VersionDashboard::new(repo.clone());
         screen.set_ids(project_id, repo.default_version_id(project_id).unwrap());
@@ -1285,7 +1285,7 @@ mod error_propagation_tests {
     /// Seeds a stub with one project, two versions and one task in the first.
     fn seeded() -> (StubRepository, i64, i64) {
         let repo = StubRepository::default();
-        let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let project_id = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let version_id = repo.default_version_id(project_id).unwrap();
         repo.create_version(project_id, "v0.2.0", "").unwrap();
         repo.create_task(

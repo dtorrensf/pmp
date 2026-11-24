@@ -112,6 +112,9 @@ pub struct ListVersionsParams {
 pub struct CreateProjectParams {
     pub name: String,
     pub description: Option<String>,
+    /// Absolute path of the project's workspace on disk. Optional: omit it for
+    /// a project that is not bound to a directory yet.
+    pub working_dir: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -120,6 +123,9 @@ pub struct UpdateProjectParams {
     pub name: String,
     /// New description. When omitted, the current description is kept.
     pub description: Option<String>,
+    /// New working directory. Omit it to keep the current one; send an empty
+    /// string to clear it. Relative paths are rejected.
+    pub working_dir: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -435,7 +441,7 @@ impl PmpServer {
 
     #[tool(
         name = "create_project",
-        description = "Create a new project. Use when the user asks to start a new project. Requires a non-empty name; description is optional. The project starts with a default version (see list_versions)."
+        description = "Create a new project. Use when the user asks to start a new project. Requires a non-empty name; description and working_dir are optional. working_dir must be an absolute path; it is normalized before storing. The project starts with a default version (see list_versions)."
     )]
     async fn create_project(
         &self,
@@ -451,6 +457,7 @@ impl PmpServer {
                     NewProject {
                         name: params.name,
                         description: params.description.unwrap_or_default(),
+                        working_dir: params.working_dir,
                     },
                 )
             },
@@ -460,7 +467,7 @@ impl PmpServer {
 
     #[tool(
         name = "update_project",
-        description = "Rename a project and/or change its description. Requires the project id and a non-empty name. Omit description to keep the current one. Use to edit project metadata instead of editing the database."
+        description = "Rename a project and/or change its description or working directory. Requires the project id and a non-empty name. Omit description or working_dir to keep the current value; send an empty working_dir to clear it. Relative paths are rejected. Use to edit project metadata instead of editing the database."
     )]
     async fn update_project(
         &self,
@@ -477,6 +484,7 @@ impl PmpServer {
                     ProjectEdit {
                         name: params.name,
                         description: params.description,
+                        working_dir: params.working_dir,
                     },
                 )
             },
@@ -1238,7 +1246,7 @@ mod tests {
 
     fn seeded_server() -> (PmpServer, Arc<StubRepository>, i64) {
         let (server, repo) = server();
-        let project = repo.create_project("Alpha", "").unwrap();
+        let project = repo.create_project("Alpha", "", None).unwrap();
         let pid = project.id.unwrap();
         repo.create_task(
             pid,
@@ -1303,7 +1311,7 @@ mod tests {
             Ok(vec![])
         }
 
-        fn create_project(&self, _: &str, _: &str) -> Result<Project, AppError> {
+        fn create_project(&self, _: &str, _: &str, _: Option<&str>) -> Result<Project, AppError> {
             unimplemented!()
         }
 
@@ -1311,7 +1319,13 @@ mod tests {
             Err(AppError::DbError(rusqlite::Error::InvalidQuery))
         }
 
-        fn update_project(&self, _: i64, _: &str, _: &str) -> Result<Project, AppError> {
+        fn update_project(
+            &self,
+            _: i64,
+            _: &str,
+            _: &str,
+            _: Option<&str>,
+        ) -> Result<Project, AppError> {
             unimplemented!()
         }
 
@@ -1527,8 +1541,8 @@ mod tests {
     #[tokio::test]
     async fn read_projects_returns_all_projects() {
         let (server, repo) = server();
-        repo.create_project("Alpha", "First project").unwrap();
-        repo.create_project("Beta", "Second project").unwrap();
+        repo.create_project("Alpha", "First project", None).unwrap();
+        repo.create_project("Beta", "Second project", None).unwrap();
         let result = server.read_resource("pmp://projects").await.unwrap();
         insta::assert_json_snapshot!(result);
     }
@@ -1536,7 +1550,7 @@ mod tests {
     #[tokio::test]
     async fn read_project_by_id_returns_project() {
         let (server, repo) = server();
-        let project = repo.create_project("Alpha", "First project").unwrap();
+        let project = repo.create_project("Alpha", "First project", None).unwrap();
         let result = server
             .read_resource(&format!("pmp://projects/{}", project.id.unwrap()))
             .await
@@ -1547,7 +1561,7 @@ mod tests {
     #[tokio::test]
     async fn read_project_tasks_returns_ordered_tasks() {
         let (server, repo) = server();
-        let project = repo.create_project("Alpha", "First project").unwrap();
+        let project = repo.create_project("Alpha", "First project", None).unwrap();
         let pid = project.id.unwrap();
         repo.create_task(
             pid,
@@ -1876,6 +1890,7 @@ mod tests {
                 .create_project(Parameters(CreateProjectParams {
                     name: "Gamma".to_string(),
                     description: Some("desc".to_string()),
+                    working_dir: None,
                 }))
                 .await
                 .unwrap(),
@@ -1895,6 +1910,7 @@ mod tests {
                 .create_project(Parameters(CreateProjectParams {
                     name: "Delta".to_string(),
                     description: None,
+                    working_dir: None,
                 }))
                 .await
                 .unwrap(),
@@ -1906,11 +1922,77 @@ mod tests {
             .create_project(Parameters(CreateProjectParams {
                 name: "   ".to_string(),
                 description: None,
+                working_dir: None,
             }))
             .await
             .unwrap();
         assert_eq!(rejected.is_error, Some(true));
         assert!(tool_text(rejected).contains("project name cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn create_and_update_project_manage_the_working_dir() {
+        let (server, _) = server();
+        let created: Project = serde_json::from_str(&tool_text(
+            server
+                .create_project(Parameters(CreateProjectParams {
+                    name: "Workspace".to_string(),
+                    description: None,
+                    working_dir: Some("/srv/repos/../repos/alpha ".to_string()),
+                }))
+                .await
+                .unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(
+            created.working_dir.as_deref(),
+            Some("/srv/repos/alpha"),
+            "the path is normalized before storing it"
+        );
+        let project_id = created.id.unwrap();
+
+        let renamed: Project = serde_json::from_str(&tool_text(
+            server
+                .update_project(Parameters(UpdateProjectParams {
+                    project_id,
+                    name: "Renamed".to_string(),
+                    description: None,
+                    working_dir: None,
+                }))
+                .await
+                .unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(
+            renamed.working_dir.as_deref(),
+            Some("/srv/repos/alpha"),
+            "omitting the field keeps the current directory"
+        );
+
+        let cleared: Project = serde_json::from_str(&tool_text(
+            server
+                .update_project(Parameters(UpdateProjectParams {
+                    project_id,
+                    name: "Renamed".to_string(),
+                    description: None,
+                    working_dir: Some(String::new()),
+                }))
+                .await
+                .unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(cleared.working_dir, None, "an empty value clears it");
+
+        let rejected = server
+            .create_project(Parameters(CreateProjectParams {
+                name: "Relative".to_string(),
+                description: None,
+                working_dir: Some("../repo".to_string()),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(rejected.is_error, Some(true));
+        assert!(tool_text(rejected).contains("absolute"));
     }
 
     #[tokio::test]
@@ -1970,13 +2052,18 @@ mod tests {
     #[tokio::test]
     async fn update_project_renames_and_keeps_description_when_omitted() {
         let (server, repo) = server();
-        let pid = repo.create_project("Old", "keep me").unwrap().id.unwrap();
+        let pid = repo
+            .create_project("Old", "keep me", None)
+            .unwrap()
+            .id
+            .unwrap();
         let renamed: Project = serde_json::from_str(&tool_text(
             server
                 .update_project(Parameters(UpdateProjectParams {
                     project_id: pid,
                     name: "New".to_string(),
                     description: None,
+                    working_dir: None,
                 }))
                 .await
                 .unwrap(),
@@ -1991,6 +2078,7 @@ mod tests {
                     project_id: pid,
                     name: "New".to_string(),
                     description: Some("changed".to_string()),
+                    working_dir: None,
                 }))
                 .await
                 .unwrap(),
@@ -2002,12 +2090,13 @@ mod tests {
     #[tokio::test]
     async fn update_project_rejects_empty_name_and_unknown_project() {
         let (server, repo) = server();
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let empty = server
             .update_project(Parameters(UpdateProjectParams {
                 project_id: pid,
                 name: "  ".to_string(),
                 description: None,
+                working_dir: None,
             }))
             .await
             .unwrap();
@@ -2019,6 +2108,7 @@ mod tests {
                 project_id: 999,
                 name: "X".to_string(),
                 description: None,
+                working_dir: None,
             }))
             .await
             .unwrap();
@@ -2139,8 +2229,8 @@ mod tests {
     #[tokio::test]
     async fn list_projects_returns_all_projects() {
         let (server, repo) = server();
-        repo.create_project("Alpha", "").unwrap();
-        repo.create_project("Beta", "").unwrap();
+        repo.create_project("Alpha", "", None).unwrap();
+        repo.create_project("Beta", "", None).unwrap();
         let projects: Vec<Project> =
             serde_json::from_str(&tool_text(server.list_projects().await.unwrap())).unwrap();
         let names: Vec<&str> = projects.iter().map(|p| p.name.as_str()).collect();
@@ -2281,7 +2371,7 @@ mod tests {
     #[tokio::test]
     async fn update_task_status_rejects_done_with_incomplete_deps() {
         let (server, repo) = server();
-        let project = repo.create_project("Alpha", "").unwrap();
+        let project = repo.create_project("Alpha", "", None).unwrap();
         let pid = project.id.unwrap();
         let task_a = repo
             .create_task(
@@ -2326,7 +2416,7 @@ mod tests {
     #[tokio::test]
     async fn update_task_status_allows_done_when_deps_complete() {
         let (server, repo) = server();
-        let project = repo.create_project("Alpha", "").unwrap();
+        let project = repo.create_project("Alpha", "", None).unwrap();
         let pid = project.id.unwrap();
         let task_a = repo
             .create_task(
@@ -2381,7 +2471,7 @@ mod tests {
     #[tokio::test]
     async fn create_task_creates_todo_task_with_composed_description() {
         let (server, repo) = server();
-        let project = repo.create_project("Alpha", "").unwrap();
+        let project = repo.create_project("Alpha", "", None).unwrap();
         let pid = project.id.unwrap();
 
         let result = server
@@ -2412,7 +2502,7 @@ mod tests {
     #[tokio::test]
     async fn create_task_uses_provided_priority() {
         let (server, repo) = server();
-        let project = repo.create_project("Alpha", "").unwrap();
+        let project = repo.create_project("Alpha", "", None).unwrap();
         let pid = project.id.unwrap();
 
         let result = server
@@ -2455,7 +2545,7 @@ mod tests {
     #[tokio::test]
     async fn create_task_empty_name_returns_tool_error() {
         let (server, repo) = server();
-        let project = repo.create_project("Alpha", "").unwrap();
+        let project = repo.create_project("Alpha", "", None).unwrap();
         let pid = project.id.unwrap();
 
         let result = server
@@ -2478,7 +2568,7 @@ mod tests {
     #[tokio::test]
     async fn create_task_rejects_oversized_arguments() {
         let (server, repo) = server();
-        let project = repo.create_project("Alpha", "").unwrap();
+        let project = repo.create_project("Alpha", "", None).unwrap();
         let pid = project.id.unwrap();
 
         let result = server
@@ -2520,7 +2610,7 @@ mod tests {
     #[tokio::test]
     async fn task_dependencies_can_be_added_read_and_removed() {
         let (server, repo) = server();
-        let project = repo.create_project("Alpha", "").unwrap();
+        let project = repo.create_project("Alpha", "", None).unwrap();
         let pid = project.id.unwrap();
         let dependency = repo
             .create_task(
@@ -2584,7 +2674,7 @@ mod tests {
     #[tokio::test]
     async fn add_task_dependency_rejects_cycles() {
         let (server, repo) = server();
-        let project = repo.create_project("Alpha", "").unwrap();
+        let project = repo.create_project("Alpha", "", None).unwrap();
         let pid = project.id.unwrap();
         let a = repo
             .create_task(
@@ -2707,7 +2797,7 @@ mod tests {
     #[tokio::test]
     async fn preview_compact_version_returns_snapshot_json() {
         let (server, repo) = server();
-        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let version = repo.create_version(pid, "v1.0.0", "").unwrap();
         let task = repo
             .create_task(
@@ -2737,7 +2827,7 @@ mod tests {
     #[tokio::test]
     async fn compact_version_rejects_tasks_in_progress() {
         let (server, repo) = server();
-        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let version = repo.create_version(pid, "v1.0.0", "").unwrap();
         let vid = version.id.unwrap();
         repo.create_task(pid, vid, "Done", "", Status::Done, Priority::Low)
@@ -2761,7 +2851,7 @@ mod tests {
     #[tokio::test]
     async fn compact_version_rejects_empty_version_without_summary() {
         let (server, repo) = server();
-        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let version = repo.create_version(pid, "v1.0.0", "").unwrap();
         let vid = version.id.unwrap();
 
@@ -2780,7 +2870,7 @@ mod tests {
     #[tokio::test]
     async fn compact_version_compacts_and_marks_released() {
         let (server, repo) = server();
-        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let version = repo.create_version(pid, "v1.0.0", "").unwrap();
         let vid = version.id.unwrap();
         let task = repo
@@ -2809,7 +2899,7 @@ mod tests {
     #[tokio::test]
     async fn compact_version_respects_mark_released_false() {
         let (server, repo) = server();
-        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let version = repo.create_version(pid, "v1.0.0", "").unwrap();
         let vid = version.id.unwrap();
         repo.update_version(vid, "v1.0.0", "", VersionStatus::Open)
@@ -2833,7 +2923,7 @@ mod tests {
     #[tokio::test]
     async fn list_read_and_delete_version_summaries() {
         let (server, repo) = server();
-        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let version = repo.create_version(pid, "v1.0.0", "").unwrap();
         let vid = version.id.unwrap();
         repo.create_task(pid, vid, "Done", "", Status::Done, Priority::Low)
@@ -2879,7 +2969,7 @@ mod tests {
     #[tokio::test]
     async fn delete_version_summary_rejects_mismatched_version() {
         let (server, repo) = server();
-        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let vid = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         repo.create_task(pid, vid, "Done", "", Status::Done, Priority::Low)
             .unwrap();
@@ -2908,7 +2998,7 @@ mod tests {
     #[tokio::test]
     async fn create_version_applies_the_shared_name_rule() {
         let (server, repo) = server();
-        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let blank = server
             .create_version(Parameters(CreateVersionParams {
                 project_id: pid,
@@ -2925,7 +3015,7 @@ mod tests {
     #[tokio::test]
     async fn read_version_summary_rejects_mismatched_version() {
         let (server, repo) = server();
-        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let version = repo.create_version(pid, "v1.0.0", "").unwrap();
         let vid = version.id.unwrap();
         repo.create_task(pid, vid, "Done", "", Status::Done, Priority::Low)
@@ -2955,7 +3045,7 @@ mod tests {
     #[tokio::test]
     async fn compact_version_recompacts_preserving_previous_summary() {
         let (server, repo) = server();
-        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let version = repo.create_version(pid, "v1.0.0", "").unwrap();
         let vid = version.id.unwrap();
 
@@ -3000,7 +3090,7 @@ mod tests {
     #[tokio::test]
     async fn partial_compaction_freezes_only_done_and_keeps_version_open() {
         let (server, repo) = server();
-        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let vid = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         let done = repo
             .create_task(pid, vid, "Done", "", Status::Done, Priority::Low)
@@ -3035,7 +3125,7 @@ mod tests {
     #[tokio::test]
     async fn compact_version_rejects_when_in_progress_even_with_done_tasks() {
         let (server, repo) = server();
-        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let vid = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         repo.create_task(pid, vid, "Done", "", Status::Done, Priority::Low)
             .unwrap();
@@ -3058,7 +3148,7 @@ mod tests {
     #[tokio::test]
     async fn partial_then_full_compaction_releases_version() {
         let (server, repo) = server();
-        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let vid = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         repo.create_task(pid, vid, "First", "", Status::Done, Priority::Low)
             .unwrap();
@@ -3100,7 +3190,7 @@ mod tests {
     #[tokio::test]
     async fn export_version_summary_writes_markdown_with_mermaid() {
         let (server, repo) = server();
-        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let version = repo.create_version(pid, "v1.0.0", "").unwrap();
         let vid = version.id.unwrap();
         let task = repo
@@ -3140,7 +3230,7 @@ mod tests {
     #[tokio::test]
     async fn mcp_server_e2e_lifecycle_and_list_tasks() {
         let repo = Arc::new(StubRepository::default());
-        let project = repo.create_project("Alpha", "").unwrap();
+        let project = repo.create_project("Alpha", "", None).unwrap();
         let pid = project.id.unwrap();
         let default_version = repo.default_version_id(pid).unwrap();
         repo.create_task(
@@ -3289,7 +3379,7 @@ mod tests {
     #[tokio::test]
     async fn list_task_notes_returns_notes_for_task() {
         let (server, repo) = server();
-        let project = repo.create_project("Alpha", "").unwrap();
+        let project = repo.create_project("Alpha", "", None).unwrap();
         let pid = project.id.unwrap();
         let task = repo
             .create_task(
@@ -3330,7 +3420,7 @@ mod tests {
     #[tokio::test]
     async fn add_task_note_appends_note() {
         let (server, repo) = server();
-        let project = repo.create_project("Alpha", "").unwrap();
+        let project = repo.create_project("Alpha", "", None).unwrap();
         let pid = project.id.unwrap();
         let task = repo
             .create_task(
@@ -3365,7 +3455,7 @@ mod tests {
     #[tokio::test]
     async fn add_task_note_empty_content_returns_error() {
         let (server, repo) = server();
-        let project = repo.create_project("Alpha", "").unwrap();
+        let project = repo.create_project("Alpha", "", None).unwrap();
         let pid = project.id.unwrap();
         let task = repo
             .create_task(
@@ -3408,7 +3498,7 @@ mod tests {
     #[tokio::test]
     async fn delete_task_note_removes_note() {
         let (server, repo) = server();
-        let project = repo.create_project("Alpha", "").unwrap();
+        let project = repo.create_project("Alpha", "", None).unwrap();
         let pid = project.id.unwrap();
         let task = repo
             .create_task(
@@ -3456,8 +3546,8 @@ mod tests {
     #[tokio::test]
     async fn create_task_rejects_version_from_another_project() {
         let (server, repo) = server();
-        let alpha = repo.create_project("Alpha", "").unwrap().id.unwrap();
-        let beta = repo.create_project("Beta", "").unwrap().id.unwrap();
+        let alpha = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
+        let beta = repo.create_project("Beta", "", None).unwrap().id.unwrap();
         let foreign_version = repo.default_version_id(beta).unwrap();
         let result = server
             .create_task(Parameters(CreateTaskParams {
@@ -3478,7 +3568,7 @@ mod tests {
     #[tokio::test]
     async fn list_tasks_filters_by_version_id() {
         let (server, repo) = server();
-        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let v0 = repo.default_version_id(pid).unwrap();
         let v1 = repo.create_version(pid, "v0.1.0", "").unwrap().id.unwrap();
         repo.create_task(pid, v0, "Old", "", Status::Todo, Priority::Low)
@@ -3504,8 +3594,8 @@ mod tests {
     #[tokio::test]
     async fn list_tasks_rejects_version_from_another_project() {
         let (server, repo) = server();
-        let alpha = repo.create_project("Alpha", "").unwrap().id.unwrap();
-        let beta = repo.create_project("Beta", "").unwrap().id.unwrap();
+        let alpha = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
+        let beta = repo.create_project("Beta", "", None).unwrap().id.unwrap();
         let result = server
             .list_tasks(Parameters(ListTasksParams {
                 project_id: alpha,
@@ -3524,7 +3614,7 @@ mod tests {
     #[tokio::test]
     async fn list_versions_returns_open_then_backlog_then_released() {
         let (server, repo) = server();
-        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let released = repo.create_version(pid, "v0.1.0", "").unwrap().id.unwrap();
         repo.update_version(released, "v0.1.0", "", VersionStatus::Released)
             .unwrap();
@@ -3555,7 +3645,7 @@ mod tests {
     #[tokio::test]
     async fn create_version_defaults_to_backlog_and_accepts_other_statuses() {
         let (server, repo) = server();
-        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let backlog = server
             .create_version(Parameters(CreateVersionParams {
                 project_id: pid,
@@ -3597,7 +3687,7 @@ mod tests {
     #[tokio::test]
     async fn create_version_rejects_empty_duplicate_and_invalid_status() {
         let (server, repo) = server();
-        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let params = |name: &str, status: Option<VersionStatus>| CreateVersionParams {
             project_id: pid,
             name: name.to_string(),
@@ -3634,7 +3724,7 @@ mod tests {
     #[tokio::test]
     async fn update_version_renames_and_keeps_omitted_fields() {
         let (server, repo) = server();
-        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let version_id = repo
             .create_version(pid, "v0.1.0", "keep me")
             .unwrap()
@@ -3676,7 +3766,7 @@ mod tests {
     #[tokio::test]
     async fn update_version_rejects_empty_duplicate_unknown_and_invalid_status() {
         let (server, repo) = server();
-        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let version_id = repo.create_version(pid, "v0.1.0", "").unwrap().id.unwrap();
         repo.create_version(pid, "v0.2.0", "").unwrap();
 
@@ -3740,7 +3830,7 @@ mod tests {
     #[tokio::test]
     async fn read_project_versions_returns_versions() {
         let (server, repo) = server();
-        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         repo.create_version(pid, "v0.1.0", "").unwrap();
         let text = resource_text(
             server
@@ -3755,7 +3845,7 @@ mod tests {
     #[tokio::test]
     async fn read_version_tasks_returns_only_that_version() {
         let (server, repo) = server();
-        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let v0 = repo.default_version_id(pid).unwrap();
         let v1 = repo.create_version(pid, "v0.1.0", "").unwrap().id.unwrap();
         repo.create_task(pid, v1, "Scoped", "", Status::Todo, Priority::Low)
@@ -3786,7 +3876,7 @@ mod tests {
     #[tokio::test]
     async fn project_version_flow_create_version_task_and_filter() {
         let (server, repo) = server();
-        let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
 
         let version: Version = serde_json::from_str(&tool_text(
             server

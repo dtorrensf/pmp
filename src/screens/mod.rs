@@ -126,6 +126,8 @@ pub enum Action {
         project_id: Option<i64>,
         name: String,
         description: String,
+        /// Raw text of the working directory field; empty clears it.
+        working_dir: String,
     },
     SaveTask {
         task_id: Option<i64>,
@@ -234,7 +236,7 @@ pub mod tests {
     #[test]
     fn stub_repository_implements_repository() {
         let repo = StubRepository::default();
-        let project = repo.create_project("Test", "Desc").unwrap();
+        let project = repo.create_project("Test", "Desc", None).unwrap();
         assert_eq!(project.name, "Test");
         assert!(project.id.is_some());
     }
@@ -242,7 +244,7 @@ pub mod tests {
     #[test]
     fn stub_delete_task_removes_task_and_dependency_rows() {
         let repo = StubRepository::default();
-        let project = repo.create_project("P", "").unwrap();
+        let project = repo.create_project("P", "", None).unwrap();
         let project_id = project.id.unwrap();
         let a = repo
             .create_task(
@@ -278,7 +280,7 @@ pub mod tests {
     #[test]
     fn stub_get_dependents_returns_reverse_lookup() {
         let repo = StubRepository::default();
-        let project = repo.create_project("P", "").unwrap();
+        let project = repo.create_project("P", "", None).unwrap();
         let project_id = project.id.unwrap();
         let a = repo
             .create_task(
@@ -325,7 +327,7 @@ pub mod tests {
     #[test]
     fn stub_list_tasks_by_project_orders_priority_desc_created_desc() {
         let repo = StubRepository::default();
-        let project = repo.create_project("P", "").unwrap();
+        let project = repo.create_project("P", "", None).unwrap();
         let project_id = project.id.unwrap();
         let low = repo
             .create_task(

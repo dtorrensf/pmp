@@ -18,6 +18,7 @@ fn success_toast_expires_after_three_seconds() {
         project_id: None,
         name: "Beta".to_string(),
         description: String::new(),
+        working_dir: String::new(),
     });
     let shown = app.toasts().current().unwrap();
     assert_eq!(shown.severity, Severity::Success);
@@ -66,6 +67,7 @@ fn esc_passes_through_when_the_toast_is_not_an_error() {
         project_id: None,
         name: "Beta".to_string(),
         description: String::new(),
+        working_dir: String::new(),
     });
     assert!(!app.handle_toast_key(KeyCode::Esc));
     assert!(app.toasts().current().is_some());
@@ -74,7 +76,7 @@ fn esc_passes_through_when_the_toast_is_not_an_error() {
 #[test]
 fn successful_actions_emit_a_confirmation() {
     let (repo, mut app) = setup_app();
-    let project_id = repo.create_project("P", "").unwrap().id.unwrap();
+    let project_id = repo.create_project("P", "", None).unwrap().id.unwrap();
     let version_id = repo
         .create_version(project_id, "v1", "")
         .unwrap()
@@ -127,6 +129,7 @@ fn noop_and_quit_keep_an_unread_error() {
         project_id: None,
         name: " ".to_string(),
         description: String::new(),
+        working_dir: String::new(),
     });
     assert_eq!(app.dispatch(Action::Noop), None);
     assert_eq!(app.dispatch(Action::Quit), None);
@@ -140,11 +143,13 @@ fn successful_save_clears_a_previous_error() {
         project_id: None,
         name: " ".to_string(),
         description: String::new(),
+        working_dir: String::new(),
     });
     app.dispatch(Action::SaveProject {
         project_id: None,
         name: "Beta".to_string(),
         description: String::new(),
+        working_dir: String::new(),
     });
     assert_eq!(app.error(), None);
 }
@@ -202,6 +207,7 @@ fn report_error_replaces_a_previous_error_instead_of_piling_up() {
         project_id: None,
         name: " ".to_string(),
         description: String::new(),
+        working_dir: String::new(),
     });
 
     app.dispatch(Action::ReportError {

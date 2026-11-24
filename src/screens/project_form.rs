@@ -23,6 +23,7 @@ pub struct ProjectForm {
     project_id: Option<i64>,
     name: String,
     description: TextArea<'static>,
+    working_dir: String,
     active_field: u8,
     return_to: Screen,
 }
@@ -37,6 +38,7 @@ impl ProjectForm {
             project_id: None,
             name: String::new(),
             description: TextArea::default(),
+            working_dir: String::new(),
             active_field: 0,
             return_to: Screen::ProjectList,
         }
@@ -56,12 +58,13 @@ impl ProjectForm {
 }
 
 impl ProjectForm {
-    /// Routes an editing key to the active field (name or description).
+    /// Routes an editing key to the active field (name, description or
+    /// working directory).
     fn handle_field_key(&mut self, code: KeyCode) {
-        let target = if self.active_field == 0 {
-            TextTarget::Line(&mut self.name)
-        } else {
-            TextTarget::Area(&mut self.description)
+        let target = match self.active_field {
+            0 => TextTarget::Line(&mut self.name),
+            1 => TextTarget::Area(&mut self.description),
+            _ => TextTarget::Line(&mut self.working_dir),
         };
         handle_text_keys(target, code);
     }
@@ -76,9 +79,11 @@ impl Component for ProjectForm {
             textarea.insert_str(&project.description);
             textarea.move_cursor(CursorMove::Jump(0, 0));
             self.description = textarea;
+            self.working_dir = project.working_dir.unwrap_or_default();
         } else {
             self.name.clear();
             self.description = TextArea::default();
+            self.working_dir.clear();
         }
         self.active_field = 0;
         Ok(())
@@ -95,12 +100,13 @@ impl Component for ProjectForm {
                 project_id: self.project_id,
                 name: self.name.clone(),
                 description: self.description.lines().join("\n"),
+                working_dir: self.working_dir.clone(),
             });
         }
         match code {
             KeyCode::Esc => Some(Action::Navigate(self.return_to.clone())),
             KeyCode::Tab => {
-                self.active_field = next_field(self.active_field, 2);
+                self.active_field = next_field(self.active_field, 3);
                 None
             }
             _ => {
@@ -123,6 +129,7 @@ impl Component for ProjectForm {
             .constraints([
                 Constraint::Length(3),
                 Constraint::Length(7),
+                Constraint::Length(3),
                 Constraint::Min(0),
             ])
             .split(inner);
@@ -146,10 +153,28 @@ impl Component for ProjectForm {
             ui,
         );
 
-        if self.active_field == 0 {
-            let x = field_cursor_x(chunks[0], &self.name);
-            let y = chunks[0].y + 1;
-            frame.set_cursor_position((x, y));
+        render_field(
+            frame,
+            chunks[2],
+            "Working dir",
+            &self.working_dir,
+            self.active_field == 2,
+            None,
+            ui,
+        );
+
+        match self.active_field {
+            0 => {
+                let x = field_cursor_x(chunks[0], &self.name);
+                let y = chunks[0].y + 1;
+                frame.set_cursor_position((x, y));
+            }
+            2 => {
+                let x = field_cursor_x(chunks[2], &self.working_dir);
+                let y = chunks[2].y + 1;
+                frame.set_cursor_position((x, y));
+            }
+            _ => {}
         }
     }
 }
@@ -180,7 +205,7 @@ mod tests {
 
     fn form_for_edit() -> ProjectForm {
         let repo = Arc::new(StubRepository::default());
-        let project = repo.create_project("Alpha", "Description").unwrap();
+        let project = repo.create_project("Alpha", "Description", None).unwrap();
         let mut form = ProjectForm::new(repo.clone());
         form.set_project_id(project.id);
         form.init().unwrap();
@@ -190,7 +215,7 @@ mod tests {
     #[test]
     fn edit_keeps_leading_blank_line_in_description() {
         let repo = Arc::new(StubRepository::default());
-        let project = repo.create_project("Alpha", "\nSecond line").unwrap();
+        let project = repo.create_project("Alpha", "\nSecond line", None).unwrap();
         let mut form = ProjectForm::new(repo.clone());
         form.set_project_id(project.id);
         form.init().unwrap();
@@ -215,6 +240,53 @@ mod tests {
     }
 
     #[test]
+    fn init_loads_and_clears_the_working_dir() {
+        let repo = Arc::new(StubRepository::default());
+        let project = repo
+            .create_project("Alpha", "Desc", Some("/srv/repos/alpha"))
+            .unwrap();
+        let mut form = ProjectForm::new(repo.clone());
+        form.set_project_id(project.id);
+        form.init().unwrap();
+        assert_eq!(form.working_dir, "/srv/repos/alpha");
+
+        form.set_project_id(None);
+        form.init().unwrap();
+        assert!(form.working_dir.is_empty());
+    }
+
+    #[test]
+    fn typing_in_the_third_field_edits_the_working_dir() {
+        let mut form = form_for_create();
+        form.handle_event(&key_event(KeyCode::Tab));
+        form.handle_event(&key_event(KeyCode::Tab));
+        assert_eq!(form.active_field, 2);
+        for c in "/tmp/repo".chars() {
+            form.handle_event(&char_event(c));
+        }
+        assert_eq!(form.working_dir, "/tmp/repo");
+        assert_eq!(form.name, "");
+
+        let action = form.handle_event(&ctrl_s_event());
+        assert!(matches!(
+            action,
+            Some(Action::SaveProject { working_dir, .. }) if working_dir == "/tmp/repo"
+        ));
+    }
+
+    #[test]
+    fn renders_the_working_dir_field() {
+        let form = form_for_create();
+        let backend = TestBackend::new(60, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| form.render(frame, frame.area(), &UiContext::default()))
+            .unwrap();
+        let text = buffer_to_string(terminal.backend().buffer());
+        assert!(text.contains("Working dir"), "{text}");
+    }
+
+    #[test]
     fn edit_places_cursor_at_start_of_description() {
         let form = form_for_edit();
         assert_eq!(form.description.cursor(), (0, 0));
@@ -233,11 +305,13 @@ mod tests {
             project_id,
             name,
             description,
+            working_dir,
         }) = &action
         {
             assert!(project_id.is_none());
             assert_eq!(name, "Alpha");
             assert!(description.is_empty());
+            assert!(working_dir.is_empty());
         } else {
             panic!("Expected SaveProject action");
         }
@@ -246,7 +320,7 @@ mod tests {
     #[test]
     fn submit_with_project_id_emits_save_project_with_id() {
         let repo = Arc::new(StubRepository::default());
-        let project = repo.create_project("Alpha", "Desc").unwrap();
+        let project = repo.create_project("Alpha", "Desc", None).unwrap();
         let mut form = ProjectForm::new(repo);
         form.set_project_id(project.id);
         form.init().unwrap();
@@ -281,6 +355,8 @@ mod tests {
         assert_eq!(form.active_field, 0);
         form.handle_event(&key_event(KeyCode::Tab));
         assert_eq!(form.active_field, 1);
+        form.handle_event(&key_event(KeyCode::Tab));
+        assert_eq!(form.active_field, 2);
         form.handle_event(&key_event(KeyCode::Tab));
         assert_eq!(form.active_field, 0);
     }
@@ -376,7 +452,7 @@ mod tests {
     #[test]
     fn long_description_wraps_within_block() {
         let repo = Arc::new(StubRepository::default());
-        let project = repo.create_project("Alpha", "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu").unwrap();
+        let project = repo.create_project("Alpha", "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu", None).unwrap();
         let mut form = ProjectForm::new(repo.clone());
         form.set_project_id(project.id);
         form.init().unwrap();
@@ -407,7 +483,7 @@ mod tests {
     #[test]
     fn project_form_long_description_snapshot() {
         let repo = Arc::new(StubRepository::default());
-        let project = repo.create_project("Alpha", "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu").unwrap();
+        let project = repo.create_project("Alpha", "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu", None).unwrap();
         let mut form = ProjectForm::new(repo.clone());
         form.set_project_id(project.id);
         form.init().unwrap();

@@ -214,7 +214,7 @@ mod tests {
 
     fn repo_with_project() -> (Arc<StubRepository>, i64) {
         let repo = Arc::new(StubRepository::default());
-        let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let project_id = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         (repo, project_id)
     }
 

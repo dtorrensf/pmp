@@ -49,7 +49,7 @@ fn open_update_banner_requires_an_update() {
 #[test]
 fn question_mark_opens_help_only_outside_text_forms() {
     let repo = Arc::new(StubRepository::default());
-    let project_id = repo.create_project("P", "").unwrap().id.unwrap();
+    let project_id = repo.create_project("P", "", None).unwrap().id.unwrap();
     let mut app = App::new(repo);
     assert!(app.handle_help_key(KeyCode::Char('?'), KeyModifiers::SHIFT));
     assert!(app.is_help_open());
@@ -78,7 +78,7 @@ fn help_swallows_keys_with_ctrl_modifiers_too() {
 #[test]
 fn accepts_text_input_only_on_forms() {
     let repo = Arc::new(StubRepository::default());
-    let project_id = repo.create_project("P", "").unwrap().id.unwrap();
+    let project_id = repo.create_project("P", "", None).unwrap().id.unwrap();
     let mut app = App::new(repo);
     assert!(!app.screen.accepts_text_input());
     app.dispatch(Action::Navigate(Screen::ProjectForm { project_id: None }));

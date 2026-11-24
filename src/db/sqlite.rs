@@ -226,7 +226,7 @@ impl ProjectRepository for SqliteRepository {
     fn list_projects(&self) -> Result<Vec<Project>, AppError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(&format!(
-            "SELECT id, name, description, created_at FROM projects ORDER BY id LIMIT {LIST_LIMIT}"
+            "SELECT id, name, description, created_at, working_dir FROM projects ORDER BY id LIMIT {LIST_LIMIT}"
         ))?;
         let projects = stmt
             .query_map([], project_from_row)?
@@ -234,15 +234,21 @@ impl ProjectRepository for SqliteRepository {
         check_list_size(projects)
     }
 
-    fn create_project(&self, name: &str, description: &str) -> Result<Project, AppError> {
+    fn create_project(
+        &self,
+        name: &str,
+        description: &str,
+        working_dir: Option<&str>,
+    ) -> Result<Project, AppError> {
         validation::validate_name("project", name)?;
         validation::validate_text("project", "description", description)?;
         // The project and its default version land together: a retry must never
         // leave a project without the version every screen expects.
         let id = self.write_transaction(|tx| {
             tx.execute(
-                "INSERT INTO projects (name, description) VALUES (?1, ?2)",
-                [name, description],
+                "INSERT INTO projects (name, description, working_dir) \
+                 VALUES (?1, ?2, ?3)",
+                params![name, description, working_dir],
             )?;
             let id = tx.last_insert_rowid();
             // Every project starts with the default version in Backlog, as the V3
@@ -260,13 +266,20 @@ impl ProjectRepository for SqliteRepository {
         self.get_project(id)
     }
 
-    fn update_project(&self, id: i64, name: &str, description: &str) -> Result<Project, AppError> {
+    fn update_project(
+        &self,
+        id: i64,
+        name: &str,
+        description: &str,
+        working_dir: Option<&str>,
+    ) -> Result<Project, AppError> {
         validation::validate_name("project", name)?;
         validation::validate_text("project", "description", description)?;
         self.write(|conn| {
             conn.execute(
-                "UPDATE projects SET name = ?1, description = ?2 WHERE id = ?3",
-                params![name, description, id],
+                "UPDATE projects SET name = ?1, description = ?2, working_dir = ?3 \
+                 WHERE id = ?4",
+                params![name, description, working_dir, id],
             )?;
             Ok(())
         })?;
@@ -276,7 +289,7 @@ impl ProjectRepository for SqliteRepository {
     fn get_project(&self, id: i64) -> Result<Project, AppError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.query_row(
-            "SELECT id, name, description, created_at FROM projects WHERE id = ?1",
+            "SELECT id, name, description, created_at, working_dir FROM projects WHERE id = ?1",
             [id],
             project_from_row,
         )
@@ -848,6 +861,7 @@ fn project_from_row(row: &Row) -> Result<Project, rusqlite::Error> {
         name: row.get(1)?,
         description: row.get(2)?,
         created_at: row.get(3)?,
+        working_dir: row.get(4)?,
     })
 }
 
@@ -961,7 +975,7 @@ mod tests {
     #[test]
     fn compact_version_rolls_back_when_summary_insert_fails() {
         let (_dir, repo) = setup();
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         let done = repo
             .create_task(pid, v, "Done", "", Status::Done, Priority::Low)
@@ -1076,7 +1090,7 @@ mod tests {
             )
             .unwrap();
 
-        assert!(repo.create_project("P", "").is_err());
+        assert!(repo.create_project("P", "", None).is_err());
         assert!(
             repo.list_projects().unwrap().is_empty(),
             "the project must not survive without its default version"
@@ -1086,7 +1100,7 @@ mod tests {
     #[test]
     fn set_dependencies_rolls_back_as_a_whole() {
         let (_dir, repo) = setup();
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let version = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         let task = |name: &str| {
             repo.create_task(pid, version, name, "", Status::Todo, Priority::Medium)
@@ -1130,6 +1144,51 @@ mod tests {
     }
 
     #[test]
+    fn migrations_add_a_nullable_project_working_dir() {
+        let (_dir, repo) = setup();
+        let conn = repo.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let (count, notnull): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(MAX(\"notnull\"), 0) \
+                 FROM pragma_table_info('projects') WHERE name = 'working_dir';",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "the column exists");
+        assert_eq!(notnull, 0, "legacy projects keep it NULL");
+
+        conn.execute("INSERT INTO projects (name) VALUES ('Legacy')", [])
+            .unwrap();
+        let legacy_id = conn.last_insert_rowid();
+        drop(conn);
+
+        let legacy = repo.get_project(legacy_id).unwrap();
+        assert_eq!(legacy.working_dir, None);
+    }
+
+    #[test]
+    fn project_working_dir_round_trips_and_updates() {
+        let (_dir, repo) = setup();
+        let created = repo
+            .create_project("P", "", Some("/srv/repos/alpha"))
+            .unwrap();
+        assert_eq!(created.working_dir.as_deref(), Some("/srv/repos/alpha"));
+        let project_id = created.id.unwrap();
+
+        let listed = repo.list_projects().unwrap();
+        assert_eq!(listed[0].working_dir.as_deref(), Some("/srv/repos/alpha"));
+
+        let updated = repo
+            .update_project(project_id, "P", "", Some("/srv/repos/beta"))
+            .unwrap();
+        assert_eq!(updated.working_dir.as_deref(), Some("/srv/repos/beta"));
+
+        let cleared = repo.update_project(project_id, "P", "", None).unwrap();
+        assert_eq!(cleared.working_dir, None);
+    }
+
+    #[test]
     fn migrations_create_versions_and_require_task_version() {
         let (_dir, repo) = setup();
         let conn = repo.conn.lock().unwrap_or_else(|e| e.into_inner());
@@ -1154,7 +1213,7 @@ mod tests {
     #[test]
     fn task_carries_version_id_from_database() {
         let (_dir, repo) = setup();
-        let project = repo.create_project("P", "").unwrap();
+        let project = repo.create_project("P", "", None).unwrap();
         let project_id = project.id.unwrap();
         let version_id: i64 = repo
             .conn
@@ -1203,7 +1262,7 @@ mod tests {
         let (_dir, repo) = setup();
         assert!(repo.list_projects().unwrap().is_empty());
 
-        let created = repo.create_project("Alpha", "First project").unwrap();
+        let created = repo.create_project("Alpha", "First project", None).unwrap();
         assert_eq!(created.name, "Alpha");
         assert!(created.id.is_some());
 
@@ -1218,7 +1277,7 @@ mod tests {
     #[test]
     fn task_crud() {
         let (_dir, repo) = setup();
-        let project = repo.create_project("P", "").unwrap();
+        let project = repo.create_project("P", "", None).unwrap();
         let project_id = project.id.unwrap();
 
         let task = repo
@@ -1264,7 +1323,7 @@ mod tests {
     #[test]
     fn update_task_status_sets_and_clears_completed_at() {
         let (_dir, repo) = setup();
-        let project = repo.create_project("P", "").unwrap();
+        let project = repo.create_project("P", "", None).unwrap();
         let project_id = project.id.unwrap();
         let task = repo
             .create_task(
@@ -1291,7 +1350,7 @@ mod tests {
     #[test]
     fn add_dependency_is_idempotent() {
         let (_dir, repo) = setup();
-        let project = repo.create_project("P", "").unwrap();
+        let project = repo.create_project("P", "", None).unwrap();
         let a = repo
             .create_task(
                 project.id.unwrap(),
@@ -1323,7 +1382,7 @@ mod tests {
     #[test]
     fn add_dependency_rejects_self_loop() {
         let (_dir, repo) = setup();
-        let project = repo.create_project("P", "").unwrap();
+        let project = repo.create_project("P", "", None).unwrap();
         let a = repo
             .create_task(
                 project.id.unwrap(),
@@ -1341,7 +1400,7 @@ mod tests {
     #[test]
     fn add_dependency_rejects_cycles_via_dfs() {
         let (_dir, repo) = setup();
-        let project = repo.create_project("P", "").unwrap();
+        let project = repo.create_project("P", "", None).unwrap();
         let a = repo
             .create_task(
                 project.id.unwrap(),
@@ -1384,7 +1443,7 @@ mod tests {
     #[test]
     fn has_incomplete_dependencies_is_true_for_unfinished_dep() {
         let (_dir, repo) = setup();
-        let project = repo.create_project("P", "").unwrap();
+        let project = repo.create_project("P", "", None).unwrap();
         let a = repo
             .create_task(
                 project.id.unwrap(),
@@ -1416,7 +1475,7 @@ mod tests {
     #[test]
     fn delete_task_removes_task() {
         let (_dir, repo) = setup();
-        let project = repo.create_project("P", "").unwrap();
+        let project = repo.create_project("P", "", None).unwrap();
         let project_id = project.id.unwrap();
         let task = repo
             .create_task(
@@ -1438,7 +1497,7 @@ mod tests {
     #[test]
     fn delete_task_cascades_dependency_rows() {
         let (_dir, repo) = setup();
-        let project = repo.create_project("P", "").unwrap();
+        let project = repo.create_project("P", "", None).unwrap();
         let project_id = project.id.unwrap();
         let a = repo
             .create_task(
@@ -1472,7 +1531,7 @@ mod tests {
     #[test]
     fn get_dependents_returns_reverse_lookup() {
         let (_dir, repo) = setup();
-        let project = repo.create_project("P", "").unwrap();
+        let project = repo.create_project("P", "", None).unwrap();
         let project_id = project.id.unwrap();
         let a = repo
             .create_task(
@@ -1517,7 +1576,7 @@ mod tests {
     #[test]
     fn list_tasks_by_project_orders_priority_desc_created_desc() {
         let (_dir, repo) = setup();
-        let project = repo.create_project("P", "").unwrap();
+        let project = repo.create_project("P", "", None).unwrap();
         let project_id = project.id.unwrap();
         let low = repo
             .create_task(
@@ -1576,7 +1635,7 @@ mod tests {
     #[test]
     fn task_notes_crud() {
         let (_dir, repo) = setup();
-        let project = repo.create_project("P", "").unwrap();
+        let project = repo.create_project("P", "", None).unwrap();
         let project_id = project.id.unwrap();
         let task = repo
             .create_task(
@@ -1606,7 +1665,7 @@ mod tests {
     #[test]
     fn delete_task_cascades_notes() {
         let (_dir, repo) = setup();
-        let project = repo.create_project("P", "").unwrap();
+        let project = repo.create_project("P", "", None).unwrap();
         let project_id = project.id.unwrap();
         let task = repo
             .create_task(
@@ -1645,7 +1704,7 @@ mod tests {
         assert_eq!(ALL_STATUSES.len(), status_slot(Status::Done) + 1);
 
         let (_dir, repo) = setup();
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let vid = repo.default_version_id(pid).unwrap();
         for status in ALL_STATUSES {
             let task = repo
@@ -1675,7 +1734,7 @@ mod tests {
         assert_eq!(ALL_STATUSES.len(), status_slot(VersionStatus::Released) + 1);
 
         let (_dir, repo) = setup();
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         for (i, status) in ALL_STATUSES.into_iter().enumerate() {
             let name = format!("v{i}.0.0");
             let version = repo.create_version(pid, &name, "").unwrap();
@@ -1689,7 +1748,7 @@ mod tests {
     #[test]
     fn migrations_default_new_versions_to_backlog() {
         let (_dir, repo) = setup();
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         // The TUI/MCP set the status explicitly, so the schema default covers
         // rows inserted by any other path.
         repo.conn

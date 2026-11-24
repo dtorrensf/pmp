@@ -12,6 +12,7 @@ fn create_project_navigates_to_dashboard_on_success() {
         project_id: None,
         name: "Alpha".to_string(),
         description: "".to_string(),
+        working_dir: String::new(),
     });
     assert!(
         matches!(
@@ -35,6 +36,7 @@ fn create_project_empty_name_sets_error() {
         project_id: None,
         name: "   ".to_string(),
         description: "".to_string(),
+        working_dir: String::new(),
     });
     assert_eq!(next, None);
     assert_eq!(app.error(), Some("Project name cannot be empty"));

@@ -16,7 +16,7 @@ use super::*;
 #[test]
 fn save_version_rejects_blank_name_without_touching_repo() {
     let repo = Arc::new(StubRepository::default());
-    let project_id = repo.create_project("P", "").unwrap().id.unwrap();
+    let project_id = repo.create_project("P", "", None).unwrap().id.unwrap();
     let mut app = App::new(repo.clone());
     let next = app.dispatch(Action::SaveVersion {
         version_id: None,
@@ -33,7 +33,7 @@ fn save_version_rejects_blank_name_without_touching_repo() {
 #[test]
 fn save_version_creates_and_returns_to_project_dashboard() {
     let repo = Arc::new(StubRepository::default());
-    let project_id = repo.create_project("P", "").unwrap().id.unwrap();
+    let project_id = repo.create_project("P", "", None).unwrap().id.unwrap();
     let mut app = App::new(repo.clone());
     let next = app.dispatch(Action::SaveVersion {
         version_id: None,
@@ -64,7 +64,7 @@ fn save_version_creates_and_returns_to_project_dashboard() {
 #[test]
 fn save_version_creates_in_backlog_when_chosen() {
     let repo = Arc::new(StubRepository::default());
-    let project_id = repo.create_project("P", "").unwrap().id.unwrap();
+    let project_id = repo.create_project("P", "", None).unwrap().id.unwrap();
     let mut app = App::new(repo.clone());
     let next = app.dispatch(Action::SaveVersion {
         version_id: None,
@@ -89,7 +89,7 @@ fn save_version_creates_in_backlog_when_chosen() {
 #[test]
 fn v_from_project_dashboard_opens_version_edit_form() {
     let repo = Arc::new(StubRepository::default());
-    let project_id = repo.create_project("P", "").unwrap().id.unwrap();
+    let project_id = repo.create_project("P", "", None).unwrap().id.unwrap();
     let version_id = repo.default_version_id(project_id).unwrap();
     let mut app = App::new(repo.clone());
     app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id }));
@@ -122,7 +122,7 @@ fn v_from_project_dashboard_opens_version_edit_form() {
 #[test]
 fn save_version_with_id_updates_and_returns_to_dashboard() {
     let repo = Arc::new(StubRepository::default());
-    let project_id = repo.create_project("P", "").unwrap().id.unwrap();
+    let project_id = repo.create_project("P", "", None).unwrap().id.unwrap();
     let version_id = repo
         .create_version(project_id, "v1.0.0", "old")
         .unwrap()
@@ -150,7 +150,7 @@ fn save_version_with_id_updates_and_returns_to_dashboard() {
 #[test]
 fn save_version_with_duplicate_name_keeps_old_name_and_sets_error() {
     let repo = Arc::new(StubRepository::default());
-    let project_id = repo.create_project("P", "").unwrap().id.unwrap();
+    let project_id = repo.create_project("P", "", None).unwrap().id.unwrap();
     let version_id = repo
         .create_version(project_id, "v1.0.0", "")
         .unwrap()
@@ -173,7 +173,7 @@ fn save_version_with_duplicate_name_keeps_old_name_and_sets_error() {
 #[test]
 fn delete_version_removes_it_and_navigates_to_project() {
     let repo = Arc::new(StubRepository::default());
-    let project_id = repo.create_project("P", "").unwrap().id.unwrap();
+    let project_id = repo.create_project("P", "", None).unwrap().id.unwrap();
     let version_id = repo
         .create_version(project_id, "v1.0.0", "")
         .unwrap()
@@ -191,7 +191,7 @@ fn delete_version_removes_it_and_navigates_to_project() {
 #[test]
 fn export_version_summary_writes_file_and_sets_notice() {
     let (repo, mut app) = setup_app();
-    let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+    let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
     let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
     let task = repo
         .create_task(pid, v, "A", "", Status::Done, Priority::Low)

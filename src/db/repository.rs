@@ -43,9 +43,20 @@ pub(crate) fn check_list_size<T>(rows: Vec<T>) -> Result<Vec<T>, AppError> {
 pub trait ProjectRepository {
     fn list_projects(&self) -> Result<Vec<Project>, AppError>;
 
-    fn create_project(&self, name: &str, description: &str) -> Result<Project, AppError>;
+    fn create_project(
+        &self,
+        name: &str,
+        description: &str,
+        working_dir: Option<&str>,
+    ) -> Result<Project, AppError>;
 
-    fn update_project(&self, id: i64, name: &str, description: &str) -> Result<Project, AppError>;
+    fn update_project(
+        &self,
+        id: i64,
+        name: &str,
+        description: &str,
+        working_dir: Option<&str>,
+    ) -> Result<Project, AppError>;
 
     fn get_project(&self, id: i64) -> Result<Project, AppError>;
 

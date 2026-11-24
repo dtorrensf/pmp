@@ -132,7 +132,12 @@ impl ProjectRepository for StubRepository {
             .clone())
     }
 
-    fn create_project(&self, name: &str, description: &str) -> Result<Project, AppError> {
+    fn create_project(
+        &self,
+        name: &str,
+        description: &str,
+        working_dir: Option<&str>,
+    ) -> Result<Project, AppError> {
         validation::validate_name("project", name)?;
         validation::validate_text("project", "description", description)?;
         let project = Project {
@@ -140,6 +145,7 @@ impl ProjectRepository for StubRepository {
             name: name.to_string(),
             description: description.to_string(),
             created_at: "now".to_string(),
+            working_dir: working_dir.map(str::to_string),
         };
         self.projects
             .lock()
@@ -159,7 +165,13 @@ impl ProjectRepository for StubRepository {
         Ok(project)
     }
 
-    fn update_project(&self, id: i64, name: &str, description: &str) -> Result<Project, AppError> {
+    fn update_project(
+        &self,
+        id: i64,
+        name: &str,
+        description: &str,
+        working_dir: Option<&str>,
+    ) -> Result<Project, AppError> {
         validation::validate_name("project", name)?;
         validation::validate_text("project", "description", description)?;
         let mut projects = self.projects.lock().unwrap_or_else(|e| e.into_inner());
@@ -169,6 +181,7 @@ impl ProjectRepository for StubRepository {
             .ok_or(AppError::NotFound)?;
         project.name = name.to_string();
         project.description = description.to_string();
+        project.working_dir = working_dir.map(str::to_string);
         Ok(project.clone())
     }
 
@@ -790,7 +803,7 @@ mod tests {
 
     fn repository_with_tasks() -> (StubRepository, [i64; 3]) {
         let repo = StubRepository::default();
-        let project = repo.create_project("Alpha", "").unwrap();
+        let project = repo.create_project("Alpha", "", None).unwrap();
         let project_id = project.id.unwrap();
         let ids = [
             repo.create_task(
@@ -865,7 +878,7 @@ mod tests {
     #[test]
     fn stub_task_notes_crud() {
         let repo = StubRepository::default();
-        let project = repo.create_project("Alpha", "").unwrap();
+        let project = repo.create_project("Alpha", "", None).unwrap();
         let project_id = project.id.unwrap();
         let task = repo
             .create_task(
@@ -895,7 +908,7 @@ mod tests {
     #[test]
     fn stub_delete_task_cascades_notes() {
         let repo = StubRepository::default();
-        let project = repo.create_project("Alpha", "").unwrap();
+        let project = repo.create_project("Alpha", "", None).unwrap();
         let project_id = project.id.unwrap();
         let task = repo
             .create_task(

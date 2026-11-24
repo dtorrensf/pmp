@@ -56,7 +56,7 @@ fn concurrent_writers_on_the_same_file_lose_no_writes() {
                 barrier.wait();
                 for index in 0..per_worker {
                     let project = repo
-                        .create_project(&format!("p{worker}-{index}"), "")
+                        .create_project(&format!("p{worker}-{index}"), "", None)
                         .unwrap();
                     let project_id = project.id.unwrap();
                     let version_id = default_version(&repo, project_id);
@@ -92,7 +92,7 @@ fn concurrent_edges_never_close_a_cycle() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("shared.db");
     let repo = open(&path);
-    let project_id = repo.create_project("P", "").unwrap().id.unwrap();
+    let project_id = repo.create_project("P", "", None).unwrap().id.unwrap();
     let version_id = default_version(&repo, project_id);
     let task = |name: &str| {
         repo.create_task(
@@ -144,7 +144,7 @@ fn concurrent_compactions_keep_one_summary_and_drop_done_tasks() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("shared.db");
     let repo = open(&path);
-    let project_id = repo.create_project("P", "").unwrap().id.unwrap();
+    let project_id = repo.create_project("P", "", None).unwrap().id.unwrap();
     let version_id = default_version(&repo, project_id);
     let done = repo
         .create_task(
@@ -208,7 +208,7 @@ fn a_retry_succeeds_once_the_other_connection_releases_the_lock() {
 
     // Fails immediately inside SQLite, so the retry loop is what waits for the
     // other connection instead of surfacing `db_busy`.
-    repo.create_project("P", "").unwrap();
+    repo.create_project("P", "", None).unwrap();
     holder.join().unwrap();
     assert_eq!(repo.list_projects().unwrap().len(), 1);
 }
@@ -230,7 +230,7 @@ fn a_lock_that_outlasts_the_budget_reports_db_busy() {
 
     let holder = Connection::open(&path).unwrap();
     holder.execute_batch("BEGIN IMMEDIATE").unwrap();
-    let error = repo.create_project("P", "").unwrap_err();
+    let error = repo.create_project("P", "", None).unwrap_err();
     assert_eq!(error.code(), ErrorCode::DbBusy);
     assert!(error.is_retryable());
     assert!(
@@ -239,5 +239,5 @@ fn a_lock_that_outlasts_the_budget_reports_db_busy() {
     );
 
     holder.execute_batch("ROLLBACK").unwrap();
-    drop(repo.create_project("P", "").unwrap());
+    drop(repo.create_project("P", "", None).unwrap());
 }

@@ -443,7 +443,7 @@ mod tests {
 
     fn setup_app_with_project() -> (Arc<StubRepository>, App) {
         let repo = Arc::new(StubRepository::default());
-        let project = repo.create_project("Alpha", "First project").unwrap();
+        let project = repo.create_project("Alpha", "First project", None).unwrap();
         let project_id = project.id.unwrap();
         repo.create_task(
             project_id,
@@ -510,6 +510,7 @@ mod tests {
             project_id: None,
             name: "   ".to_string(),
             description: String::new(),
+            working_dir: String::new(),
         });
 
         let text = render_app_to_string(&mut app);

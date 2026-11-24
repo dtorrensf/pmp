@@ -13,9 +13,9 @@ expression: "render_to_string(&form, 40, 20)"
 ││  quebec romeo sierra tango uniform ││
 ││  victor whiskey xray yankee zulu   ││
 │└────────────────────────────────────┘│
-│                                      │
-│                                      │
-│                                      │
+│┌Working dir─────────────────────────┐│
+││                                    ││
+│└────────────────────────────────────┘│
 │                                      │
 │                                      │
 │                                      │

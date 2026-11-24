@@ -13,7 +13,7 @@ use super::*;
 #[test]
 fn save_task_navigates_to_dashboard_on_success() {
     let (repo, mut app) = setup_app();
-    let project = repo.create_project("Alpha", "").unwrap();
+    let project = repo.create_project("Alpha", "", None).unwrap();
     let project_id = project.id.unwrap();
     app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id }));
     app.dispatch(Action::Navigate(Screen::TaskForm {
@@ -39,7 +39,7 @@ fn save_task_navigates_to_dashboard_on_success() {
 #[test]
 fn save_task_empty_name_sets_error() {
     let (repo, mut app) = setup_app();
-    let project = repo.create_project("Alpha", "").unwrap();
+    let project = repo.create_project("Alpha", "", None).unwrap();
     let project_id = project.id.unwrap();
     let next = app.dispatch(Action::SaveTask {
         task_id: None,
@@ -57,7 +57,7 @@ fn save_task_empty_name_sets_error() {
 #[test]
 fn update_task_status_to_done_with_incomplete_deps_is_blocked() {
     let (repo, mut app) = setup_app();
-    let project = repo.create_project("Alpha", "").unwrap();
+    let project = repo.create_project("Alpha", "", None).unwrap();
     let project_id = project.id.unwrap();
     let a = repo
         .create_task(
@@ -98,7 +98,7 @@ fn update_task_status_to_done_with_incomplete_deps_is_blocked() {
 #[test]
 fn update_task_status_to_done_without_deps_clears_error() {
     let (repo, mut app) = setup_app();
-    let project = repo.create_project("Alpha", "").unwrap();
+    let project = repo.create_project("Alpha", "", None).unwrap();
     let project_id = project.id.unwrap();
     let a = repo
         .create_task(
@@ -125,7 +125,7 @@ fn update_task_status_to_done_without_deps_clears_error() {
 #[test]
 fn update_task_status_dispatch_returns_navigate_to_refresh_dashboard() {
     let (repo, mut app) = setup_app();
-    let project = repo.create_project("Alpha", "").unwrap();
+    let project = repo.create_project("Alpha", "", None).unwrap();
     let project_id = project.id.unwrap();
     let task = repo
         .create_task(
@@ -173,7 +173,7 @@ fn update_task_status_dispatch_returns_navigate_to_refresh_dashboard() {
 #[test]
 fn save_task_from_task_list_returns_to_task_list() {
     let (repo, mut app) = setup_app();
-    let project = repo.create_project("Alpha", "").unwrap();
+    let project = repo.create_project("Alpha", "", None).unwrap();
     let project_id = project.id.unwrap();
     app.dispatch(Action::Navigate(Screen::VersionDashboard {
         project_id,
@@ -209,7 +209,7 @@ fn save_task_from_task_list_returns_to_task_list() {
 #[test]
 fn save_task_with_task_id_calls_update_task() {
     let (repo, mut app) = setup_app();
-    let project = repo.create_project("Alpha", "").unwrap();
+    let project = repo.create_project("Alpha", "", None).unwrap();
     let project_id = project.id.unwrap();
     let task = repo
         .create_task(
@@ -250,7 +250,7 @@ fn save_task_with_task_id_calls_update_task() {
 #[test]
 fn save_task_with_task_id_and_done_status_blocked_by_incomplete_deps() {
     let (repo, mut app) = setup_app();
-    let project = repo.create_project("Alpha", "").unwrap();
+    let project = repo.create_project("Alpha", "", None).unwrap();
     let project_id = project.id.unwrap();
     let a = repo
         .create_task(
@@ -296,7 +296,7 @@ fn save_task_with_task_id_and_done_status_blocked_by_incomplete_deps() {
 #[test]
 fn delete_task_dispatch_calls_repo_delete_task() {
     let (repo, mut app) = setup_app();
-    let project = repo.create_project("Alpha", "").unwrap();
+    let project = repo.create_project("Alpha", "", None).unwrap();
     let project_id = project.id.unwrap();
     let task = repo
         .create_task(
@@ -322,7 +322,7 @@ fn delete_task_dispatch_calls_repo_delete_task() {
 #[test]
 fn update_task_status_from_task_list_returns_to_task_list() {
     let (repo, mut app) = setup_app();
-    let project = repo.create_project("Alpha", "").unwrap();
+    let project = repo.create_project("Alpha", "", None).unwrap();
     let project_id = project.id.unwrap();
     let task = repo
         .create_task(
@@ -367,7 +367,7 @@ fn update_task_status_from_task_list_returns_to_task_list() {
 #[test]
 fn delete_task_from_task_list_returns_to_task_list() {
     let (repo, mut app) = setup_app();
-    let project = repo.create_project("Alpha", "").unwrap();
+    let project = repo.create_project("Alpha", "", None).unwrap();
     let project_id = project.id.unwrap();
     let task = repo
         .create_task(
@@ -396,7 +396,7 @@ fn delete_task_from_task_list_returns_to_task_list() {
 #[test]
 fn delete_task_clamps_selection_to_new_last() {
     let (repo, mut app) = setup_app();
-    let project = repo.create_project("Alpha", "").unwrap();
+    let project = repo.create_project("Alpha", "", None).unwrap();
     let project_id = project.id.unwrap();
     let t1 = repo
         .create_task(
@@ -448,7 +448,7 @@ fn delete_task_clamps_selection_to_new_last() {
 #[test]
 fn add_task_note_success_refreshes_current_screen() {
     let (repo, mut app) = setup_app();
-    let project = repo.create_project("Alpha", "").unwrap();
+    let project = repo.create_project("Alpha", "", None).unwrap();
     let project_id = project.id.unwrap();
     let task = repo
         .create_task(
@@ -479,7 +479,7 @@ fn add_task_note_success_refreshes_current_screen() {
 #[test]
 fn add_task_note_empty_content_sets_error() {
     let (repo, mut app) = setup_app();
-    let project = repo.create_project("Alpha", "").unwrap();
+    let project = repo.create_project("Alpha", "", None).unwrap();
     let project_id = project.id.unwrap();
     let task = repo
         .create_task(
@@ -503,7 +503,7 @@ fn add_task_note_empty_content_sets_error() {
 #[test]
 fn add_task_note_then_reopen_form_shows_note() {
     let (repo, mut app) = setup_app();
-    let project = repo.create_project("Alpha", "").unwrap();
+    let project = repo.create_project("Alpha", "", None).unwrap();
     let project_id = project.id.unwrap();
     let task = repo
         .create_task(
@@ -543,7 +543,7 @@ fn add_task_note_then_reopen_form_shows_note() {
 #[test]
 fn move_task_moves_it_and_refreshes_version_dashboard() {
     let (repo, mut app) = setup_app();
-    let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+    let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
     let v1 = repo.default_version_id(pid).unwrap();
     let v2 = repo.create_version(pid, "v0.2.0", "").unwrap().id.unwrap();
     let task = repo
@@ -571,7 +571,7 @@ fn move_task_moves_it_and_refreshes_version_dashboard() {
 #[test]
 fn move_task_with_dependencies_sets_error_and_keeps_version() {
     let (repo, mut app) = setup_app();
-    let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+    let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
     let v1 = repo.default_version_id(pid).unwrap();
     let v2 = repo.create_version(pid, "v0.2.0", "").unwrap().id.unwrap();
     let a = repo
@@ -601,7 +601,7 @@ fn move_task_with_dependencies_sets_error_and_keeps_version() {
 #[test]
 fn move_task_outside_version_dashboard_is_ignored() {
     let (repo, mut app) = setup_app();
-    let pid = repo.create_project("Alpha", "").unwrap().id.unwrap();
+    let pid = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
     let v1 = repo.default_version_id(pid).unwrap();
     let v2 = repo.create_version(pid, "v0.2.0", "").unwrap().id.unwrap();
     let task = repo

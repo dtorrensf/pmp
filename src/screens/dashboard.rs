@@ -347,6 +347,7 @@ impl Component for ProjectDashboard {
             .as_ref()
             .map(|p| p.description.as_str())
             .unwrap_or("");
+        let working_dir = self.project.as_ref().and_then(|p| p.working_dir.as_deref());
 
         let outer_block = Block::default()
             .title(project_name.to_string())
@@ -366,11 +367,22 @@ impl Component for ProjectDashboard {
 
         let desc_block = Block::default().borders(Borders::BOTTOM);
         let desc_inner = desc_block.inner(chunks[0]);
-        let desc_offset = self.description_scroll.sync(
-            wrapped_line_count(project_description, desc_inner.width),
-            desc_inner.height,
-        );
-        let desc = Paragraph::new(Text::from(project_description.to_string()))
+        let (desc_text, desc_lines) = match working_dir {
+            Some(dir) => (
+                Text::from(vec![
+                    Line::styled(dir.to_string(), ui.muted_style()),
+                    Line::raw(project_description.to_string()),
+                ]),
+                wrapped_line_count(dir, desc_inner.width)
+                    + wrapped_line_count(project_description, desc_inner.width),
+            ),
+            None => (
+                Text::from(project_description.to_string()),
+                wrapped_line_count(project_description, desc_inner.width),
+            ),
+        };
+        let desc_offset = self.description_scroll.sync(desc_lines, desc_inner.height);
+        let desc = Paragraph::new(desc_text)
             .block(desc_block)
             .wrap(Wrap { trim: true })
             .scroll((desc_offset, 0));
@@ -506,7 +518,7 @@ mod tests {
     fn setup_with_tasks() -> (Arc<StubRepository>, ProjectDashboard, i64) {
         let repo = Arc::new(StubRepository::default());
         let project_id = repo
-            .create_project("Alpha", "First project")
+            .create_project("Alpha", "First project", None)
             .unwrap()
             .id
             .unwrap();
@@ -615,9 +627,26 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_shows_the_project_working_dir() {
+        let repo = Arc::new(StubRepository::default());
+        let project_id = repo
+            .create_project("Alpha", "First project", Some("/srv/repos/alpha"))
+            .unwrap()
+            .id
+            .unwrap();
+        let mut dashboard = ProjectDashboard::new(repo);
+        dashboard.set_project_id(project_id);
+        dashboard.init().unwrap();
+
+        let text = render_text(&dashboard);
+        assert!(text.contains("/srv/repos/alpha"), "{text}");
+        assert!(text.contains("First project"), "{text}");
+    }
+
+    #[test]
     fn version_without_tasks_shows_empty_bar() {
         let repo = Arc::new(StubRepository::default());
-        let project_id = repo.create_project("Empty", "").unwrap().id.unwrap();
+        let project_id = repo.create_project("Empty", "", None).unwrap().id.unwrap();
         let mut dashboard = ProjectDashboard::new(repo.clone());
         dashboard.set_project_id(project_id);
         dashboard.init().unwrap();
@@ -708,7 +737,7 @@ mod tests {
     #[test]
     fn gauge_shows_zero_percent_when_no_tasks() {
         let repo = Arc::new(StubRepository::default());
-        let project_id = repo.create_project("Empty", "").unwrap().id.unwrap();
+        let project_id = repo.create_project("Empty", "", None).unwrap().id.unwrap();
         let mut dashboard = ProjectDashboard::new(repo.clone());
         dashboard.set_project_id(project_id);
         dashboard.init().unwrap();
@@ -759,7 +788,7 @@ mod tests {
     #[test]
     fn v_does_nothing_without_versions() {
         let repo = Arc::new(StubRepository::default());
-        let project_id = repo.create_project("Empty", "").unwrap().id.unwrap();
+        let project_id = repo.create_project("Empty", "", None).unwrap().id.unwrap();
         let mut dashboard = ProjectDashboard::new(repo.clone());
         dashboard.set_project_id(project_id);
         dashboard.init().unwrap();
@@ -861,7 +890,7 @@ mod tests {
     #[test]
     fn empty_project_shows_create_hint() {
         let repo = Arc::new(StubRepository::default());
-        let project_id = repo.create_project("Empty", "").unwrap().id.unwrap();
+        let project_id = repo.create_project("Empty", "", None).unwrap().id.unwrap();
         let mut dashboard = ProjectDashboard::new(repo.clone());
         dashboard.set_project_id(project_id);
         dashboard.init().unwrap();
@@ -884,7 +913,7 @@ mod tests {
     #[test]
     fn long_versions_list_scrolls_to_selected_version() {
         let repo = Arc::new(StubRepository::default());
-        let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let project_id = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         for i in 0..12 {
             repo.create_version(project_id, &format!("Ver{i:02}"), "")
                 .unwrap();
@@ -936,7 +965,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let project_id = repo
-            .create_project("Alpha", &description)
+            .create_project("Alpha", &description, None)
             .unwrap()
             .id
             .unwrap();

@@ -306,7 +306,7 @@ mod tests {
     #[test]
     fn enter_on_project_navigates_to_dashboard() {
         let repo = Arc::new(StubRepository::default());
-        let project = repo.create_project("Alpha", "First").unwrap();
+        let project = repo.create_project("Alpha", "First", None).unwrap();
         let mut screen = ProjectListScreen::new(repo);
         screen.init().unwrap();
         let action = screen.handle_event(&key_event(KeyCode::Enter));
@@ -321,7 +321,7 @@ mod tests {
     #[test]
     fn q_key_emits_quit_action() {
         let repo = Arc::new(StubRepository::default());
-        repo.create_project("Alpha", "First project").unwrap();
+        repo.create_project("Alpha", "First project", None).unwrap();
         let mut screen = ProjectListScreen::new(repo);
         screen.init().unwrap();
         let action = screen.handle_event(&char_event('q'));
@@ -331,7 +331,7 @@ mod tests {
     #[test]
     fn e_key_navigates_to_project_form_edit() {
         let repo = Arc::new(StubRepository::default());
-        let project = repo.create_project("Alpha", "First").unwrap();
+        let project = repo.create_project("Alpha", "First", None).unwrap();
         let mut screen = ProjectListScreen::new(repo);
         screen.init().unwrap();
         let action = screen.handle_event(&char_event('e'));
@@ -379,7 +379,7 @@ mod tests {
     #[test]
     fn r_key_emits_refresh_action() {
         let repo = Arc::new(StubRepository::default());
-        repo.create_project("Alpha", "First").unwrap();
+        repo.create_project("Alpha", "First", None).unwrap();
         let mut screen = ProjectListScreen::new(repo);
         screen.init().unwrap();
         let action = screen.handle_event(&char_event('r'));
@@ -389,9 +389,9 @@ mod tests {
     #[test]
     fn j_and_k_navigate_projects_and_clamp_at_list_boundaries() {
         let repo = Arc::new(StubRepository::default());
-        repo.create_project("Alpha", "").unwrap();
-        repo.create_project("Beta", "").unwrap();
-        repo.create_project("Gamma", "").unwrap();
+        repo.create_project("Alpha", "", None).unwrap();
+        repo.create_project("Beta", "", None).unwrap();
+        repo.create_project("Gamma", "", None).unwrap();
         let mut screen = ProjectListScreen::new(repo);
         screen.init().unwrap();
 
@@ -412,7 +412,7 @@ mod tests {
     #[test]
     fn delete_confirmation_avoids_the_two_column_warning_emoji() {
         let repo = Arc::new(StubRepository::default());
-        repo.create_project("Alpha", "").unwrap();
+        repo.create_project("Alpha", "", None).unwrap();
         let mut screen = ProjectListScreen::new(repo);
         screen.init().unwrap();
 
@@ -429,7 +429,7 @@ mod tests {
     #[test]
     fn auto_refresh_pauses_while_confirm_delete_is_open() {
         let repo = Arc::new(StubRepository::default());
-        repo.create_project("Alpha", "").unwrap();
+        repo.create_project("Alpha", "", None).unwrap();
         let mut screen = ProjectListScreen::new(repo);
         screen.init().unwrap();
 
@@ -442,7 +442,8 @@ mod tests {
     fn selected_project_stays_visible_when_list_overflows() {
         let repo = Arc::new(StubRepository::default());
         for i in 0..30 {
-            repo.create_project(&format!("Proj{i:02}"), "").unwrap();
+            repo.create_project(&format!("Proj{i:02}"), "", None)
+                .unwrap();
         }
         let mut screen = ProjectListScreen::new(repo);
         screen.init().unwrap();
@@ -474,7 +475,7 @@ mod tests {
     #[test]
     fn rows_show_progress_bar_and_task_count() {
         let repo = Arc::new(StubRepository::default());
-        let project = repo.create_project("Alpha", "").unwrap();
+        let project = repo.create_project("Alpha", "", None).unwrap();
         let pid = project.id.unwrap();
         let vid = repo.default_version_id(pid).unwrap();
         repo.create_task(pid, vid, "A", "", Status::Done, Priority::Low)
@@ -495,7 +496,7 @@ mod tests {
     #[test]
     fn project_without_tasks_shows_empty_bar() {
         let repo = Arc::new(StubRepository::default());
-        repo.create_project("Empty", "").unwrap();
+        repo.create_project("Empty", "", None).unwrap();
         let mut screen = ProjectListScreen::new(repo);
         screen.init().unwrap();
         let backend = TestBackend::new(70, 10);
@@ -510,7 +511,8 @@ mod tests {
     #[test]
     fn narrow_rows_do_not_panic() {
         let repo = Arc::new(StubRepository::default());
-        repo.create_project("A very long project name", "").unwrap();
+        repo.create_project("A very long project name", "", None)
+            .unwrap();
         let mut screen = ProjectListScreen::new(repo);
         screen.init().unwrap();
         for width in [1, 5, 12] {

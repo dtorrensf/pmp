@@ -42,6 +42,53 @@ pub fn validate_text(entity: &str, field: &str, value: &str) -> Result<(), AppEr
     Ok(())
 }
 
+/// Normalizes the optional `working_dir` of a project.
+///
+/// A blank value clears it. A non-blank value must be an absolute path and is
+/// normalized lexically: `.` segments and repeated separators disappear and
+/// `..` is resolved against the previous segment. Nothing is checked against
+/// the filesystem, so a project can point at a checkout that is cloned later;
+/// flows that actually operate on disk (ACP) require the directory to exist.
+pub fn normalize_working_dir(value: Option<&str>) -> Result<Option<String>, AppError> {
+    use std::path::{Component, Path, PathBuf};
+
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if value.contains('\0') {
+        return Err(AppError::Validation(
+            "working directory cannot contain NUL bytes".to_string(),
+        ));
+    }
+    let path = Path::new(value);
+    if !path.is_absolute() {
+        return Err(AppError::Validation(
+            "working directory must be an absolute path".to_string(),
+        ));
+    }
+
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(Component::RootDir.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return Err(AppError::Validation(
+                        "working directory escapes the filesystem root".to_string(),
+                    ));
+                }
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    normalized
+        .to_str()
+        .map(|path| Some(path.to_string()))
+        .ok_or_else(|| AppError::Validation("working directory is not valid UTF-8".to_string()))
+}
+
 /// Rejects a dependency list larger than [`MAX_DEPENDENCIES`].
 pub fn validate_dependency_count(count: usize) -> Result<(), AppError> {
     if count > MAX_DEPENDENCIES {
@@ -83,6 +130,45 @@ mod tests {
         let err = validate_text("task", "description", &long).unwrap_err();
         assert!(matches!(err, AppError::Validation(message) if message.contains("cannot exceed")));
         assert!(validate_text("task", "description", &"a".repeat(MAX_TEXT_LEN)).is_ok());
+    }
+
+    #[test]
+    fn normalizes_working_directories() {
+        assert_eq!(normalize_working_dir(None).unwrap(), None);
+        assert_eq!(normalize_working_dir(Some("   ")).unwrap(), None);
+        assert_eq!(
+            normalize_working_dir(Some("  /home/me/repo/  ")).unwrap(),
+            Some("/home/me/repo".to_string())
+        );
+        assert_eq!(
+            normalize_working_dir(Some("/home//me/./repo/")).unwrap(),
+            Some("/home/me/repo".to_string())
+        );
+        assert_eq!(
+            normalize_working_dir(Some("/home/me/repo/../other")).unwrap(),
+            Some("/home/me/other".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_working_directories() {
+        for invalid in ["repo", "./repo", "~/repo"] {
+            let error = normalize_working_dir(Some(invalid)).unwrap_err();
+            assert!(
+                matches!(&error, AppError::Validation(message) if message.contains("absolute")),
+                "{invalid}: {error:?}"
+            );
+        }
+        let error = normalize_working_dir(Some("/..")).unwrap_err();
+        assert!(
+            matches!(&error, AppError::Validation(message) if message.contains("escapes")),
+            "{error:?}"
+        );
+        let error = normalize_working_dir(Some("/tmp/with\0nul")).unwrap_err();
+        assert!(
+            matches!(&error, AppError::Validation(message) if message.contains("NUL")),
+            "{error:?}"
+        );
     }
 
     #[test]

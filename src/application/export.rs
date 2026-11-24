@@ -283,7 +283,7 @@ mod tests {
     #[test]
     fn export_with_malicious_version_name_stays_inside_exports_dir() {
         let repo = StubRepository::default();
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v = repo
             .create_version(pid, "../../../.config/evil", "")
             .unwrap()
@@ -306,7 +306,7 @@ mod tests {
     #[test]
     fn render_markdown_includes_prose_and_mermaid_blocks() {
         let repo = StubRepository::default();
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         let a = repo
             .create_task(pid, v, "A", "", Status::Done, Priority::High)
@@ -331,7 +331,7 @@ mod tests {
     #[test]
     fn render_markdown_omits_flowchart_for_many_tasks() {
         let repo = StubRepository::default();
-        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
         let v = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
         for i in 0..(MAX_FLOWCHART_TASKS + 1) {
             repo.create_task(pid, v, &format!("T{i}"), "", Status::Done, Priority::Low)

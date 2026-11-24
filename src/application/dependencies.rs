@@ -80,7 +80,7 @@ mod tests {
 
     fn repo_with_tasks(names: &[&str]) -> (StubRepository, Vec<i64>) {
         let repo = StubRepository::default();
-        let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let project_id = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let version_id = repo.default_version_id(project_id).unwrap();
         let ids = names
             .iter()

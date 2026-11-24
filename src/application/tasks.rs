@@ -203,7 +203,7 @@ mod tests {
 
     fn repo_with_version() -> (StubRepository, i64, i64) {
         let repo = StubRepository::default();
-        let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+        let project_id = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
         let version_id = repo.default_version_id(project_id).unwrap();
         (repo, project_id, version_id)
     }
@@ -344,7 +344,7 @@ mod tests {
     #[test]
     fn page_rejects_a_version_from_another_project() {
         let (repo, project_id, _) = repo_with_version();
-        let other = repo.create_project("Beta", "").unwrap().id.unwrap();
+        let other = repo.create_project("Beta", "", None).unwrap().id.unwrap();
         let foreign_version = repo.default_version_id(other).unwrap();
         let result = page(
             &repo,

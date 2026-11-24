@@ -22,7 +22,7 @@ mod versions;
 
 fn app_with_project() -> (Arc<StubRepository>, App, i64, i64) {
     let repo = Arc::new(StubRepository::default());
-    let project = repo.create_project("Alpha", "").unwrap();
+    let project = repo.create_project("Alpha", "", None).unwrap();
     let project_id = project.id.unwrap();
     let version_id = repo.default_version_id(project_id).unwrap();
     let app = App::new(repo.clone());
@@ -37,7 +37,7 @@ fn setup_app() -> (Arc<StubRepository>, App) {
 
 fn setup_ids() -> (Arc<StubRepository>, App, i64, i64) {
     let repo = Arc::new(StubRepository::default());
-    let project_id = repo.create_project("Alpha", "").unwrap().id.unwrap();
+    let project_id = repo.create_project("Alpha", "", None).unwrap().id.unwrap();
     let version_id = repo.default_version_id(project_id).unwrap();
     let app = App::new(repo.clone());
     (repo, app, project_id, version_id)
@@ -76,5 +76,6 @@ fn blank_project_save() -> Action {
         project_id: None,
         name: "   ".to_string(),
         description: String::new(),
+        working_dir: String::new(),
     }
 }

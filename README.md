@@ -82,6 +82,16 @@ pmp
 
 Use the **arrow keys** to navigate, **Tab** to change statuses or jump between panels, and follow the on-screen keyboard shortcuts to manage your projects. Press **?** on any screen to see the full list of shortcuts.
 
+### Projects and workspaces
+
+Every project can optionally be bound to a directory: the checkout or workspace
+the project describes. Set it in the last field of the project form, or through
+`create_project` / `update_project` with `working_dir`; the project dashboard
+shows it above the description. The path must be absolute and is normalized
+(`/srv/repo/../repo` becomes `/srv/repo`), and an empty value clears it.
+Projects without one keep working normally: only flows that operate on the
+filesystem, such as launching an ACP agent, require it.
+
 ### Configuration
 
 All settings live in one optional file, `~/.config/pmp/config.toml` (under
@@ -280,6 +290,7 @@ the code instead of matching message text:
 ```bash
 pmp              # Start the interactive TUI
 pmp mcp          # Start the MCP server
+pmp doctor       # Print environment and database diagnostics
 pmp --version    # Print version (also -v)
 pmp --help       # Print help (also -h)
 ```

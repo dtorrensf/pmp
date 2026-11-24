@@ -17,6 +17,7 @@ pub(super) fn save(
     project_id: Option<i64>,
     name: &str,
     description: &str,
+    working_dir: &str,
     return_to: &Screen,
 ) -> Result<Outcome, AppError> {
     let next = match project_id {
@@ -27,6 +28,7 @@ pub(super) fn save(
                 ProjectEdit {
                     name: name.to_string(),
                     description: Some(description.to_string()),
+                    working_dir: Some(working_dir.to_string()),
                 },
             )?;
             return_to.clone()
@@ -37,6 +39,7 @@ pub(super) fn save(
                 NewProject {
                     name: name.to_string(),
                     description: description.to_string(),
+                    working_dir: Some(working_dir.to_string()),
                 },
             )?
             .id
