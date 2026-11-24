@@ -19,7 +19,7 @@ use crate::screens::components::form::{
     TextTarget, handle_text_keys, is_submit, key_press, next_field, render_form_frame,
 };
 use crate::screens::components::keys::{ctrl, key};
-use crate::screens::{Action, Component, Screen};
+use crate::screens::{Action, Component, Screen, UiContext};
 
 /// Fields in tab order.
 const NAME: u8 = 0;
@@ -143,13 +143,13 @@ impl Component for VersionForm {
         }
     }
 
-    fn render(&self, frame: &mut Frame, area: Rect) {
+    fn render(&self, frame: &mut Frame, area: Rect, ui: &UiContext) {
         let title = if self.version_id.is_some() {
             "Edit Version"
         } else {
             "Create Version"
         };
-        let inner = render_form_frame(frame, area, title);
+        let inner = render_form_frame(frame, area, title, ui);
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -168,6 +168,7 @@ impl Component for VersionForm {
             &self.name,
             self.active_field == NAME,
             None,
+            ui,
         );
 
         render_description_field(
@@ -176,6 +177,7 @@ impl Component for VersionForm {
             "Description",
             &self.description,
             self.active_field == DESCRIPTION,
+            ui,
         );
 
         render_readonly_field(
@@ -184,6 +186,7 @@ impl Component for VersionForm {
             "Status",
             self.status.label(),
             self.active_field == STATUS,
+            ui,
         );
 
         if self.active_field == NAME {
@@ -405,7 +408,7 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(60, 20);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| form.render(frame, frame.area()))
+            .draw(|frame| form.render(frame, frame.area(), &UiContext::default()))
             .unwrap();
         let text = buffer_to_string(terminal.backend().buffer());
         assert!(text.contains("Edit Version"));

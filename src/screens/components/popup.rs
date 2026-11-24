@@ -12,7 +12,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear},
 };
 
-use crate::screens::components::theme;
+use crate::screens::UiContext;
 
 /// Returns the `width`x`height` rect centered inside `area`, clamped to
 /// `area` when the requested size exceeds it.
@@ -55,12 +55,12 @@ pub fn dim_area(frame: &mut Frame) {
 
 /// Clears `area`, draws a `Borders::ALL` block titled `title` over it and
 /// returns the block's inner rect for the caller's content.
-pub fn render_popup_scaffold(frame: &mut Frame, area: Rect, title: &str) -> Rect {
+pub fn render_popup_scaffold(frame: &mut Frame, area: Rect, title: &str, ui: &UiContext) -> Rect {
     render_popup_scaffold_with(
         frame,
         area,
         Line::from(title.to_string()),
-        theme::theme().border_style(),
+        ui.border_style(),
     )
 }
 
@@ -88,6 +88,8 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 
     use crate::screens::test_utils::buffer_to_string;
+
+    use crate::screens::UiContext;
 
     use super::{centered_rect, centered_rect_percent, render_popup_scaffold};
 
@@ -166,7 +168,12 @@ mod tests {
                         frame.buffer_mut()[(x, y)].set_symbol("X");
                     }
                 }
-                inner = Some(render_popup_scaffold(frame, area, title));
+                inner = Some(render_popup_scaffold(
+                    frame,
+                    area,
+                    title,
+                    &UiContext::default(),
+                ));
             })
             .unwrap();
         (

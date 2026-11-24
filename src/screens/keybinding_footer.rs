@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
-use crate::screens::components::theme;
+use crate::screens::UiContext;
 
 /// Separator between two footer entries.
 const SEPARATOR: &str = "  ";
@@ -18,8 +18,14 @@ const HELP_HINT_LABEL: &str = " help";
 /// Renders the shortcut footer. Entries that do not fit are dropped from the
 /// end. When `help_hint` is set and something was dropped, a `? help`
 /// indicator is drawn at the right so the full list stays discoverable.
-pub fn render_footer(frame: &mut Frame, area: Rect, keys: &[(KeyEvent, &str)], help_hint: bool) {
-    let line = footer_line(keys, area.width as usize, help_hint);
+pub fn render_footer(
+    frame: &mut Frame,
+    area: Rect,
+    keys: &[(KeyEvent, &str)],
+    help_hint: bool,
+    ui: &UiContext,
+) {
+    let line = footer_line(keys, area.width as usize, help_hint, ui);
     frame.render_widget(Paragraph::new(line), area);
 }
 
@@ -43,8 +49,8 @@ pub(crate) fn footer_line(
     keys: &[(KeyEvent, &str)],
     width: usize,
     help_hint: bool,
+    ui: &UiContext,
 ) -> Line<'static> {
-    let theme = theme::theme();
     let entries: Vec<(String, &str)> = group_keys(keys)
         .into_iter()
         .map(|(events, label)| (events.join("/"), label))
@@ -76,29 +82,27 @@ pub(crate) fn footer_line(
             break;
         }
         if index > 0 {
-            spans.push(Span::styled(SEPARATOR, theme.muted_style()));
+            spans.push(Span::styled(SEPARATOR, ui.muted_style()));
         }
         spans.push(Span::styled(
             entry.0.clone(),
-            theme
-                .accent_style()
+            ui.accent_style()
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ));
-        spans.push(Span::styled(format!(": {}", entry.1), theme.muted_style()));
+        spans.push(Span::styled(format!(": {}", entry.1), ui.muted_style()));
         used += needed;
     }
 
     if show_hint && hint_width <= width {
         if !spans.is_empty() {
-            spans.push(Span::styled(SEPARATOR, theme.muted_style()));
+            spans.push(Span::styled(SEPARATOR, ui.muted_style()));
         }
         spans.push(Span::styled(
             HELP_HINT_KEY,
-            theme
-                .accent_style()
+            ui.accent_style()
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ));
-        spans.push(Span::styled(HELP_HINT_LABEL, theme.muted_style()));
+        spans.push(Span::styled(HELP_HINT_LABEL, ui.muted_style()));
     }
     Line::from(spans)
 }
@@ -128,6 +132,10 @@ mod tests {
 
     use super::*;
 
+    fn ui() -> UiContext {
+        UiContext::default()
+    }
+
     fn key_event(code: KeyCode) -> KeyEvent {
         KeyEvent {
             code,
@@ -154,7 +162,7 @@ mod tests {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| render_footer(frame, frame.area(), keys, true))
+            .draw(|frame| render_footer(frame, frame.area(), keys, true, &ui()))
             .unwrap();
         buffer_to_string(terminal.backend().buffer())
     }
@@ -229,12 +237,12 @@ mod tests {
         let backend = TestBackend::new(80, 1);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| render_footer(frame, frame.area(), keys, true))
+            .draw(|frame| render_footer(frame, frame.area(), keys, true, &ui()))
             .unwrap();
 
         // "q: Quit": the key is accented, the label (starting at column 3) is muted.
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(3, 0)].fg, theme::theme().muted);
+        assert_eq!(buffer[(3, 0)].fg, ui().theme().muted);
         // DarkGray was too dim on light terminals.
         assert_ne!(buffer[(3, 0)].fg, ratatui::style::Color::DarkGray);
     }
@@ -245,11 +253,11 @@ mod tests {
         let backend = TestBackend::new(80, 1);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| render_footer(frame, frame.area(), keys, true))
+            .draw(|frame| render_footer(frame, frame.area(), keys, true, &ui()))
             .unwrap();
 
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(0, 0)].fg, theme::theme().accent);
+        assert_eq!(buffer[(0, 0)].fg, ui().theme().accent);
         assert!(
             buffer[(0, 0)]
                 .modifier
@@ -289,7 +297,7 @@ mod tests {
         let backend = TestBackend::new(30, 1);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| render_footer(frame, frame.area(), keys, false))
+            .draw(|frame| render_footer(frame, frame.area(), keys, false, &ui()))
             .unwrap();
         let text = buffer_to_string(terminal.backend().buffer());
         assert!(!text.contains("help"));

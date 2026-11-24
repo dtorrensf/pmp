@@ -29,6 +29,7 @@ pub mod task_form;
 pub mod task_list_view;
 #[cfg(test)]
 pub mod test_utils;
+pub mod ui;
 pub mod version_dashboard;
 pub mod version_form;
 pub mod version_summary;
@@ -37,6 +38,7 @@ pub use dashboard::ProjectDashboard;
 pub use project_form::ProjectForm;
 pub use project_list::ProjectListScreen;
 pub use task_form::TaskForm;
+pub use ui::UiContext;
 pub use version_dashboard::VersionDashboard;
 pub use version_form::VersionForm;
 pub use version_summary::VersionSummaryScreen;
@@ -51,13 +53,14 @@ pub trait Component {
         self.init()
     }
     /// Advances time-driven state (eased values, pending celebrations). Called
-    /// by the event loop about every 100 ms for the active component. Reads the
-    /// frame time published through `components::motion`; does nothing by default.
-    fn tick(&mut self) {}
+    /// by the event loop about every 100 ms for the active component, with the
+    /// frame context so the movement reads an explicit clock. Does nothing by
+    /// default.
+    fn tick(&mut self, _ui: &UiContext) {}
     fn handle_event(&mut self, _event: &Event) -> Option<Action> {
         None
     }
-    fn render(&self, frame: &mut Frame, area: Rect);
+    fn render(&self, frame: &mut Frame, area: Rect, ui: &UiContext);
     fn keybindings(&self) -> &'static [(KeyEvent, &'static str)] {
         &[]
     }

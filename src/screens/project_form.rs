@@ -16,7 +16,7 @@ use crate::screens::components::form::{
     TextTarget, handle_text_keys, is_submit, key_press, next_field, render_form_frame,
 };
 use crate::screens::components::keys::{ctrl, key};
-use crate::screens::{Action, Component, Screen};
+use crate::screens::{Action, Component, Screen, UiContext};
 
 pub struct ProjectForm {
     repo: Arc<dyn Repository>,
@@ -110,13 +110,13 @@ impl Component for ProjectForm {
         }
     }
 
-    fn render(&self, frame: &mut Frame, area: Rect) {
+    fn render(&self, frame: &mut Frame, area: Rect, ui: &UiContext) {
         let title = if self.project_id.is_some() {
             "Edit Project"
         } else {
             "Create Project"
         };
-        let inner = render_form_frame(frame, area, title);
+        let inner = render_form_frame(frame, area, title, ui);
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -134,6 +134,7 @@ impl Component for ProjectForm {
             &self.name,
             self.active_field == 0,
             None,
+            ui,
         );
 
         render_description_field(
@@ -142,6 +143,7 @@ impl Component for ProjectForm {
             "Description",
             &self.description,
             self.active_field == 1,
+            ui,
         );
 
         if self.active_field == 0 {
@@ -165,7 +167,7 @@ mod tests {
     use crate::screens::test_utils::{
         buffer_to_string, char_event, ctrl_s_event, key_event, render_to_string,
     };
-    use crate::screens::{Component, Screen};
+    use crate::screens::{Component, Screen, UiContext};
 
     use super::*;
 
@@ -300,7 +302,7 @@ mod tests {
         let backend = TestBackend::new(60, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| form.render(frame, frame.area()))
+            .draw(|frame| form.render(frame, frame.area(), &UiContext::default()))
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let text = buffer_to_string(&buffer);
@@ -315,7 +317,7 @@ mod tests {
         let backend = TestBackend::new(60, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| form.render(frame, frame.area()))
+            .draw(|frame| form.render(frame, frame.area(), &UiContext::default()))
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let text = buffer_to_string(&buffer);
@@ -381,7 +383,7 @@ mod tests {
         let backend = TestBackend::new(40, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| form.render(frame, frame.area()))
+            .draw(|frame| form.render(frame, frame.area(), &UiContext::default()))
             .unwrap();
         let text = buffer_to_string(terminal.backend().buffer());
         let lines: Vec<&str> = text.split('\n').collect();

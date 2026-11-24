@@ -19,7 +19,6 @@ use crate::domain::error::AppError;
 use crate::domain::task::Status;
 use crate::screens::components::confirm_dialog::{ConfirmDialog, ConfirmState};
 use crate::screens::components::empty_state::EmptyState;
-use crate::screens::components::glyphs;
 use crate::screens::components::help::{self, HelpSection};
 use crate::screens::components::keys::key;
 use crate::screens::components::list_navigation::move_selection;
@@ -28,8 +27,7 @@ use crate::screens::components::progress::percent;
 use crate::screens::components::progress_bar::ProgressBar;
 use crate::screens::components::scroll::{ListScroll, list_rows, render_list_scrollbar};
 use crate::screens::components::stacked_bar::status_counts;
-use crate::screens::components::theme::{self, status_style};
-use crate::screens::{AUTO_REFRESH_INTERVAL, Action, Component, Screen};
+use crate::screens::{AUTO_REFRESH_INTERVAL, Action, Component, Screen, UiContext};
 
 pub struct ProjectListScreen {
     repo: Arc<dyn Repository>,
@@ -75,7 +73,7 @@ impl ProjectListScreen {
 }
 
 impl Component for ProjectListScreen {
-    fn tick(&mut self) {
+    fn tick(&mut self, ui: &UiContext) {
         let targets: Vec<f64> = self
             .task_counts
             .iter()
@@ -86,7 +84,7 @@ impl Component for ProjectListScreen {
             .collect();
         for (i, target) in targets.iter().enumerate() {
             match self.bars.get_mut(i) {
-                Some(bar) => bar.set(*target),
+                Some(bar) => bar.set(*target, ui.motion()),
                 None => self.bars.push(Tween::settled(*target)),
             }
         }
@@ -183,24 +181,24 @@ impl Component for ProjectListScreen {
         }
     }
 
-    fn render(&self, frame: &mut Frame, area: Rect) {
+    fn render(&self, frame: &mut Frame, area: Rect, ui: &UiContext) {
         // The list stays visible, dimmed, behind the confirmation modal.
-        render_list(self, frame, area);
+        render_list(self, frame, area, ui);
         if let Some(dialog) = self.confirm.dialog() {
-            dialog.render(frame, area);
+            dialog.render(frame, area, ui);
         }
     }
 }
 
-fn render_list(screen: &ProjectListScreen, frame: &mut Frame, area: Rect) {
+fn render_list(screen: &ProjectListScreen, frame: &mut Frame, area: Rect, ui: &UiContext) {
     let block = Block::default().title("Projects").borders(Borders::ALL);
     if screen.projects.is_empty() {
         let inner = block.inner(area);
         frame.render_widget(block, area);
         EmptyState::new("No projects yet")
-            .with_icon(glyphs::glyphs().status_todo)
+            .with_icon(ui.status_icon(Status::Todo))
             .with_hint("Press c to create one.")
-            .render(frame, inner);
+            .render(frame, inner, ui);
         return;
     }
 
@@ -224,7 +222,7 @@ fn render_list(screen: &ProjectListScreen, frame: &mut Frame, area: Rect) {
         .map(|(offset, p)| {
             let i = range.start + offset;
             let (style, marker) = if i == screen.selected {
-                (theme::theme().selection_style(), glyphs::glyphs().selection)
+                (ui.selection_style(), ui.glyphs().selection)
             } else {
                 (Style::default(), " ")
             };
@@ -236,16 +234,16 @@ fn render_list(screen: &ProjectListScreen, frame: &mut Frame, area: Rect) {
             let ratio = screen
                 .bars
                 .get(i)
-                .map_or(percentage as f64 / 100.0, Tween::value);
+                .map_or(percentage as f64 / 100.0, |bar| bar.value(ui.motion()));
             let bar = ProgressBar::new(ratio, PROGRESS_BAR_WIDTH)
-                .with_filled_style(status_style(Status::Done))
-                .with_empty_style(theme::theme().muted_style());
+                .with_filled_style(ui.status_style(Status::Done))
+                .with_empty_style(ui.muted_style());
 
             let mut spans = vec![
                 Span::raw(format!("{marker} {}", pad_display(&p.name, name_width))),
                 Span::raw("  "),
             ];
-            spans.extend(bar.line().spans);
+            spans.extend(bar.line(ui).spans);
             spans.push(Span::raw(format!(" {percentage:>3}%  ")));
             spans.push(Span::raw(format!(
                 "{tasks} {} · {versions} {}",
@@ -286,6 +284,10 @@ mod tests {
 
     use super::*;
 
+    fn ui() -> UiContext {
+        UiContext::default()
+    }
+
     #[test]
     fn empty_state_shows_create_hint() {
         let repo = Arc::new(StubRepository::default());
@@ -293,7 +295,7 @@ mod tests {
         let backend = TestBackend::new(60, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| screen.render(frame, frame.area()))
+            .draw(|frame| screen.render(frame, frame.area(), &ui()))
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let text = buffer_to_string(&buffer);
@@ -484,7 +486,7 @@ mod tests {
         let backend = TestBackend::new(70, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| screen.render(frame, frame.area()))
+            .draw(|frame| screen.render(frame, frame.area(), &ui()))
             .unwrap();
         let text = buffer_to_string(terminal.backend().buffer());
         assert!(text.contains("█████░░░░░  50%  2 tasks"), "{text}");
@@ -499,7 +501,7 @@ mod tests {
         let backend = TestBackend::new(70, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| screen.render(frame, frame.area()))
+            .draw(|frame| screen.render(frame, frame.area(), &ui()))
             .unwrap();
         let text = buffer_to_string(terminal.backend().buffer());
         assert!(text.contains("░░░░░░░░░░   0%  0 tasks"), "{text}");
@@ -515,7 +517,7 @@ mod tests {
             let backend = TestBackend::new(width, 4);
             let mut terminal = Terminal::new(backend).unwrap();
             terminal
-                .draw(|frame| screen.render(frame, frame.area()))
+                .draw(|frame| screen.render(frame, frame.area(), &ui()))
                 .unwrap();
         }
     }

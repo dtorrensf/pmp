@@ -21,11 +21,9 @@ use crate::domain::version::{Version, VersionStatus};
 use crate::domain::version_summary::VersionSummary;
 use crate::screens::components::help::{self, HelpSection};
 use crate::screens::components::keys::key;
-use crate::screens::components::motion;
-use crate::screens::components::theme;
 use crate::screens::task_list_view::{DependencySummary, TaskListView};
 pub use crate::screens::task_list_view::{FilterField, FilterState, TaskListMode};
-use crate::screens::{AUTO_REFRESH_INTERVAL, Action, Component, Screen};
+use crate::screens::{AUTO_REFRESH_INTERVAL, Action, Component, Screen, UiContext};
 
 pub struct VersionDashboard {
     repo: Arc<dyn Repository>,
@@ -39,6 +37,8 @@ pub struct VersionDashboard {
     observed: Option<VersionMilestones>,
     /// Frame time at which the current celebration started, if any.
     celebration: Option<Duration>,
+    /// A milestone was just reached; the next tick stamps its start time.
+    pending_celebration: bool,
 }
 
 /// The milestones a version can celebrate: all its tasks done, or a summary
@@ -82,6 +82,7 @@ impl VersionDashboard {
             view: TaskListView::new(),
             observed: None,
             celebration: None,
+            pending_celebration: false,
         }
     }
 
@@ -172,27 +173,29 @@ impl VersionDashboard {
         }
         self.view.set_tasks(tasks);
         self.view.set_dependency_summaries(dependency_summaries);
-        self.observe_milestones();
+        if self.observe_milestones() {
+            self.pending_celebration = true;
+        }
         Ok(())
     }
 
-    /// Starts a celebration when the version has just reached one of its
-    /// milestones. The first state seen for a version is a baseline, so
-    /// opening an already finished version does not celebrate.
-    fn observe_milestones(&mut self) {
+    /// Reports whether the version has just reached one of its milestones. The
+    /// first state seen for a version is a baseline, so opening an already
+    /// finished version does not celebrate. The frame loop stamps the actual
+    /// start time in [`Component::tick`], the first place that has a clock.
+    fn observe_milestones(&mut self) -> bool {
         let current = VersionMilestones {
             version_id: self.version_id,
             complete: self.is_complete(),
             compacted: !self.summaries.is_empty(),
         };
-        if let Some(previous) = self.observed
-            && previous.version_id == current.version_id
-            && ((!previous.complete && current.complete)
-                || (!previous.compacted && current.compacted))
-        {
-            self.celebration = motion::frame_time();
-        }
+        let crossed = self.observed.is_some_and(|previous| {
+            previous.version_id == current.version_id
+                && ((!previous.complete && current.complete)
+                    || (!previous.compacted && current.compacted))
+        });
         self.observed = Some(current);
+        crossed
     }
 
     /// `true` when the version has tasks and all of them are done.
@@ -207,6 +210,13 @@ impl VersionDashboard {
 }
 
 impl Component for VersionDashboard {
+    fn tick(&mut self, ui: &UiContext) {
+        if self.pending_celebration {
+            self.pending_celebration = false;
+            self.celebration = ui.frame_time();
+        }
+    }
+
     fn init(&mut self) -> anyhow::Result<()> {
         self.load_tasks()?;
         self.view.set_mode(TaskListMode::Browsing);
@@ -288,29 +298,28 @@ impl Component for VersionDashboard {
         }
     }
 
-    fn render(&self, frame: &mut Frame, area: Rect) {
+    fn render(&self, frame: &mut Frame, area: Rect, ui: &UiContext) {
         let mut block = Block::default()
-            .title(self.breadcrumb())
-            .title_bottom(self.view.table_title())
+            .title(self.breadcrumb(ui))
+            .title_bottom(self.view.table_title(ui))
             .borders(Borders::ALL);
-        if motion::celebrating(self.celebration) {
-            block = block.border_style(theme::theme().success_style().add_modifier(Modifier::BOLD));
+        if ui.celebrating(self.celebration) {
+            block = block.border_style(ui.success_style().add_modifier(Modifier::BOLD));
         }
         let inner = block.inner(area);
         frame.render_widget(block, area);
-        self.view.render(frame, inner);
+        self.view.render(frame, inner, ui);
     }
 }
 
 impl VersionDashboard {
     /// `Project › Version › Status`, plus a badge with the summary count when
     /// the version is released or already has summaries.
-    fn breadcrumb(&self) -> Line<'static> {
+    fn breadcrumb(&self, ui: &UiContext) -> Line<'static> {
         let Some(version) = &self.version else {
             return Line::from("Version");
         };
-        let theme = theme::theme();
-        let separator = Span::styled(" › ", theme.muted_style());
+        let separator = Span::styled(" › ", ui.muted_style());
         let mut spans = Vec::new();
         if let Some(project) = &self.project_name {
             spans.push(Span::styled(
@@ -319,11 +328,11 @@ impl VersionDashboard {
             ));
             spans.push(separator.clone());
         }
-        spans.push(Span::styled(version.name.clone(), theme.text_style()));
+        spans.push(Span::styled(version.name.clone(), ui.text_style()));
         spans.push(separator);
         spans.push(Span::styled(
             version.status.label(),
-            theme.version_status_style(version.status),
+            ui.version_status_style(version.status),
         ));
         if version.status == VersionStatus::Released || !self.summaries.is_empty() {
             let count = self.summaries.len();
@@ -335,7 +344,7 @@ impl VersionDashboard {
             spans.push(Span::raw(" "));
             spans.push(Span::styled(
                 format!(" {label} "),
-                theme.accent_style().add_modifier(Modifier::REVERSED),
+                ui.accent_style().add_modifier(Modifier::REVERSED),
             ));
         }
         Line::from(spans)
@@ -346,6 +355,12 @@ impl VersionDashboard {
 mod tests {
     use crate::db::repository::*;
     use std::sync::Arc;
+
+    use crate::screens::components::motion;
+
+    fn ui() -> UiContext {
+        UiContext::default()
+    }
 
     use crossterm::event::KeyCode;
     use ratatui::Terminal;
@@ -494,7 +509,7 @@ mod tests {
         let backend = TestBackend::new(60, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| screen.render(frame, frame.area()))
+            .draw(|frame| screen.render(frame, frame.area(), &ui()))
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let text = buffer_to_string(&buffer);
@@ -508,7 +523,7 @@ mod tests {
         let backend = TestBackend::new(60, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| screen.render(frame, frame.area()))
+            .draw(|frame| screen.render(frame, frame.area(), &ui()))
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let text = buffer_to_string(&buffer);
@@ -529,7 +544,7 @@ mod tests {
         let backend = TestBackend::new(60, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| screen.render(frame, frame.area()))
+            .draw(|frame| screen.render(frame, frame.area(), &ui()))
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let text = buffer_to_string(&buffer);
@@ -550,7 +565,7 @@ mod tests {
         let backend = TestBackend::new(60, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| screen.render(frame, frame.area()))
+            .draw(|frame| screen.render(frame, frame.area(), &ui()))
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let text = buffer_to_string(&buffer);
@@ -573,7 +588,7 @@ mod tests {
         let backend = TestBackend::new(60, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| screen.render(frame, frame.area()))
+            .draw(|frame| screen.render(frame, frame.area(), &ui()))
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let text = buffer_to_string(&buffer);
@@ -586,7 +601,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| screen.render(frame, frame.area()))
+            .draw(|frame| screen.render(frame, frame.area(), &ui()))
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let text = buffer_to_string(&buffer);
@@ -689,7 +704,7 @@ mod tests {
         let backend = TestBackend::new(60, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| screen.render(frame, frame.area()))
+            .draw(|frame| screen.render(frame, frame.area(), &ui()))
             .unwrap();
         let text = buffer_to_string(terminal.backend().buffer());
         assert!(text.contains("Released"));
@@ -710,7 +725,7 @@ mod tests {
         let backend = TestBackend::new(60, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| screen.render(frame, frame.area()))
+            .draw(|frame| screen.render(frame, frame.area(), &ui()))
             .unwrap();
         let text = buffer_to_string(terminal.backend().buffer());
         assert!(text.contains("Alpha › v0 › Open"), "{text}");
@@ -1190,20 +1205,21 @@ mod tests {
         }
     }
 
+    fn ui_at(elapsed: Duration) -> UiContext {
+        UiContext::default().with_frame_time(elapsed)
+    }
+
     #[test]
     fn completing_the_last_task_celebrates_on_refresh() {
         let (repo, mut screen, _project_id) = setup_with_tasks();
         let version_id = screen.version_id();
         let start = Duration::from_secs(10);
 
-        motion::with_frame_time(Some(start), || {
-            complete_every_task(&repo, version_id);
-            screen.refresh().unwrap();
-            assert!(motion::celebrating(screen.celebration));
-        });
-        motion::with_frame_time(Some(start + motion::CELEBRATION_DURATION), || {
-            assert!(!motion::celebrating(screen.celebration));
-        });
+        complete_every_task(&repo, version_id);
+        screen.refresh().unwrap();
+        screen.tick(&ui_at(start));
+        assert!(ui_at(start).celebrating(screen.celebration));
+        assert!(!ui_at(start + motion::CELEBRATION_DURATION).celebrating(screen.celebration));
     }
 
     #[test]
@@ -1214,9 +1230,8 @@ mod tests {
 
         let mut screen = VersionDashboard::new(repo.clone());
         screen.set_ids(1, version_id);
-        motion::with_frame_time(Some(Duration::from_secs(10)), || {
-            screen.init().unwrap();
-        });
+        screen.init().unwrap();
+        screen.tick(&ui_at(Duration::from_secs(10)));
 
         assert_eq!(screen.celebration, None);
     }
@@ -1226,18 +1241,16 @@ mod tests {
         let (repo, mut screen, _project_id) = setup_with_tasks();
         let version_id = screen.version_id();
         complete_every_task(&repo, version_id);
-        motion::with_frame_time(Some(Duration::from_secs(1)), || {
-            screen.refresh().unwrap();
-        });
+        screen.refresh().unwrap();
+        screen.tick(&ui_at(Duration::from_secs(1)));
         assert!(screen.celebration.is_some());
 
         screen.celebration = None;
         let snapshot = repo.build_compact_snapshot(version_id).unwrap();
         repo.compact_version(version_id, "Summary", &snapshot)
             .unwrap();
-        motion::with_frame_time(Some(Duration::from_secs(2)), || {
-            screen.refresh().unwrap();
-        });
+        screen.refresh().unwrap();
+        screen.tick(&ui_at(Duration::from_secs(2)));
 
         assert_eq!(screen.celebration, Some(Duration::from_secs(2)));
     }
@@ -1248,8 +1261,9 @@ mod tests {
         complete_every_task(&repo, screen.version_id());
 
         screen.refresh().unwrap();
+        screen.tick(&UiContext::default());
 
-        assert!(!motion::celebrating(screen.celebration));
+        assert!(!UiContext::default().celebrating(screen.celebration));
     }
 }
 

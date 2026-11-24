@@ -37,8 +37,8 @@ use crate::application;
 use crate::db::repository::Repository;
 use crate::domain::task::{Priority, Status, Task};
 use crate::domain::version::Version;
-use crate::screens::Action;
 use crate::screens::components::confirm_dialog::ConfirmDialog;
+use crate::screens::{Action, UiContext};
 
 mod keys;
 mod modes;
@@ -224,24 +224,24 @@ impl TaskListView {
 
     /// Caption for the enclosing block: one chip per active filter, the sort
     /// direction and, while filters are active, how to clear them.
-    pub fn table_title(&self) -> Line<'static> {
-        table::title(&self.state)
+    pub fn table_title(&self, ui: &UiContext) -> Line<'static> {
+        table::title(&self.state, ui)
     }
 
     /// Render the task table (browsing) or the active modal popup. The table
     /// stays visible, dimmed, behind the delete confirmation.
-    pub fn render(&self, frame: &mut Frame, area: Rect) {
+    pub fn render(&self, frame: &mut Frame, area: Rect, ui: &UiContext) {
         match &self.mode {
             TaskListMode::Browsing => {
-                table::render(&self.state, &self.dependency_summaries, frame, area);
+                table::render(&self.state, &self.dependency_summaries, frame, area, ui);
             }
             TaskListMode::ConfirmDelete(dialog) => {
-                table::render(&self.state, &self.dependency_summaries, frame, area);
+                table::render(&self.state, &self.dependency_summaries, frame, area, ui);
                 // Center the modal on the whole screen, not just on the table.
-                dialog.render(frame, frame.area());
+                dialog.render(frame, frame.area(), ui);
             }
-            TaskListMode::Filtering(state) => popups::render_filter(state, frame, area),
-            TaskListMode::MovingTask(state) => popups::render_move(state, frame, area),
+            TaskListMode::Filtering(state) => popups::render_filter(state, frame, area, ui),
+            TaskListMode::MovingTask(state) => popups::render_move(state, frame, area, ui),
         }
     }
 }

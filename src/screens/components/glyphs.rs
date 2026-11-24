@@ -12,8 +12,6 @@
 //! `⚠️` emoji, two columns because of its variation selector) are avoided
 //! on purpose: they break the alignment of the surrounding text.
 
-use std::sync::OnceLock;
-
 use crate::domain::task::{Priority, Status};
 use crate::domain::version::VersionStatus;
 
@@ -65,6 +63,9 @@ pub struct Glyphs {
     pub sort_asc: &'static str,
     /// Descending sort direction, shown next to the ID sort.
     pub sort_desc: &'static str,
+    /// `true` for the ASCII fallback, so callers that mix glyphs and text (the
+    /// braille spinner) can pick a matching set without inventing one.
+    ascii: bool,
 }
 
 impl Glyphs {
@@ -91,6 +92,7 @@ impl Glyphs {
             bar_half: "▌",
             sort_asc: "↑",
             sort_desc: "↓",
+            ascii: false,
         }
     }
 
@@ -117,6 +119,28 @@ impl Glyphs {
             bar_half: "=",
             sort_asc: "^",
             sort_desc: "v",
+            ascii: true,
+        }
+    }
+
+    /// `true` for the ASCII fallback set.
+    pub const fn is_ascii(&self) -> bool {
+        self.ascii
+    }
+
+    /// The glyph set requested by the environment: ASCII when `PMP_ASCII` is
+    /// set to a non-empty value, Unicode otherwise. Resolved once by the
+    /// composition root.
+    pub fn from_env() -> Glyphs {
+        Glyphs::from_lookup(&|key| std::env::var(key).ok())
+    }
+
+    /// Same as [`Self::from_env`] with an injectable lookup, for tests.
+    pub fn from_lookup(lookup: &impl Fn(&str) -> Option<String>) -> Glyphs {
+        if ascii_requested_in(lookup) {
+            Glyphs::ascii()
+        } else {
+            Glyphs::unicode()
         }
     }
 
@@ -175,61 +199,9 @@ impl Glyphs {
     }
 }
 
-/// `true` when the ASCII glyph set is requested through `PMP_ASCII`.
-pub fn ascii_requested() -> bool {
-    ascii_requested_in(&|key| std::env::var(key).ok())
-}
-
 /// `true` when the given lookup yields a non-empty `PMP_ASCII` value.
 fn ascii_requested_in(lookup: &impl Fn(&str) -> Option<String>) -> bool {
     lookup(ASCII_ENV).is_some_and(|value| !value.is_empty())
-}
-
-thread_local! {
-    /// Test-only override of the glyph set, so a render can be checked with
-    /// the ASCII fallback without touching the process environment.
-    static OVERRIDE: std::cell::RefCell<Option<Glyphs>> = const { std::cell::RefCell::new(None) };
-}
-
-/// The glyph set in use, resolved from the environment on first use.
-pub fn glyphs() -> Glyphs {
-    if let Some(glyphs) = OVERRIDE.with(|override_| *override_.borrow()) {
-        return glyphs;
-    }
-    static GLYPHS: OnceLock<Glyphs> = OnceLock::new();
-    *GLYPHS.get_or_init(|| {
-        if ascii_requested() {
-            Glyphs::ascii()
-        } else {
-            Glyphs::unicode()
-        }
-    })
-}
-
-/// Runs `body` with `glyphs` forced as the glyph set of the current thread.
-///
-/// This is how the tests exercise the ASCII fallback end to end.
-#[cfg(test)]
-pub fn with_glyphs<T>(glyphs: Glyphs, body: impl FnOnce() -> T) -> T {
-    let previous = OVERRIDE.with(|override_| override_.replace(Some(glyphs)));
-    let result = body();
-    OVERRIDE.with(|override_| *override_.borrow_mut() = previous);
-    result
-}
-
-/// Icon of a task status, using the glyph set in use.
-pub fn status_icon(status: Status) -> &'static str {
-    glyphs().status(status)
-}
-
-/// Icon of a task priority, using the glyph set in use.
-pub fn priority_icon(priority: Priority) -> &'static str {
-    glyphs().priority(priority)
-}
-
-/// Icon of a version status, using the glyph set in use.
-pub fn version_status_icon(status: VersionStatus) -> &'static str {
-    glyphs().version_status(status)
 }
 
 #[cfg(test)]
@@ -330,20 +302,13 @@ mod tests {
     }
 
     #[test]
-    fn ascii_set_is_used_when_requested() {
-        let glyphs = with_glyphs(Glyphs::ascii(), glyphs);
+    fn ascii_set_is_selected_from_the_lookup() {
+        let glyphs = Glyphs::from_lookup(&|key| (key == ASCII_ENV).then(|| "1".to_string()));
 
         assert_eq!(glyphs, Glyphs::ascii());
+        assert!(glyphs.is_ascii());
         assert_eq!(glyphs.status(Status::Todo), "o");
-    }
-
-    #[test]
-    fn override_restores_the_previous_set() {
-        with_glyphs(Glyphs::ascii(), || {
-            assert_eq!(glyphs(), Glyphs::ascii());
-        });
-
-        assert_ne!(glyphs(), Glyphs::ascii());
+        assert!(!Glyphs::unicode().is_ascii());
     }
 
     #[test]

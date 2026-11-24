@@ -19,9 +19,8 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::screens::Action;
-use crate::screens::components::glyphs;
+use crate::screens::UiContext;
 use crate::screens::components::popup::{centered_rect, dim_area, render_popup_scaffold_with};
-use crate::screens::components::theme;
 
 /// Default title of the confirmation modal.
 pub const DEFAULT_TITLE: &str = "Confirm";
@@ -93,15 +92,14 @@ impl ConfirmDialog {
     }
 
     /// Dims the background and draws the modal centered in `area`.
-    pub fn render(&self, frame: &mut Frame, area: Rect) {
+    pub fn render(&self, frame: &mut Frame, area: Rect, ui: &UiContext) {
         dim_area(frame);
 
         let (width, height) = self.geometry(area);
         let modal_area = centered_rect(width, height, area);
-        let theme = theme::theme();
-        let danger = theme.danger_style();
+        let danger = ui.danger_style();
         let title = Line::from(Span::styled(
-            format!(" {} {} ", glyphs::glyphs().warning, self.title),
+            format!(" {} {} ", ui.glyphs().warning, self.title),
             danger.add_modifier(Modifier::BOLD),
         ));
         let inner = render_popup_scaffold_with(frame, modal_area, title, danger);
@@ -118,7 +116,7 @@ impl ConfirmDialog {
             .wrap(Wrap { trim: true });
         frame.render_widget(message, inner);
 
-        let actions = actions_line().alignment(Alignment::Center);
+        let actions = actions_line(ui).alignment(Alignment::Center);
         let actions_area = Rect {
             y: inner.bottom().saturating_sub(1),
             height: 1,
@@ -137,7 +135,7 @@ impl ConfirmDialog {
             .max()
             .unwrap_or(0) as u16;
         // The actions line must never be truncated either.
-        let actions_width = actions_line().width() as u16;
+        let actions_width = actions_width() as u16;
         let width = message_width
             .max(actions_width)
             .saturating_add(HORIZONTAL_CHROME)
@@ -152,16 +150,25 @@ impl ConfirmDialog {
     }
 }
 
+const CONFIRM_KEY: &str = "[y]";
+const CONFIRM_LABEL: &str = " Confirm   ";
+const CANCEL_KEY: &str = "[n/Esc]";
+const CANCEL_LABEL: &str = " Cancel";
+
 /// The explicit actions offered by the dialog, with the accent on the
 /// confirming key and the muted style on the cancelling keys.
-fn actions_line() -> Line<'static> {
-    let theme = theme::theme();
+fn actions_line(ui: &UiContext) -> Line<'static> {
     Line::from(vec![
-        Span::styled("[y]", theme.accent_style().add_modifier(Modifier::BOLD)),
-        Span::raw(" Confirm   "),
-        Span::styled("[n/Esc]", theme.muted_style()),
-        Span::raw(" Cancel"),
+        Span::styled(CONFIRM_KEY, ui.accent_style().add_modifier(Modifier::BOLD)),
+        Span::raw(CONFIRM_LABEL),
+        Span::styled(CANCEL_KEY, ui.muted_style()),
+        Span::raw(CANCEL_LABEL),
     ])
+}
+
+/// Width of the actions line, independent of the palette.
+fn actions_width() -> usize {
+    format!("{CONFIRM_KEY}{CONFIRM_LABEL}{CANCEL_KEY}{CANCEL_LABEL}").width()
 }
 
 /// Number of terminal lines `text` needs when word-wrapped at `width`.
@@ -250,7 +257,7 @@ mod tests {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| dialog.render(frame, frame.area()))
+            .draw(|frame| dialog.render(frame, frame.area(), &UiContext::default()))
             .unwrap();
         buffer_to_string(terminal.backend().buffer())
     }
@@ -319,7 +326,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 frame.render_widget(Paragraph::new("background"), frame.area());
-                dialog.render(frame, frame.area());
+                dialog.render(frame, frame.area(), &UiContext::default());
             })
             .unwrap();
 
@@ -344,7 +351,7 @@ mod tests {
         let backend = TestBackend::new(10, 5);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| dialog.render(frame, frame.area()))
+            .draw(|frame| dialog.render(frame, frame.area(), &UiContext::default()))
             .unwrap();
 
         let (width, height) = dialog.geometry(Rect::new(0, 0, 10, 5));
@@ -400,7 +407,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 frame.render_widget(Block::bordered().title("Behind"), frame.area());
-                dialog.render(frame, frame.area());
+                dialog.render(frame, frame.area(), &UiContext::default());
             })
             .unwrap();
         let output = buffer_to_string(terminal.backend().buffer());

@@ -35,14 +35,13 @@
 
 use std::collections::BTreeMap;
 use std::str::FromStr;
-use std::sync::OnceLock;
 
 use ratatui::style::{Color, Modifier, Style};
 use serde::Deserialize;
 
 use crate::domain::task::{Priority, Status};
 use crate::domain::version::VersionStatus;
-use crate::screens::components::motion;
+use crate::screens::components::motion::Motion;
 
 /// Environment variable that disables colors when set to a non-empty value.
 pub const NO_COLOR_ENV: &str = "NO_COLOR";
@@ -274,19 +273,19 @@ impl Theme {
     }
 
     /// Style of the focused element's border.
-    pub fn border_focus_style(&self) -> Style {
-        self.pulse_fg(self.border_focus)
+    pub fn border_focus_style(&self, motion: &Motion) -> Style {
+        self.pulse_fg(self.border_focus, motion)
     }
 
     /// Foreground that pulses gently while animations are on. Only RGB colors
     /// can be blended, so the default ANSI palette stays steady.
-    pub fn pulse_style(&self, color: Color) -> Style {
-        self.pulse_fg(color)
+    pub fn pulse_style(&self, color: Color, motion: &Motion) -> Style {
+        self.pulse_fg(color, motion)
     }
 
-    fn pulse_fg(&self, color: Color) -> Style {
+    fn pulse_fg(&self, color: Color, motion: &Motion) -> Style {
         if self.colors_enabled {
-            Style::default().fg(motion::pulse_color(color))
+            Style::default().fg(motion.pulse_color(color))
         } else {
             Style::default()
         }
@@ -324,10 +323,10 @@ impl Theme {
     }
 
     /// Style of the selected row.
-    pub fn selection_style(&self) -> Style {
+    pub fn selection_style(&self, motion: &Motion) -> Style {
         if self.colors_enabled {
             Style::default()
-                .bg(motion::pulse_color(self.selection_bg))
+                .bg(motion.pulse_color(self.selection_bg))
                 .fg(self.selection_fg)
         } else {
             Style::default().add_modifier(Modifier::REVERSED)
@@ -398,45 +397,16 @@ fn parse_theme_file(text: &str) -> Option<ThemeFile> {
     }
 }
 
-/// `true` when `NO_COLOR` is set to a non-empty value.
-pub fn no_color_requested() -> bool {
-    no_color_in(&|key| std::env::var(key).ok())
-}
-
 /// `true` when the given lookup yields a non-empty `NO_COLOR` value.
 fn no_color_in(lookup: &impl Fn(&str) -> Option<String>) -> bool {
     lookup(NO_COLOR_ENV).is_some_and(|value| !value.is_empty())
 }
 
-/// The process-wide theme, resolved from the environment on first use.
-pub fn theme() -> &'static Theme {
-    static THEME: OnceLock<Theme> = OnceLock::new();
-    THEME.get_or_init(Theme::from_env)
-}
-
-/// Style of a task status, using the process-wide theme.
-pub fn status_style(status: Status) -> Style {
-    theme().status_style(status)
-}
-
-/// Style of a whole row carrying a task status, using the process-wide theme.
-pub fn status_row_style(status: Status) -> Style {
-    theme().status_row_style(status)
-}
-
-/// Style of a task priority, using the process-wide theme.
-pub fn priority_style(priority: Priority) -> Style {
-    theme().priority_style(priority)
-}
-
-/// Style of a version status, using the process-wide theme.
-pub fn version_status_style(status: VersionStatus) -> Style {
-    theme().version_status_style(status)
-}
-
 #[cfg(test)]
 mod tests {
     use ratatui::style::{Color, Modifier};
+
+    use crate::screens::components::motion::Motion;
 
     use super::*;
 
@@ -548,7 +518,7 @@ mod tests {
 
         assert!(
             theme
-                .selection_style()
+                .selection_style(&Motion::still())
                 .add_modifier
                 .contains(Modifier::REVERSED)
         );
@@ -575,7 +545,10 @@ mod tests {
     fn selection_style_uses_background_when_colors_are_enabled() {
         let theme = Theme::default_theme();
 
-        assert_eq!(theme.selection_style().bg, Some(theme.selection_bg));
+        assert_eq!(
+            theme.selection_style(&Motion::still()).bg,
+            Some(theme.selection_bg)
+        );
     }
 
     #[test]

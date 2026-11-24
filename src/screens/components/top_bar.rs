@@ -10,7 +10,7 @@ use ratatui::style::Modifier;
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
-use crate::screens::components::theme;
+use crate::screens::UiContext;
 use crate::screens::task_list_view::truncate_display;
 
 /// Below this width the version is hidden so the breadcrumb keeps the room.
@@ -35,8 +35,8 @@ pub fn render(
     breadcrumb: &[String],
     version: &str,
     update: Option<&str>,
+    ui: &UiContext,
 ) {
-    let theme = theme::theme();
     let brand = if area.width >= VERSION_MIN_WIDTH {
         format!("{APP_NAME} v{version}")
     } else {
@@ -55,21 +55,20 @@ pub fn render(
     ])
     .split(area);
 
-    let brand_line = Paragraph::new(format!(" {brand}"))
-        .style(theme.accent_style().add_modifier(Modifier::BOLD));
+    let brand_line =
+        Paragraph::new(format!(" {brand}")).style(ui.accent_style().add_modifier(Modifier::BOLD));
     frame.render_widget(brand_line, parts[0]);
 
     let crumb = truncate_display(&breadcrumb.join(SEPARATOR), parts[1].width as usize);
     let crumb_line = Paragraph::new(crumb)
-        .style(theme.text_style().add_modifier(Modifier::BOLD))
+        .style(ui.text_style().add_modifier(Modifier::BOLD))
         .alignment(Alignment::Center);
     frame.render_widget(crumb_line, parts[1]);
 
     if let Some(text) = update_text {
         let badge = Paragraph::new(format!("{text} "))
             .style(
-                theme
-                    .pulse_style(theme.warning)
+                ui.pulse_style(ui.theme().warning)
                     .add_modifier(Modifier::BOLD),
             )
             .alignment(Alignment::Right);
@@ -90,7 +89,16 @@ mod tests {
     fn render_to_string(width: u16, breadcrumb: &[String], update: Option<&str>) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
         terminal
-            .draw(|frame| render(frame, frame.area(), breadcrumb, "0.5.0", update))
+            .draw(|frame| {
+                render(
+                    frame,
+                    frame.area(),
+                    breadcrumb,
+                    "0.5.0",
+                    update,
+                    &UiContext::default(),
+                )
+            })
             .unwrap();
         let buffer = terminal.backend().buffer();
         (0..width)

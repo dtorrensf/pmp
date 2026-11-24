@@ -8,9 +8,13 @@ use ratatui::backend::TestBackend;
 use ratatui::style::Modifier;
 
 use crate::db::stub::StubRepository;
-use crate::screens::components::theme;
+use crate::screens::UiContext;
 
 use super::*;
+
+fn ui() -> UiContext {
+    UiContext::default()
+}
 
 fn task(name: &str, status: Status) -> Task {
     Task {
@@ -31,7 +35,7 @@ fn render_view(view: &TaskListView, width: u16, height: u16) -> String {
     let backend = ratatui::backend::TestBackend::new(width, height);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal
-        .draw(|frame| view.render(frame, frame.area()))
+        .draw(|frame| view.render(frame, frame.area(), &ui()))
         .unwrap();
     buffer_to_string(terminal.backend().buffer())
 }
@@ -153,7 +157,7 @@ fn dependency_marker_color(summary: DependencySummary) -> Option<ratatui::style:
     let backend = TestBackend::new(60, 8);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
-        .draw(|frame| view.render(frame, frame.area()))
+        .draw(|frame| view.render(frame, frame.area(), &ui()))
         .unwrap();
     let buffer = terminal.backend().buffer();
     buffer
@@ -170,7 +174,7 @@ fn dependency_marker_is_green_when_all_dependencies_are_done() {
         pending: 0,
     });
 
-    assert_eq!(color, Some(theme::theme().success_style().fg.unwrap()));
+    assert_eq!(color, Some(ui().success_style().fg.unwrap()));
 }
 
 #[test]
@@ -180,7 +184,7 @@ fn dependency_marker_is_yellow_while_a_dependency_is_pending() {
         pending: 1,
     });
 
-    assert_eq!(color, Some(theme::theme().warning_style().fg.unwrap()));
+    assert_eq!(color, Some(ui().warning_style().fg.unwrap()));
 }
 
 #[test]
@@ -230,13 +234,13 @@ fn header_row_uses_the_theme_instead_of_hardcoded_white() {
     let backend = TestBackend::new(60, 10);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
-        .draw(|frame| view.render(frame, frame.area()))
+        .draw(|frame| view.render(frame, frame.area(), &ui()))
         .unwrap();
     let buffer = terminal.backend().buffer();
 
     // The "ID" header cell sits at the first column of the header row.
     let header_cell = &buffer[(1, 0)];
-    assert_eq!(header_cell.fg, theme::theme().text);
+    assert_eq!(header_cell.fg, ui().theme().text);
     // White is invisible on light terminals.
     assert_ne!(header_cell.fg, ratatui::style::Color::White);
     assert!(header_cell.modifier.contains(Modifier::BOLD));
@@ -318,7 +322,7 @@ fn title_filter_combines_with_status_and_empty_title_clears_it() {
 }
 
 fn caption(title: Option<&str>, status: Option<Status>, priority: Option<Priority>) -> String {
-    super::table::filter_chips(title, status, priority, None)
+    super::table::filter_chips(title, status, priority, None, &ui())
         .spans
         .iter()
         .map(|span| span.content.as_ref())
@@ -556,7 +560,7 @@ fn sort_mode_survives_data_reload() {
 }
 
 fn caption_of(view: &TaskListView) -> String {
-    view.table_title()
+    view.table_title(&ui())
         .spans
         .iter()
         .map(|span| span.content.as_ref())

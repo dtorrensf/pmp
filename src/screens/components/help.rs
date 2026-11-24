@@ -16,8 +16,8 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
+use crate::screens::UiContext;
 use crate::screens::components::popup::{centered_rect, dim_area, render_popup_scaffold};
-use crate::screens::components::theme;
 use crate::screens::keybinding_footer::group_keys;
 
 pub const NAVIGATION: &str = "Navigation";
@@ -79,7 +79,7 @@ pub fn sections(
 }
 
 /// Draws the overlay over `area`, dimming what is behind it.
-pub fn render_overlay(frame: &mut Frame, area: Rect, sections: &[HelpSection]) {
+pub fn render_overlay(frame: &mut Frame, area: Rect, sections: &[HelpSection], ui: &UiContext) {
     dim_area(frame);
 
     let width = MAX_WIDTH.min(area.width);
@@ -93,16 +93,13 @@ pub fn render_overlay(frame: &mut Frame, area: Rect, sections: &[HelpSection]) {
     // Border (2) plus the close hint line.
     let height = (content_height + 3).min(area.height);
     let popup = centered_rect(width, height, area);
-    let inner = render_popup_scaffold(frame, popup, "Shortcuts");
+    let inner = render_popup_scaffold(frame, popup, "Shortcuts", ui);
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(1)])
         .split(inner);
-    frame.render_widget(
-        Paragraph::new(CLOSE_HINT).style(theme::theme().muted_style()),
-        rows[1],
-    );
+    frame.render_widget(Paragraph::new(CLOSE_HINT).style(ui.muted_style()), rows[1]);
 
     let key_width = sections
         .iter()
@@ -118,7 +115,7 @@ pub fn render_overlay(frame: &mut Frame, area: Rect, sections: &[HelpSection]) {
     for (group, column) in groups.iter().zip(column_areas.iter()) {
         let lines: Vec<Line<'static>> = group
             .iter()
-            .flat_map(|section| section_lines(section, key_width))
+            .flat_map(|section| section_lines(section, key_width, ui))
             .collect();
         frame.render_widget(Paragraph::new(lines), *column);
     }
@@ -147,21 +144,20 @@ fn group_height(sections: &[HelpSection]) -> u16 {
 }
 
 /// A section title, its shortcuts aligned on the key column, and a blank line.
-fn section_lines(section: &HelpSection, key_width: usize) -> Vec<Line<'static>> {
-    let theme = theme::theme();
+fn section_lines(section: &HelpSection, key_width: usize, ui: &UiContext) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(Span::styled(
         section.title,
-        theme.accent_style().add_modifier(Modifier::BOLD),
+        ui.accent_style().add_modifier(Modifier::BOLD),
     ))];
     for entry in &section.entries {
         let padding = " ".repeat(key_width.saturating_sub(entry.keys.width()));
         lines.push(Line::from(vec![
             Span::styled(
                 format!("  {}", entry.keys),
-                theme.accent_style().add_modifier(Modifier::BOLD),
+                ui.accent_style().add_modifier(Modifier::BOLD),
             ),
             Span::raw(padding),
-            Span::styled(entry.label, theme.text_style()),
+            Span::styled(entry.label, ui.text_style()),
         ]));
     }
     lines.push(Line::raw(""));
@@ -243,7 +239,14 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| render_overlay(frame, frame.area(), &sections))
+            .draw(|frame| {
+                render_overlay(
+                    frame,
+                    frame.area(),
+                    &sections,
+                    &crate::screens::UiContext::default(),
+                )
+            })
             .unwrap();
         let text = crate::screens::test_utils::buffer_to_string(terminal.backend().buffer());
 
@@ -263,7 +266,14 @@ mod tests {
         for (w, h) in [(0, 0), (1, 1), (10, 3), (30, 5)] {
             let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
             terminal
-                .draw(|frame| render_overlay(frame, frame.area(), &sections))
+                .draw(|frame| {
+                    render_overlay(
+                        frame,
+                        frame.area(),
+                        &sections,
+                        &crate::screens::UiContext::default(),
+                    )
+                })
                 .unwrap();
         }
     }

@@ -28,8 +28,7 @@ use crate::screens::components::popup::{centered_rect_percent, render_popup_scaf
 use crate::screens::components::scroll::{
     ListScroll, TextScroll, render_scrollbar, wrapped_line_count,
 };
-use crate::screens::components::theme::{self, status_style};
-use crate::screens::{Action, Component, Screen};
+use crate::screens::{Action, Component, Screen, UiContext};
 
 pub struct TaskForm {
     repo: Arc<dyn Repository>,
@@ -397,13 +396,13 @@ impl Component for TaskForm {
         }
     }
 
-    fn render(&self, frame: &mut Frame, area: Rect) {
+    fn render(&self, frame: &mut Frame, area: Rect, ui: &UiContext) {
         let title = if self.task_id.is_some() {
             "Edit Task"
         } else {
             "Create Task"
         };
-        let inner = render_form_frame(frame, area, title);
+        let inner = render_form_frame(frame, area, title, ui);
 
         let constraints = vec![
             Constraint::Length(3), // Name
@@ -425,6 +424,7 @@ impl Component for TaskForm {
             &self.name,
             self.active_field == 0,
             self.error.as_deref(),
+            ui,
         );
 
         render_description_field(
@@ -433,6 +433,7 @@ impl Component for TaskForm {
             "Description",
             &self.description,
             self.active_field == 1,
+            ui,
         );
 
         render_readonly_field(
@@ -441,6 +442,7 @@ impl Component for TaskForm {
             "Status",
             self.status.label(),
             self.active_field == 2,
+            ui,
         );
         render_readonly_field(
             frame,
@@ -448,10 +450,11 @@ impl Component for TaskForm {
             "Priority",
             self.priority.label(),
             self.active_field == 3,
+            ui,
         );
 
-        render_dependencies(self, frame, chunks[4]);
-        let notes_chunks = render_notes(self, frame, chunks[5]);
+        render_dependencies(self, frame, chunks[4], ui);
+        let notes_chunks = render_notes(self, frame, chunks[5], ui);
 
         if self.active_field == 0 {
             let x = field_cursor_x(chunks[0], &self.name);
@@ -464,12 +467,12 @@ impl Component for TaskForm {
         }
 
         if self.show_dep_popup {
-            render_dep_popup(self, frame, area);
+            render_dep_popup(self, frame, area, ui);
         }
     }
 }
 
-fn render_notes(form: &TaskForm, frame: &mut Frame, area: Rect) -> Vec<Rect> {
+fn render_notes(form: &TaskForm, frame: &mut Frame, area: Rect, ui: &UiContext) -> Vec<Rect> {
     let notes_style = if form.active_field == 5 {
         Style::default().add_modifier(Modifier::BOLD)
     } else {
@@ -492,7 +495,7 @@ fn render_notes(form: &TaskForm, frame: &mut Frame, area: Rect) -> Vec<Rect> {
     let list_area = notes_chunks[0];
     if form.notes.is_empty() {
         form.notes_scroll.sync(0, list_area.height);
-        hint_empty_state("No notes yet").render(frame, list_area);
+        hint_empty_state("No notes yet", ui).render(frame, list_area, ui);
     } else {
         let rows: Vec<String> = form
             .notes
@@ -518,12 +521,13 @@ fn render_notes(form: &TaskForm, frame: &mut Frame, area: Rect) -> Vec<Rect> {
         &form.new_note,
         form.active_field == 5,
         None,
+        ui,
     );
 
     notes_chunks.to_vec()
 }
 
-fn render_dependencies(form: &TaskForm, frame: &mut Frame, area: Rect) {
+fn render_dependencies(form: &TaskForm, frame: &mut Frame, area: Rect, ui: &UiContext) {
     let dep_style = if form.active_field == 4 {
         Style::default().add_modifier(Modifier::BOLD)
     } else {
@@ -541,7 +545,7 @@ fn render_dependencies(form: &TaskForm, frame: &mut Frame, area: Rect) {
     if form.selected_deps.is_empty() {
         let mut lines = vec![ratatui::text::Line::styled(
             "No dependencies",
-            theme::theme().muted_style(),
+            ui.muted_style(),
         )];
         if form.active_field == 4 {
             lines.push(ratatui::text::Line::from("[Enter: manage dependencies]"));
@@ -563,8 +567,8 @@ fn render_dependencies(form: &TaskForm, frame: &mut Frame, area: Rect) {
         .map(|task| {
             let name = ratatui::text::Span::from(task.name.clone());
             let status = ratatui::text::Span::styled(
-                format!(" [{}]", Badge::status(task.status).text()),
-                status_style(task.status),
+                format!(" [{}]", Badge::status(task.status, ui).text()),
+                ui.status_style(task.status),
             );
             ratatui::text::Line::from(vec![name, status])
         })
@@ -579,9 +583,9 @@ fn render_dependencies(form: &TaskForm, frame: &mut Frame, area: Rect) {
     frame.render_widget(para, inner);
 }
 
-fn render_dep_popup(form: &TaskForm, frame: &mut Frame, area: Rect) {
+fn render_dep_popup(form: &TaskForm, frame: &mut Frame, area: Rect, ui: &UiContext) {
     let popup_area = centered_rect_percent(60, area);
-    let inner = render_popup_scaffold(frame, popup_area, "Manage Dependencies");
+    let inner = render_popup_scaffold(frame, popup_area, "Manage Dependencies", ui);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -598,7 +602,7 @@ fn render_dep_popup(form: &TaskForm, frame: &mut Frame, area: Rect) {
     frame.render_widget(filter_para, chunks[0]);
 
     if form.popup_filtered_tasks.is_empty() {
-        hint_empty_state("No matching tasks").render(frame, chunks[1]);
+        hint_empty_state("No matching tasks", ui).render(frame, chunks[1], ui);
         return;
     }
 
@@ -623,12 +627,12 @@ fn render_dep_popup(form: &TaskForm, frame: &mut Frame, area: Rect) {
             let marker = if checked { "[x]" } else { "[ ]" };
             let name = ratatui::text::Span::from(format!("{} {}", marker, task.name));
             let status = ratatui::text::Span::styled(
-                format!(" [{}]", Badge::status(task.status).text()),
-                status_style(task.status),
+                format!(" [{}]", Badge::status(task.status, ui).text()),
+                ui.status_style(task.status),
             );
             let mut line = ratatui::text::Line::from(vec![name, status]);
             if i == form.popup_selected {
-                line = line.style(crate::screens::components::theme::theme().selection_style());
+                line = line.style(ui.selection_style());
             }
             line
         })
@@ -669,7 +673,6 @@ mod tests {
     };
     use crate::db::stub::StubRepository;
     use crate::domain::task::{Priority, Status};
-    use crate::screens::components::glyphs;
     use crate::screens::test_utils::{
         buffer_to_string, char_event, ctrl_s_event, key_event, render_to_string,
     };
@@ -814,7 +817,7 @@ mod tests {
         let backend = TestBackend::new(60, 28);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| form.render(frame, frame.area()))
+            .draw(|frame| form.render(frame, frame.area(), &UiContext::default()))
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let text = buffer_to_string(&buffer);
@@ -876,7 +879,7 @@ mod tests {
         let backend = TestBackend::new(60, 28);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| form.render(frame, frame.area()))
+            .draw(|frame| form.render(frame, frame.area(), &UiContext::default()))
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let text = buffer_to_string(&buffer);
@@ -895,7 +898,7 @@ mod tests {
         let backend = TestBackend::new(60, 28);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| form.render(frame, frame.area()))
+            .draw(|frame| form.render(frame, frame.area(), &UiContext::default()))
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let text = buffer_to_string(&buffer);
@@ -1051,14 +1054,14 @@ mod tests {
         let backend = TestBackend::new(60, 28);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| form.render(frame, frame.area()))
+            .draw(|frame| form.render(frame, frame.area(), &UiContext::default()))
             .unwrap();
         let buffer = terminal.backend().buffer();
 
         let badge_style = find_status_badge_style(buffer, "In Progress");
         assert_eq!(
             badge_style.fg,
-            Some(theme::theme().status_in_progress),
+            Some(UiContext::default().theme().status_in_progress),
             "the badge must use the theme's in-progress color"
         );
     }
@@ -1313,14 +1316,14 @@ mod tests {
         let backend = TestBackend::new(60, 28);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| form.render(frame, frame.area()))
+            .draw(|frame| form.render(frame, frame.area(), &UiContext::default()))
             .unwrap();
         let buffer = terminal.backend().buffer();
 
         let badge_style = find_status_badge_style(buffer, "Todo");
         assert_eq!(
             badge_style.fg,
-            Some(theme::theme().status_todo),
+            Some(UiContext::default().theme().status_todo),
             "the badge must use the theme's todo color"
         );
     }
@@ -1330,7 +1333,7 @@ mod tests {
         // The badge carries the status glyph before the label, e.g. `○ Todo`.
         let pattern = format!(
             "{} {label}",
-            glyphs::status_icon(match label {
+            UiContext::default().status_icon(match label {
                 "Todo" => Status::Todo,
                 "In Progress" => Status::InProgress,
                 _ => Status::Done,
@@ -1664,7 +1667,7 @@ mod tests {
         let backend = TestBackend::new(40, 28);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| form.render(frame, frame.area()))
+            .draw(|frame| form.render(frame, frame.area(), &UiContext::default()))
             .unwrap();
         let text = buffer_to_string(terminal.backend().buffer());
         let lines: Vec<&str> = text.split('\n').collect();

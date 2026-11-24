@@ -19,13 +19,12 @@ use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
 
 use crate::app::App;
-use crate::screens::Action;
 use crate::screens::components::help;
-use crate::screens::components::motion;
 use crate::screens::components::popup::{centered_rect, render_popup_scaffold};
 use crate::screens::components::toast;
 use crate::screens::components::top_bar;
 use crate::screens::keybinding_footer::render_footer;
+use crate::screens::{Action, UiContext};
 use crate::update::update_command;
 
 /// Polling timeout for each iteration of the TUI event loop.
@@ -114,8 +113,11 @@ pub fn run(mut app: App) -> anyhow::Result<()> {
     let mut terminal = Terminal::new(backend).context("create terminal")?;
     let terminate = setup_signal_flag().context("setup signal flag")?;
     let mut events = CrosstermEvents;
+    // Composition root: the theme file, the environment and the motion
+    // preference are read exactly once, before the first frame.
+    let ui = UiContext::from_env();
 
-    run_loop(&mut app, &mut terminal, &mut events, &terminate)
+    run_loop(&mut app, &mut terminal, &mut events, &terminate, &ui)
 }
 
 fn setup_signal_flag() -> anyhow::Result<Arc<AtomicBool>> {
@@ -125,8 +127,13 @@ fn setup_signal_flag() -> anyhow::Result<Arc<AtomicBool>> {
     Ok(stop)
 }
 
-/// Publishes the frame time for the duration of the event loop and withdraws
-/// it on exit, so renders made outside the loop stay static.
+/// Measures the time since the event loop started and builds the context of
+/// each frame from it.
+///
+/// There is no global state to withdraw on exit: the base context resolved by
+/// the composition root has no frame time, so renders made after the loop (or
+/// before it) stay static. Dropping the clock simply stops producing animated
+/// frames.
 struct FrameClock {
     started: std::time::Instant,
 }
@@ -138,15 +145,10 @@ impl FrameClock {
         }
     }
 
-    /// Publishes the time elapsed since the loop started as the current frame.
-    fn publish(&self) {
-        motion::set_frame_time(Some(self.started.elapsed()));
-    }
-}
-
-impl Drop for FrameClock {
-    fn drop(&mut self) {
-        motion::set_frame_time(None);
+    /// The context of the frame being drawn: `base` with the elapsed time
+    /// since the loop started.
+    fn frame(&self, base: &UiContext) -> UiContext {
+        base.with_frame_time(self.started.elapsed())
     }
 }
 
@@ -155,6 +157,7 @@ fn run_loop<B, E>(
     terminal: &mut Terminal<B>,
     events: &mut E,
     stop: &AtomicBool,
+    ui: &UiContext,
 ) -> anyhow::Result<()>
 where
     B: Backend,
@@ -166,16 +169,16 @@ where
     let frame_clock = FrameClock::start();
 
     while !stop.load(Ordering::Relaxed) {
-        frame_clock.publish();
+        let frame_ui = frame_clock.frame(ui);
         app.poll_update();
         app.tick();
-        app.active_component().tick();
+        app.active_component().tick(&frame_ui);
         let title = top_bar::window_title(&app.breadcrumb());
         if title != shown_title {
             events.set_title(&title);
             shown_title = title;
         }
-        terminal.draw(|frame| render_app_frame(app, frame))?;
+        terminal.draw(|frame| render_app_frame(app, frame, &frame_ui))?;
 
         let event = events.next_event(EVENT_TIMEOUT)?;
         let is_timeout = event.is_none();
@@ -218,7 +221,7 @@ where
 
 /// Shared drawing for the whole application frame: active screen, footer
 /// (with the update hint when available), update banner and error overlay.
-fn render_app_frame(app: &mut App, frame: &mut Frame) {
+fn render_app_frame(app: &mut App, frame: &mut Frame, ui: &UiContext) {
     let area = frame.area();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -235,28 +238,35 @@ fn render_app_frame(app: &mut App, frame: &mut Frame) {
         &app.breadcrumb(),
         app.current_version(),
         app.update_version(),
+        ui,
     );
     let keys = app.active_component().keybindings();
-    app.active_component().render(frame, body);
+    app.active_component().render(frame, body, ui);
     let help_hint = !app.screen.accepts_text_input();
-    render_footer(frame, footer, keys, help_hint);
+    render_footer(frame, footer, keys, help_hint, ui);
     if let (true, Some(version)) = (app.is_update_banner_open(), app.update_version()) {
-        render_update_banner(frame, version, app.current_version(), area);
+        render_update_banner(frame, version, app.current_version(), area, ui);
     }
     if app.is_help_open() {
         let sections = app.active_component().help_sections();
-        help::render_overlay(frame, area, &sections);
+        help::render_overlay(frame, area, &sections, ui);
     }
     if let Some(toast) = app.toasts().current() {
         let queued = app.toasts().len();
         let age = app.toast_age().unwrap_or_default();
-        toast::render(frame, toast, queued, body, age);
+        toast::render(frame, toast, queued, body, age, ui);
     }
 }
 
-fn render_update_banner(frame: &mut Frame, version: &str, current_version: &str, area: Rect) {
+fn render_update_banner(
+    frame: &mut Frame,
+    version: &str,
+    current_version: &str,
+    area: Rect,
+    ui: &UiContext,
+) {
     let popup = centered_rect(64, 9, area);
-    let inner = render_popup_scaffold(frame, popup, "Update available");
+    let inner = render_popup_scaffold(frame, popup, "Update available", ui);
     let command = update_command(version);
     let text = format!(
         "New version: v{version} (current: v{current_version})\n\nUpdate with:\n{command}\n\nEsc: close"
@@ -431,7 +441,13 @@ mod tests {
         let mut events = VecEventSource::with_stop(events, stop.clone());
         let backend = TestBackend::new(60, 24);
         let mut terminal = Terminal::new(backend)?;
-        run_loop(app, &mut terminal, &mut events, &stop)
+        run_loop(
+            app,
+            &mut terminal,
+            &mut events,
+            &stop,
+            &UiContext::default(),
+        )
     }
 
     #[test]
@@ -559,7 +575,14 @@ mod tests {
         let backend = TestBackend::new(60, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        run_loop(&mut app, &mut terminal, &mut source, &stop).unwrap();
+        run_loop(
+            &mut app,
+            &mut terminal,
+            &mut source,
+            &stop,
+            &UiContext::default(),
+        )
+        .unwrap();
 
         let text = render_app_to_string(&mut app);
         assert!(
@@ -596,7 +619,14 @@ mod tests {
         let mut source = VecEventSource::with_timeouts(open_filter_events, stop.clone());
         let backend = TestBackend::new(60, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        run_loop(&mut app, &mut terminal, &mut source, &stop).unwrap();
+        run_loop(
+            &mut app,
+            &mut terminal,
+            &mut source,
+            &stop,
+            &UiContext::default(),
+        )
+        .unwrap();
 
         let text = render_app_to_string(&mut app);
         assert!(text.contains("Filter"));
@@ -614,7 +644,14 @@ mod tests {
         let mut source = VecEventSource::with_timeouts(close_filter_events, stop.clone());
         let backend = TestBackend::new(60, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        run_loop(&mut app, &mut terminal, &mut source, &stop).unwrap();
+        run_loop(
+            &mut app,
+            &mut terminal,
+            &mut source,
+            &stop,
+            &UiContext::default(),
+        )
+        .unwrap();
 
         assert!(render_app_to_string(&mut app).contains("Dialog task"));
     }
@@ -643,7 +680,14 @@ mod tests {
         let backend = TestBackend::new(60, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        run_loop(&mut app, &mut terminal, &mut source, &stop).unwrap();
+        run_loop(
+            &mut app,
+            &mut terminal,
+            &mut source,
+            &stop,
+            &UiContext::default(),
+        )
+        .unwrap();
 
         let text = render_app_to_string(&mut app);
         assert!(
@@ -684,7 +728,14 @@ mod tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
 
-        run_loop(&mut app, &mut terminal, &mut source, &stop).unwrap();
+        run_loop(
+            &mut app,
+            &mut terminal,
+            &mut source,
+            &stop,
+            &UiContext::default(),
+        )
+        .unwrap();
         assert_eq!(source.titles, vec!["pmp — Projects".to_string()]);
 
         app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id: 1 }));
@@ -694,7 +745,14 @@ mod tests {
             remaining: 2,
             stop: stop.clone(),
         };
-        run_loop(&mut app, &mut terminal, &mut source, &stop).unwrap();
+        run_loop(
+            &mut app,
+            &mut terminal,
+            &mut source,
+            &stop,
+            &UiContext::default(),
+        )
+        .unwrap();
         assert_eq!(source.titles, vec!["pmp — Alpha".to_string()]);
     }
 
@@ -716,7 +774,13 @@ mod tests {
         let backend = TestBackend::new(60, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let result = run_loop(&mut app, &mut terminal, &mut events, &stop);
+        let result = run_loop(
+            &mut app,
+            &mut terminal,
+            &mut events,
+            &stop,
+            &UiContext::default(),
+        );
 
         assert!(result.is_ok());
         assert_eq!(app.screen, Screen::ProjectList);
@@ -835,7 +899,9 @@ mod tests {
     fn render_app_to_string_at_size(app: &mut App, width: u16, height: u16) -> String {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| render_app_frame(app, frame)).unwrap();
+        terminal
+            .draw(|frame| render_app_frame(app, frame, &UiContext::default()))
+            .unwrap();
         buffer_to_string(terminal.backend().buffer())
     }
 
@@ -932,12 +998,16 @@ mod tests {
     }
 
     #[test]
-    fn frame_clock_withdraws_frame_time_when_the_loop_ends() {
+    fn frame_clock_animates_frames_and_leaves_the_base_context_still() {
+        let base = UiContext::default();
         {
             let clock = FrameClock::start();
-            clock.publish();
-            assert!(motion::frame_time().is_some());
+            let frame = clock.frame(&base);
+            assert!(frame.frame_time().is_some());
+            assert!(frame.animating());
         }
-        assert_eq!(motion::frame_time(), None);
+        // No global clock survives the loop: the base context stays static.
+        assert_eq!(base.frame_time(), None);
+        assert!(!base.animating());
     }
 }

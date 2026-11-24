@@ -10,16 +10,16 @@ use ratatui::{
     widgets::{Paragraph, Wrap},
 };
 
+use crate::screens::UiContext;
 use crate::screens::components::fields::{render_field, render_readonly_field};
 use crate::screens::components::popup::{centered_rect, render_popup_scaffold};
-use crate::screens::components::theme;
 
 use super::modes::{FilterField, FilterState, MoveTaskState};
 
-pub(super) fn render_move(state: &MoveTaskState, frame: &mut Frame, area: Rect) {
+pub(super) fn render_move(state: &MoveTaskState, frame: &mut Frame, area: Rect, ui: &UiContext) {
     let height = (state.targets.len() as u16).max(1) + 4;
     let popup_area = centered_rect(52, height, area);
-    let inner = render_popup_scaffold(frame, popup_area, "Move task to version");
+    let inner = render_popup_scaffold(frame, popup_area, "Move task to version", ui);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -56,14 +56,14 @@ pub(super) fn render_move(state: &MoveTaskState, frame: &mut Frame, area: Rect) 
         "↑ ↓ choose  Enter move  Esc cancel"
     };
     let help_para = Paragraph::new(help)
-        .style(theme::theme().muted_style())
+        .style(ui.muted_style())
         .alignment(Alignment::Center);
     frame.render_widget(help_para, chunks[1]);
 }
 
-pub(super) fn render_filter(state: &FilterState, frame: &mut Frame, area: Rect) {
+pub(super) fn render_filter(state: &FilterState, frame: &mut Frame, area: Rect, ui: &UiContext) {
     let popup_area = centered_rect(52, 15, area);
-    let inner = render_popup_scaffold(frame, popup_area, "Filter Tasks");
+    let inner = render_popup_scaffold(frame, popup_area, "Filter Tasks", ui);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -90,6 +90,7 @@ pub(super) fn render_filter(state: &FilterState, frame: &mut Frame, area: Rect) 
         &state.filter_title,
         state.selected_field == FilterField::Title,
         None,
+        ui,
     );
     render_readonly_field(
         frame,
@@ -97,6 +98,7 @@ pub(super) fn render_filter(state: &FilterState, frame: &mut Frame, area: Rect) 
         "Status",
         &status_label,
         state.selected_field == FilterField::Status,
+        ui,
     );
     render_readonly_field(
         frame,
@@ -104,11 +106,12 @@ pub(super) fn render_filter(state: &FilterState, frame: &mut Frame, area: Rect) 
         "Priority",
         &priority_label,
         state.selected_field == FilterField::Priority,
+        ui,
     );
 
     let help = "Tab switch  ← → change  Enter apply  Esc cancel";
     let help_para = Paragraph::new(help)
-        .style(theme::theme().muted_style())
+        .style(ui.muted_style())
         .alignment(Alignment::Center);
     frame.render_widget(help_para, chunks[3]);
 }

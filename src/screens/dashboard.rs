@@ -17,10 +17,10 @@ use crate::db::repository::Repository;
 use crate::domain::project::Project;
 use crate::domain::task::{Status, Task};
 use crate::domain::version::Version;
+use crate::screens::UiContext;
 use crate::screens::components::activity::{ACTIVITY_DAYS, completions_per_day, today_epoch_day};
 use crate::screens::components::confirm_dialog::{ConfirmDialog, ConfirmState};
 use crate::screens::components::empty_state::EmptyState;
-use crate::screens::components::glyphs;
 use crate::screens::components::help::{self, HelpSection};
 use crate::screens::components::keys::key;
 use crate::screens::components::list_navigation::move_selection;
@@ -32,7 +32,6 @@ use crate::screens::components::scroll::{
 use crate::screens::components::stacked_bar::{
     STATUS_ROW_OVERHEAD, stacked_bar_spans, status_counts, status_rows,
 };
-use crate::screens::components::theme::{status_style, version_status_style};
 use crate::screens::{AUTO_REFRESH_INTERVAL, Action, Component, Screen};
 
 /// Width, in cells, of the stacked progress bar of each version.
@@ -61,7 +60,7 @@ impl VersionRow {
     /// One list line: name, stacked bar, percentage and counts per status, e.g.
     /// `v0.1.0 [Open]  ██████████ (100%)  todo(0) in-progress(0) done(1)`.
     /// `name_width` pads the name column so the bars line up across rows.
-    pub fn line(&self, name_width: usize) -> Line<'static> {
+    pub fn line(&self, name_width: usize, ui: &UiContext) -> Line<'static> {
         let parts = [
             ("todo", self.todo, Status::Todo),
             ("in-progress", self.in_progress, Status::InProgress),
@@ -70,13 +69,14 @@ impl VersionRow {
         let mut spans = vec![
             Span::styled(
                 pad_display(&self.name_column(), name_width),
-                version_status_style(self.version.status),
+                ui.version_status_style(self.version.status),
             ),
             Span::raw("  "),
         ];
         spans.extend(stacked_bar_spans(
             [self.todo, self.in_progress, self.done],
             VERSION_BAR_WIDTH,
+            ui,
         ));
         spans.push(Span::raw(format!(" ({}%)  ", self.percentage)));
         for (i, (label, count, status)) in parts.iter().enumerate() {
@@ -85,7 +85,7 @@ impl VersionRow {
             }
             spans.push(Span::styled(
                 format!("{label}({count})"),
-                status_style(*status),
+                ui.status_style(*status),
             ));
         }
         Line::from(spans)
@@ -229,8 +229,8 @@ impl Component for ProjectDashboard {
         self.load()
     }
 
-    fn tick(&mut self) {
-        self.gauge.set(self.gauge_ratio());
+    fn tick(&mut self, ui: &UiContext) {
+        self.gauge.set(self.gauge_ratio(), ui.motion());
     }
 
     fn help_sections(&self) -> Vec<HelpSection> {
@@ -335,7 +335,7 @@ impl Component for ProjectDashboard {
         }
     }
 
-    fn render(&self, frame: &mut Frame, area: Rect) {
+    fn render(&self, frame: &mut Frame, area: Rect, ui: &UiContext) {
         let project_name = self
             .project
             .as_ref()
@@ -384,7 +384,7 @@ impl Component for ProjectDashboard {
         // the count, so narrow terminals shorten the bar, never the text.
         let bar_width = (status_inner.width as usize).saturating_sub(STATUS_ROW_OVERHEAD);
         frame.render_widget(
-            Paragraph::new(Text::from(status_rows(counts, bar_width))),
+            Paragraph::new(Text::from(status_rows(counts, bar_width, ui))),
             status_inner,
         );
 
@@ -393,7 +393,7 @@ impl Component for ProjectDashboard {
         let percentage = completion_percentage(&self.all_tasks);
         let gauge = Gauge::default()
             .block(Block::default().title("Progress").borders(Borders::ALL))
-            .ratio(self.gauge.value())
+            .ratio(self.gauge.value(ui.motion()))
             .use_unicode(true)
             .label(format!("{done}/{total} tasks ({percentage}%)"));
         // The activity sparkline sits beside the gauge when there is room.
@@ -408,35 +408,35 @@ impl Component for ProjectDashboard {
             let activity = Sparkline::default()
                 .block(Block::default().title("14 days").borders(Borders::ALL))
                 .data(counts)
-                .style(status_style(Status::Done));
+                .style(ui.status_style(Status::Done));
             frame.render_widget(activity, activity_area);
         } else {
             frame.render_widget(gauge, chunks[2]);
         }
 
-        self.render_versions(frame, chunks[3]);
+        self.render_versions(frame, chunks[3], ui);
     }
 }
 
 impl ProjectDashboard {
-    fn render_versions(&self, frame: &mut Frame, area: Rect) {
-        self.render_versions_list(frame, area);
+    fn render_versions(&self, frame: &mut Frame, area: Rect, ui: &UiContext) {
+        self.render_versions_list(frame, area, ui);
         // The list stays visible, dimmed, behind the confirmation modal, which
         // is centered on the whole screen rather than on the versions list.
         if let Some(dialog) = self.confirm_delete.dialog() {
-            dialog.render(frame, frame.area());
+            dialog.render(frame, frame.area(), ui);
         }
     }
 
-    fn render_versions_list(&self, frame: &mut Frame, area: Rect) {
+    fn render_versions_list(&self, frame: &mut Frame, area: Rect, ui: &UiContext) {
         let block = Block::default().title("Versions").borders(Borders::ALL);
         if self.versions.is_empty() {
             let inner = block.inner(area);
             frame.render_widget(block, area);
             EmptyState::new("No versions yet")
-                .with_icon(glyphs::glyphs().status_todo)
+                .with_icon(ui.status_icon(Status::Todo))
                 .with_hint("Press c to create one.")
-                .render(frame, inner);
+                .render(frame, inner, ui);
             return;
         }
         // Rows that fit inside the top and bottom borders.
@@ -444,7 +444,7 @@ impl ProjectDashboard {
         let range =
             self.versions_scroll
                 .visible_range(self.versions.len(), self.selected, row_height);
-        let lines = version_lines(&self.versions);
+        let lines = version_lines(&self.versions, ui);
         let items: Vec<ListItem> = lines[range.clone()]
             .iter()
             .enumerate()
@@ -453,7 +453,7 @@ impl ProjectDashboard {
                 // A marker in front of the selected version; the same width
                 // on the others keeps the columns aligned.
                 let marker = if i == self.selected {
-                    format!("{} ", glyphs::glyphs().selection)
+                    format!("{} ", ui.glyphs().selection)
                 } else {
                     "  ".to_string()
                 };
@@ -476,13 +476,13 @@ fn pad_display(text: &str, width: usize) -> String {
 
 /// Lines for the versions list. The name column is padded to the longest
 /// name so every bar starts at the same column.
-fn version_lines(rows: &[VersionRow]) -> Vec<Line<'static>> {
+fn version_lines(rows: &[VersionRow], ui: &UiContext) -> Vec<Line<'static>> {
     let name_width = rows
         .iter()
         .map(|row| row.name_column().width())
         .max()
         .unwrap_or(0);
-    rows.iter().map(|row| row.line(name_width)).collect()
+    rows.iter().map(|row| row.line(name_width, ui)).collect()
 }
 
 #[cfg(test)]
@@ -540,11 +540,15 @@ mod tests {
         (repo, dashboard, project_id)
     }
 
+    fn ui() -> UiContext {
+        UiContext::default()
+    }
+
     fn render_text(dashboard: &ProjectDashboard) -> String {
         let backend = TestBackend::new(70, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| dashboard.render(frame, frame.area()))
+            .draw(|frame| dashboard.render(frame, frame.area(), &ui()))
             .unwrap();
         buffer_to_string(terminal.backend().buffer())
     }
@@ -584,7 +588,7 @@ mod tests {
         let lines: Vec<String> = dashboard
             .versions()
             .iter()
-            .map(|row| plain(&row.line(0)))
+            .map(|row| plain(&row.line(0, &ui())))
             .collect();
         assert_eq!(
             lines[0],
@@ -618,7 +622,7 @@ mod tests {
         dashboard.set_project_id(project_id);
         dashboard.init().unwrap();
         assert_eq!(
-            plain(&dashboard.versions()[0].line(0)),
+            plain(&dashboard.versions()[0].line(0, &ui())),
             "v0 [Backlog]  ░░░░░░░░░░ (0%)  todo(0) in-progress(0) done(0)"
         );
     }
@@ -628,7 +632,7 @@ mod tests {
         let (repo, mut dashboard, project_id) = setup_with_tasks();
         repo.create_version(project_id, "v10.0.0-rc1", "").unwrap();
         dashboard.refresh().unwrap();
-        let columns: Vec<usize> = version_lines(dashboard.versions())
+        let columns: Vec<usize> = version_lines(dashboard.versions(), &ui())
             .iter()
             .map(|line| {
                 plain(line)
@@ -677,7 +681,7 @@ mod tests {
         let backend = TestBackend::new(12, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| dashboard.render(frame, frame.area()))
+            .draw(|frame| dashboard.render(frame, frame.area(), &ui()))
             .unwrap();
     }
 
@@ -691,7 +695,7 @@ mod tests {
         let backend = TestBackend::new(40, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| dashboard.render(frame, frame.area()))
+            .draw(|frame| dashboard.render(frame, frame.area(), &ui()))
             .unwrap();
         let narrow = buffer_to_string(terminal.backend().buffer());
         assert!(!narrow.contains("14 days"));

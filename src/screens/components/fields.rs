@@ -15,8 +15,7 @@ use ratatui::{
 use ratatui_textarea::{TextArea, WrapMode};
 use unicode_width::UnicodeWidthStr;
 
-use crate::screens::components::glyphs;
-use crate::screens::components::theme;
+use crate::screens::UiContext;
 
 /// Columns taken by the borders plus the horizontal padding on each side.
 const FIELD_CHROME: u16 = 4;
@@ -24,13 +23,12 @@ const FIELD_CHROME: u16 = 4;
 /// The block every field is drawn in. The focused field gets the focus color
 /// and bold (bold keeps the cue under `NO_COLOR`); a validation `error` turns
 /// the border red and is written on the bottom border, next to the field.
-fn field_block(title: &str, active: bool, error: Option<&str>) -> Block<'static> {
-    let theme = theme::theme();
+fn field_block(title: &str, active: bool, error: Option<&str>, ui: &UiContext) -> Block<'static> {
     let (border, title_style) = if error.is_some() {
-        (theme.danger_style(), theme.danger_style())
+        (ui.danger_style(), ui.danger_style())
     } else if active {
-        let focus = theme.border_focus_style().add_modifier(Modifier::BOLD);
-        (focus, theme.accent_style().add_modifier(Modifier::BOLD))
+        let focus = ui.border_focus_style().add_modifier(Modifier::BOLD);
+        (focus, ui.accent_style().add_modifier(Modifier::BOLD))
     } else {
         (Style::default(), Style::default())
     };
@@ -40,8 +38,8 @@ fn field_block(title: &str, active: bool, error: Option<&str>) -> Block<'static>
         .border_style(border)
         .padding(Padding::horizontal(1));
     if let Some(error) = error {
-        let message = format!(" {} {error} ", glyphs::glyphs().error);
-        block = block.title_bottom(Line::from(Span::styled(message, theme.danger_style())));
+        let message = format!(" {} {error} ", ui.glyphs().error);
+        block = block.title_bottom(Line::from(Span::styled(message, ui.danger_style())));
     }
     block
 }
@@ -55,8 +53,9 @@ pub fn render_field(
     value: &str,
     active: bool,
     error: Option<&str>,
+    ui: &UiContext,
 ) {
-    let block = field_block(title, active, error);
+    let block = field_block(title, active, error, ui);
     frame.render_widget(
         Paragraph::new(value.to_string())
             .block(block)
@@ -75,8 +74,9 @@ pub fn render_description_field(
     title: &str,
     value: &TextArea<'_>,
     active: bool,
+    ui: &UiContext,
 ) {
-    let block = field_block(title, active, None);
+    let block = field_block(title, active, None, ui);
     let mut textarea = value.clone();
     textarea.set_block(block);
     textarea.set_wrap_mode(WrapMode::WordOrGlyph);
@@ -101,8 +101,9 @@ pub fn render_readonly_field(
     title: &str,
     value: &str,
     active: bool,
+    ui: &UiContext,
 ) {
-    let block = field_block(&format!("{title} (←/→)"), active, None);
+    let block = field_block(&format!("{title} (←/→)"), active, None, ui);
     frame.render_widget(Paragraph::new(value.to_string()).block(block), area);
 }
 
@@ -115,7 +116,7 @@ mod tests {
     use ratatui_textarea::TextArea;
 
     use crate::screens::Component;
-    use crate::screens::components::theme;
+    use crate::screens::UiContext;
     use crate::screens::test_utils::render_to_string;
 
     use super::{field_cursor_x, render_description_field, render_field, render_readonly_field};
@@ -166,18 +167,26 @@ mod tests {
     }
 
     impl Component for FieldStub {
-        fn render(&self, frame: &mut Frame, area: Rect) {
+        fn render(&self, frame: &mut Frame, area: Rect, ui: &UiContext) {
             match self.kind {
                 FieldKind::Editable { error } => {
                     let message = error.then_some("Name is required");
-                    render_field(frame, area, self.title, self.value, self.active, message);
+                    render_field(
+                        frame,
+                        area,
+                        self.title,
+                        self.value,
+                        self.active,
+                        message,
+                        ui,
+                    );
                 }
                 FieldKind::Readonly => {
-                    render_readonly_field(frame, area, self.title, self.value, self.active);
+                    render_readonly_field(frame, area, self.title, self.value, self.active, ui);
                 }
                 FieldKind::Description => {
                     let textarea = TextArea::from(self.value.lines());
-                    render_description_field(frame, area, self.title, &textarea, self.active);
+                    render_description_field(frame, area, self.title, &textarea, self.active, ui);
                 }
             }
         }
@@ -187,7 +196,7 @@ mod tests {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| target.render(frame, frame.area()))
+            .draw(|frame| target.render(frame, frame.area(), &UiContext::default()))
             .unwrap();
         terminal.backend().buffer().clone()
     }
@@ -240,10 +249,10 @@ mod tests {
         let buffer = render_to_buffer(&stub, 20, 5);
 
         // Focus is shown by color and by bold, so it survives NO_COLOR.
-        assert_eq!(buffer[(0, 0)].fg, theme::theme().border_focus);
+        assert_eq!(buffer[(0, 0)].fg, UiContext::default().theme().border_focus);
         assert!(buffer[(0, 0)].modifier.contains(Modifier::BOLD));
         // The title takes the accent color; the value keeps the default style.
-        assert_eq!(buffer[(1, 0)].fg, theme::theme().accent);
+        assert_eq!(buffer[(1, 0)].fg, UiContext::default().theme().accent);
         assert!(!buffer[(2, 1)].modifier.contains(Modifier::BOLD));
     }
 
@@ -253,7 +262,7 @@ mod tests {
 
         let buffer = render_to_buffer(&stub, 20, 5);
 
-        assert_eq!(buffer[(0, 0)].fg, theme::theme().danger);
+        assert_eq!(buffer[(0, 0)].fg, UiContext::default().theme().danger);
         assert!(!buffer[(0, 0)].modifier.contains(Modifier::BOLD));
     }
 
@@ -325,7 +334,7 @@ mod tests {
 
         let buffer = render_to_buffer(&stub, 20, 5);
 
-        assert_eq!(buffer[(0, 0)].fg, theme::theme().border_focus);
+        assert_eq!(buffer[(0, 0)].fg, UiContext::default().theme().border_focus);
         assert!(buffer[(0, 0)].modifier.contains(Modifier::BOLD));
     }
 

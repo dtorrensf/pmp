@@ -11,6 +11,7 @@ use crate::domain::version::{Version, VersionStatus};
 use crate::domain::version_summary::VersionSummary;
 
 use super::Component;
+use super::UiContext;
 
 pub fn key_event(code: KeyCode) -> Event {
     Event::Key(KeyEvent {
@@ -34,11 +35,24 @@ pub fn ctrl_s_event() -> Event {
     })
 }
 
+/// Renders `target` with the deterministic snapshot context (default palette,
+/// Unicode glyphs, no frame time).
 pub fn render_to_string(target: &impl Component, width: u16, height: u16) -> String {
+    render_to_string_with(target, width, height, &UiContext::default())
+}
+
+/// Renders `target` with an explicit context, for tests that need the ASCII
+/// glyph set, another palette or a chosen frame time.
+pub fn render_to_string_with(
+    target: &impl Component,
+    width: u16,
+    height: u16,
+    ui: &UiContext,
+) -> String {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
-        .draw(|frame| target.render(frame, frame.area()))
+        .draw(|frame| target.render(frame, frame.area(), ui))
         .unwrap();
     buffer_to_string(terminal.backend().buffer())
 }
@@ -65,7 +79,7 @@ mod tests {
     struct StubScreen;
 
     impl Component for StubScreen {
-        fn render(&self, frame: &mut Frame, area: Rect) {
+        fn render(&self, frame: &mut Frame, area: Rect, _ui: &UiContext) {
             frame.render_widget(Block::bordered().title("S"), area);
         }
     }
@@ -109,6 +123,41 @@ mod tests {
         let text = buffer_to_string(&buffer);
 
         assert_eq!(text.split('\n').collect::<Vec<_>>(), vec!["AB", ""]);
+    }
+
+    struct ContextScreen;
+
+    impl Component for ContextScreen {
+        fn render(&self, frame: &mut Frame, area: Rect, ui: &UiContext) {
+            use crate::domain::task::Status;
+            use ratatui::widgets::Paragraph;
+            frame.render_widget(
+                Paragraph::new(format!(
+                    "{}|{}",
+                    ui.status_icon(Status::Todo),
+                    ui.spinner_glyph()
+                )),
+                area,
+            );
+        }
+    }
+
+    #[test]
+    fn render_to_string_with_uses_the_given_context() {
+        use crate::screens::components::glyphs::Glyphs;
+        use crate::screens::components::motion::SPINNER_STEP;
+
+        let plain = render_to_string(&ContextScreen, 8, 1);
+        assert_eq!(plain, "○|⠋");
+
+        let ascii = UiContext::default().with_glyphs(Glyphs::ascii());
+        assert_eq!(render_to_string_with(&ContextScreen, 8, 1, &ascii), "o||");
+
+        let animated = UiContext::default().with_frame_time(SPINNER_STEP);
+        assert_eq!(
+            render_to_string_with(&ContextScreen, 8, 1, &animated),
+            "○|⠙"
+        );
     }
 
     #[test]

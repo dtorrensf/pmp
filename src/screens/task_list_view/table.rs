@@ -13,11 +13,10 @@ use ratatui::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use crate::screens::UiContext;
 use crate::screens::components::badge::Badge;
 use crate::screens::components::empty_state::EmptyState;
-use crate::screens::components::glyphs;
 use crate::screens::components::scroll::render_scrollbar;
-use crate::screens::components::theme::{self, priority_style, status_row_style, status_style};
 
 use super::state::{SortMode, TaskListState};
 
@@ -34,12 +33,13 @@ pub(super) fn render(
     summaries: &HashMap<i64, DependencySummary>,
     frame: &mut Frame,
     area: Rect,
+    ui: &UiContext,
 ) {
     if state.is_empty() {
         EmptyState::new("No tasks")
-            .with_icon(glyphs::glyphs().status_todo)
+            .with_icon(ui.status_icon(crate::domain::task::Status::Todo))
             .with_hint("Press c to create one.")
-            .render(frame, area);
+            .render(frame, area, ui);
         return;
     }
 
@@ -65,7 +65,7 @@ pub(super) fn render(
         Cell::from("Status"),
         Cell::from("Priority"),
     ])
-    .style(theme::theme().header_style());
+    .style(ui.header_style());
 
     let widths = [
         Constraint::Length(id_width),
@@ -87,9 +87,9 @@ pub(super) fn render(
             let i = range.start + offset;
             let selected = i == state.selected();
             let style = if selected {
-                theme::theme().selection_style()
+                ui.selection_style()
             } else {
-                status_row_style(task.status)
+                ui.status_row_style(task.status)
             };
             let dependencies = task.id.and_then(|id| summaries.get(&id).copied());
             Row::new(vec![
@@ -97,10 +97,11 @@ pub(super) fn render(
                     Line::from(task.id.map_or_else(|| "-".to_string(), |id| id.to_string()))
                         .right_aligned(),
                 ),
-                name_cell(&task.name, dependencies, selected, name_width),
-                Cell::from(Badge::status_live(task.status).text()).style(status_style(task.status)),
-                Cell::from(Badge::priority(task.priority).text())
-                    .style(priority_style(task.priority)),
+                name_cell(&task.name, dependencies, selected, name_width, ui),
+                Cell::from(Badge::status_live(task.status, ui).text())
+                    .style(ui.status_style(task.status)),
+                Cell::from(Badge::priority(task.priority, ui).text())
+                    .style(ui.priority_style(task.priority)),
             ])
             .style(style)
         })
@@ -122,19 +123,20 @@ pub(super) fn render(
 
 /// Caption for the enclosing block: one chip per active filter, the sort
 /// direction and, while filters are active, how to clear them.
-pub(super) fn title(state: &TaskListState) -> Line<'static> {
+pub(super) fn title(state: &TaskListState, ui: &UiContext) -> Line<'static> {
     let filters = state.filters();
     filter_chips(
         filters.title.as_deref(),
         filters.status,
         filters.priority,
-        sort_arrow(state.sort_mode()),
+        sort_arrow(state.sort_mode(), ui),
+        ui,
     )
 }
 
 /// Direction arrow shown in the table title, `None` for the default order.
-fn sort_arrow(mode: SortMode) -> Option<&'static str> {
-    let glyphs = glyphs::glyphs();
+fn sort_arrow(mode: SortMode, ui: &UiContext) -> Option<&'static str> {
+    let glyphs = ui.glyphs();
     match mode {
         SortMode::Priority => None,
         SortMode::IdAsc => Some(glyphs.sort_asc),
@@ -155,15 +157,16 @@ fn name_cell(
     dependencies: Option<DependencySummary>,
     selected: bool,
     width: usize,
+    ui: &UiContext,
 ) -> Cell<'static> {
-    let glyphs = glyphs::glyphs();
+    let glyphs = ui.glyphs();
     let marker = if selected { glyphs.selection } else { " " };
     let (suffix, suffix_style) = match dependencies {
         Some(summary) if summary.total > 0 => {
             let style = if summary.pending == 0 {
-                theme::theme().success_style()
+                ui.success_style()
             } else {
-                theme::theme().warning_style()
+                ui.warning_style()
             };
             (format!("  {} {}", glyphs.dependency, summary.total), style)
         }
@@ -207,9 +210,9 @@ pub(super) fn filter_chips(
     status: Option<crate::domain::task::Status>,
     priority: Option<crate::domain::task::Priority>,
     sort_arrow: Option<&str>,
+    ui: &UiContext,
 ) -> Line<'static> {
-    let theme = theme::theme();
-    let mut spans = vec![Span::styled("Tasks", theme.text_style())];
+    let mut spans = vec![Span::styled("Tasks", ui.text_style())];
 
     let mut chips = Vec::new();
     if let Some(title) = title {
@@ -221,16 +224,16 @@ pub(super) fn filter_chips(
     if let Some(priority) = priority {
         chips.push(("Priority", priority.label().to_string()));
     }
-    let chip_style = theme.accent_style().add_modifier(Modifier::BOLD);
+    let chip_style = ui.accent_style().add_modifier(Modifier::BOLD);
     for (label, value) in &chips {
         spans.push(Span::raw(" "));
         spans.push(Span::styled(format!("[{label}: {value}]"), chip_style));
     }
     if !chips.is_empty() {
-        spans.push(Span::styled("  x clear", theme.muted_style()));
+        spans.push(Span::styled("  x clear", ui.muted_style()));
     }
     if let Some(arrow) = sort_arrow {
-        spans.push(Span::styled(format!(" · ID {arrow}"), theme.muted_style()));
+        spans.push(Span::styled(format!(" · ID {arrow}"), ui.muted_style()));
     }
     Line::from(spans)
 }

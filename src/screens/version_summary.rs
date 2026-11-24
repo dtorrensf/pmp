@@ -19,13 +19,11 @@ use crate::domain::snapshot::CompactSnapshot;
 use crate::domain::task::{Priority, Status};
 use crate::domain::version::Version;
 use crate::domain::version_summary::VersionSummary;
-use crate::screens::components::glyphs;
 use crate::screens::components::help::{self, HelpSection};
 use crate::screens::components::keys::key;
 use crate::screens::components::scroll::{clamp_text_scroll, wrapped_line_count};
 use crate::screens::components::stacked_bar::{share_row, status_rows};
-use crate::screens::components::theme::priority_style;
-use crate::screens::{Action, Component, Screen};
+use crate::screens::{Action, Component, Screen, UiContext};
 
 /// Width, in cells, of the bars of the distribution chart.
 const CHART_BAR_WIDTH: usize = 20;
@@ -37,7 +35,7 @@ pub struct VersionSummaryScreen {
     summary_id: i64,
     version: Option<Version>,
     summary: Option<VersionSummary>,
-    chart: Vec<Line<'static>>,
+    snapshot: Option<CompactSnapshot>,
     scroll: Cell<u16>,
 }
 
@@ -57,7 +55,7 @@ impl VersionSummaryScreen {
             summary_id: 0,
             version: None,
             summary: None,
-            chart: Vec::new(),
+            snapshot: None,
             scroll: Cell::new(0),
         }
     }
@@ -76,11 +74,7 @@ impl VersionSummaryScreen {
         // Intentional fallback: a snapshot that cannot be parsed only loses the
         // optional chart. The summary prose still renders, so the user sees
         // the content instead of an error for a missing decoration.
-        self.chart = serde_json::from_str::<CompactSnapshot>(&summary.snapshot_json)
-            .ok()
-            .as_ref()
-            .map(render_chart)
-            .unwrap_or_default();
+        self.snapshot = serde_json::from_str::<CompactSnapshot>(&summary.snapshot_json).ok();
         self.version = Some(version);
         self.summary = Some(summary);
         self.scroll.set(0);
@@ -135,7 +129,7 @@ impl Component for VersionSummaryScreen {
         }
     }
 
-    fn render(&self, frame: &mut Frame, area: Rect) {
+    fn render(&self, frame: &mut Frame, area: Rect, ui: &UiContext) {
         let title = match &self.version {
             Some(v) => format!("{} · Summary", v.name),
             None => "Summary".to_string(),
@@ -144,7 +138,12 @@ impl Component for VersionSummaryScreen {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let chart_height = self.chart.len() as u16 + 2;
+        let chart = self
+            .snapshot
+            .as_ref()
+            .map(|snapshot| render_chart(snapshot, ui))
+            .unwrap_or_default();
+        let chart_height = chart.len() as u16 + 2;
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(chart_height)])
@@ -172,30 +171,31 @@ impl Component for VersionSummaryScreen {
         let chart_block = Block::default().title("Distribution").borders(Borders::ALL);
         let chart_inner = chart_block.inner(chunks[1]);
         frame.render_widget(chart_block, chunks[1]);
-        frame.render_widget(Paragraph::new(Text::from(self.chart.clone())), chart_inner);
+        frame.render_widget(Paragraph::new(Text::from(chart)), chart_inner);
     }
 }
 
-fn render_chart(snapshot: &CompactSnapshot) -> Vec<Line<'static>> {
+fn render_chart(snapshot: &CompactSnapshot, ui: &UiContext) -> Vec<Line<'static>> {
     let total = snapshot.tasks.len();
     let counts = [Status::Todo, Status::InProgress, Status::Done]
         .map(|status| count_status(snapshot, status));
 
     // Status rows and priority rows share one scale and one layout: a full
     // bar is every task of the version.
-    let mut lines = status_rows(counts.map(|c| c as u64), CHART_BAR_WIDTH);
+    let mut lines = status_rows(counts.map(|c| c as u64), CHART_BAR_WIDTH, ui);
     for (label, priority) in [
         ("high", Priority::High),
         ("medium", Priority::Medium),
         ("low", Priority::Low),
     ] {
         lines.push(share_row(
-            Some((glyphs::priority_icon(priority), priority_style(priority))),
+            Some((ui.priority_icon(priority), ui.priority_style(priority))),
             label,
             count_priority(snapshot, priority) as u64,
             total as u64,
-            priority_style(priority),
+            ui.priority_style(priority),
             CHART_BAR_WIDTH,
+            ui,
         ));
     }
     lines
@@ -256,7 +256,9 @@ mod tests {
             screen.summary.as_ref().unwrap().summary,
             "Release summary prose"
         );
-        assert_eq!(screen.chart.len(), 6);
+        let ui = UiContext::default();
+        let chart = render_chart(screen.snapshot.as_ref().unwrap(), &ui);
+        assert_eq!(chart.len(), 6);
     }
 
     #[test]

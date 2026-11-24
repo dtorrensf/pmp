@@ -10,9 +10,7 @@ use ratatui::style::Style;
 use ratatui::text::Span;
 
 use crate::domain::task::{Priority, Status};
-use crate::screens::components::glyphs;
-use crate::screens::components::motion;
-use crate::screens::components::theme;
+use crate::screens::UiContext;
 
 /// A label with an optional leading glyph and its own style.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,26 +43,26 @@ impl Badge {
     }
 
     /// The badge of a task status: its glyph, its label and its theme color.
-    pub fn status(status: Status) -> Badge {
+    pub fn status(status: Status, ui: &UiContext) -> Badge {
         Badge::new(status.label())
-            .with_glyph(glyphs::status_icon(status))
-            .with_style(theme::status_style(status))
+            .with_glyph(ui.status_icon(status))
+            .with_style(ui.status_style(status))
     }
 
     /// Like [`Badge::status`], but a task in progress shows the animated
     /// spinner in place of its static icon.
-    pub fn status_live(status: Status) -> Badge {
+    pub fn status_live(status: Status, ui: &UiContext) -> Badge {
         match status {
-            Status::InProgress => Badge::status(status).with_glyph(motion::spinner_glyph()),
-            _ => Badge::status(status),
+            Status::InProgress => Badge::status(status, ui).with_glyph(ui.spinner_glyph()),
+            _ => Badge::status(status, ui),
         }
     }
 
     /// The badge of a task priority: its glyph, its label and its theme color.
-    pub fn priority(priority: Priority) -> Badge {
+    pub fn priority(priority: Priority, ui: &UiContext) -> Badge {
         Badge::new(priority.label())
-            .with_glyph(glyphs::priority_icon(priority))
-            .with_style(theme::priority_style(priority))
+            .with_glyph(ui.priority_icon(priority))
+            .with_style(ui.priority_style(priority))
     }
 
     /// The plain text of the badge, glyph included.
@@ -86,6 +84,7 @@ mod tests {
     use ratatui::style::Color;
 
     use crate::domain::task::{Priority, Status};
+    use crate::screens::components::glyphs::Glyphs;
 
     use super::*;
 
@@ -105,24 +104,27 @@ mod tests {
 
     #[test]
     fn status_badge_combines_glyph_label_and_color() {
-        let badge = Badge::status(Status::InProgress);
+        let ui = UiContext::default();
+        let badge = Badge::status(Status::InProgress, &ui);
 
         assert_eq!(badge.text(), "◐ In Progress");
-        assert_eq!(badge.style.fg, Some(theme::theme().status_in_progress));
+        assert_eq!(badge.style.fg, Some(ui.theme().status_in_progress));
     }
 
     #[test]
     fn status_badge_uses_the_glyph_set() {
-        assert_eq!(Badge::status(Status::Todo).text(), "○ Todo");
-        assert_eq!(Badge::status(Status::Done).text(), "✔ Done");
+        let ui = UiContext::default();
+        assert_eq!(Badge::status(Status::Todo, &ui).text(), "○ Todo");
+        assert_eq!(Badge::status(Status::Done, &ui).text(), "✔ Done");
     }
 
     #[test]
     fn priority_badge_combines_glyph_label_and_color() {
-        let badge = Badge::priority(Priority::High);
+        let ui = UiContext::default();
+        let badge = Badge::priority(Priority::High, &ui);
 
         assert_eq!(badge.text(), "▲ High");
-        assert_eq!(badge.style.fg, Some(theme::theme().priority_high));
+        assert_eq!(badge.style.fg, Some(ui.theme().priority_high));
     }
 
     #[test]
@@ -139,9 +141,9 @@ mod tests {
 
     #[test]
     fn badge_follows_the_glyph_set_in_use() {
-        use crate::screens::components::glyphs::{self, Glyphs};
+        let ui = UiContext::default().with_glyphs(Glyphs::ascii());
 
-        let badge = glyphs::with_glyphs(Glyphs::ascii(), || Badge::status(Status::Done));
+        let badge = Badge::status(Status::Done, &ui);
 
         assert_eq!(badge.text(), "x Done");
     }

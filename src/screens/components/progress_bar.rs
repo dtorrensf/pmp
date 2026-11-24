@@ -9,7 +9,7 @@
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use crate::screens::components::glyphs;
+use crate::screens::UiContext;
 
 /// A bar of `width` cells showing `ratio` (0.0..=1.0) as filled.
 #[derive(Debug, Clone, PartialEq)]
@@ -75,8 +75,8 @@ impl ProgressBar {
     }
 
     /// The bar as a line of styled spans.
-    pub fn line(&self) -> Line<'static> {
-        let glyphs = glyphs::glyphs();
+    pub fn line(&self, ui: &UiContext) -> Line<'static> {
+        let glyphs = ui.glyphs();
         let filled = self.filled_cells();
         let half = self.has_half_cell();
         let filled_len = filled + usize::from(half);
@@ -102,8 +102,8 @@ impl ProgressBar {
     }
 
     /// The bar as plain text, without styles.
-    pub fn text(&self) -> String {
-        let glyphs = glyphs::glyphs();
+    pub fn text(&self, ui: &UiContext) -> String {
+        let glyphs = ui.glyphs();
         let filled = self.filled_cells();
         let half = self.has_half_cell();
         let filled_len = filled + usize::from(half);
@@ -123,20 +123,26 @@ impl ProgressBar {
 mod tests {
     use ratatui::style::Color;
 
+    use crate::screens::components::glyphs::Glyphs;
+
     use super::*;
+
+    fn ui() -> UiContext {
+        UiContext::default()
+    }
 
     #[test]
     fn empty_bar_is_all_empty_cells() {
         let bar = ProgressBar::new(0.0, 10);
 
-        assert_eq!(bar.text(), "░░░░░░░░░░");
+        assert_eq!(bar.text(&ui()), "░░░░░░░░░░");
     }
 
     #[test]
     fn full_bar_is_all_full_cells() {
         let bar = ProgressBar::new(1.0, 10);
 
-        assert_eq!(bar.text(), "██████████");
+        assert_eq!(bar.text(&ui()), "██████████");
     }
 
     #[test]
@@ -145,7 +151,7 @@ mod tests {
 
         assert_eq!(bar.filled_cells(), 5);
         assert!(!bar.has_half_cell());
-        assert_eq!(bar.text(), "█████░░░░░");
+        assert_eq!(bar.text(&ui()), "█████░░░░░");
     }
 
     #[test]
@@ -154,7 +160,7 @@ mod tests {
 
         assert_eq!(bar.filled_cells(), 3);
         assert!(bar.has_half_cell());
-        assert_eq!(bar.text(), "███▌░░░░░░");
+        assert_eq!(bar.text(&ui()), "███▌░░░░░░");
     }
 
     #[test]
@@ -163,26 +169,26 @@ mod tests {
 
         assert_eq!(bar.filled_cells(), 2);
         assert!(bar.has_half_cell());
-        assert_eq!(bar.text(), "██▌░░░░░░░");
+        assert_eq!(bar.text(&ui()), "██▌░░░░░░░");
     }
 
     #[test]
     fn ratio_rounds_to_the_nearest_half_cell() {
         // 20% of 10 cells is exactly two cells.
         let bar = ProgressBar::new(0.2, 10);
-        assert_eq!(bar.text(), "██░░░░░░░░");
+        assert_eq!(bar.text(&ui()), "██░░░░░░░░");
 
         // 15% of 10 cells is one and a half cells.
         let bar = ProgressBar::new(0.15, 10);
-        assert_eq!(bar.text(), "█▌░░░░░░░░");
+        assert_eq!(bar.text(&ui()), "█▌░░░░░░░░");
     }
 
     #[test]
     fn ratio_is_clamped_to_the_valid_range() {
         assert_eq!(ProgressBar::new(2.0, 10).ratio(), 1.0);
         assert_eq!(ProgressBar::new(-1.0, 10).ratio(), 0.0);
-        assert_eq!(ProgressBar::new(2.0, 10).text(), "██████████");
-        assert_eq!(ProgressBar::new(-1.0, 10).text(), "░░░░░░░░░░");
+        assert_eq!(ProgressBar::new(2.0, 10).text(&ui()), "██████████");
+        assert_eq!(ProgressBar::new(-1.0, 10).text(&ui()), "░░░░░░░░░░");
     }
 
     #[test]
@@ -190,7 +196,7 @@ mod tests {
         for ratio in [0.0, 0.15, 0.33, 0.5, 0.99, 1.0] {
             let bar = ProgressBar::new(ratio, 8);
             assert_eq!(
-                bar.text().chars().count(),
+                bar.text(&ui()).chars().count(),
                 8,
                 "ratio {ratio} produced a bar of the wrong width"
             );
@@ -201,7 +207,7 @@ mod tests {
     fn zero_width_bar_produces_no_cells() {
         let bar = ProgressBar::new(0.5, 0);
 
-        assert_eq!(bar.text(), "");
+        assert_eq!(bar.text(&ui()), "");
         assert!(!bar.has_half_cell());
     }
 
@@ -211,7 +217,7 @@ mod tests {
             .with_filled_style(ratatui::style::Style::default().fg(Color::Green))
             .with_empty_style(ratatui::style::Style::default().fg(Color::Gray));
 
-        let spans = bar.line().spans;
+        let spans = bar.line(&ui()).spans;
 
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].content, "██");
@@ -222,9 +228,9 @@ mod tests {
 
     #[test]
     fn bar_follows_the_glyph_set_in_use() {
-        use crate::screens::components::glyphs::{self, Glyphs};
+        let ui = ui().with_glyphs(Glyphs::ascii());
 
-        let text = glyphs::with_glyphs(Glyphs::ascii(), || ProgressBar::new(0.5, 4).text());
+        let text = ProgressBar::new(0.5, 4).text(&ui);
 
         assert_eq!(text, "##..");
     }

@@ -10,10 +10,9 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::domain::task::{Status, Task};
-use crate::screens::components::glyphs;
+use crate::screens::UiContext;
 use crate::screens::components::progress::percent;
 use crate::screens::components::progress_bar::ProgressBar;
-use crate::screens::components::theme::{self, status_style};
 use unicode_width::UnicodeWidthStr;
 
 /// The statuses in the order they are drawn, left to right.
@@ -59,12 +58,12 @@ pub fn bar_segments(counts: [u64; 3], width: usize) -> [usize; 3] {
 
 /// The bar as styled spans, exactly `width` cells long. Without tasks the
 /// whole bar is muted empty cells.
-pub fn stacked_bar_spans(counts: [u64; 3], width: usize) -> Vec<Span<'static>> {
-    let glyphs = glyphs::glyphs();
+pub fn stacked_bar_spans(counts: [u64; 3], width: usize, ui: &UiContext) -> Vec<Span<'static>> {
+    let glyphs = ui.glyphs();
     if counts.iter().sum::<u64>() == 0 {
         return vec![Span::styled(
             glyphs.bar_empty.repeat(width),
-            theme::theme().muted_style(),
+            ui.muted_style(),
         )];
     }
     let cells = bar_segments(counts, width);
@@ -72,7 +71,7 @@ pub fn stacked_bar_spans(counts: [u64; 3], width: usize) -> Vec<Span<'static>> {
         .iter()
         .zip(cells)
         .filter(|(_, n)| *n > 0)
-        .map(|(status, n)| Span::styled(glyphs.bar_full.repeat(n), status_style(*status)))
+        .map(|(status, n)| Span::styled(glyphs.bar_full.repeat(n), ui.status_style(*status)))
         .collect()
 }
 
@@ -81,7 +80,7 @@ pub fn stacked_bar_spans(counts: [u64; 3], width: usize) -> Vec<Span<'static>> {
 /// same scale (the total of tasks), so the rows compare at a glance.
 /// `bar_width` is the width of the bar in cells, without the label and the
 /// count; see `STATUS_ROW_OVERHEAD`.
-pub fn status_rows(counts: [u64; 3], bar_width: usize) -> Vec<Line<'static>> {
+pub fn status_rows(counts: [u64; 3], bar_width: usize, ui: &UiContext) -> Vec<Line<'static>> {
     let total: u64 = counts.iter().sum();
     STATUS_ORDER
         .iter()
@@ -92,8 +91,9 @@ pub fn status_rows(counts: [u64; 3], bar_width: usize) -> Vec<Line<'static>> {
                 status_label(*status),
                 count,
                 total,
-                status_style(*status),
+                ui.status_style(*status),
                 bar_width,
+                ui,
             )
         })
         .collect()
@@ -109,6 +109,7 @@ pub fn share_row(
     total: u64,
     style: Style,
     bar_width: usize,
+    ui: &UiContext,
 ) -> Line<'static> {
     let ratio = if total == 0 {
         0.0
@@ -117,7 +118,7 @@ pub fn share_row(
     };
     let bar = ProgressBar::new(ratio, bar_width)
         .with_filled_style(style)
-        .with_empty_style(theme::theme().muted_style());
+        .with_empty_style(ui.muted_style());
 
     // The icon, when present, takes its own cell and a space before the label.
     let mut spans = Vec::new();
@@ -129,7 +130,7 @@ pub fn share_row(
     }
     let padding = STATUS_LABEL_WIDTH.saturating_sub(used + label.width());
     spans.push(Span::raw(format!("{label}{}", " ".repeat(padding))));
-    spans.extend(bar.line().spans);
+    spans.extend(bar.line(ui).spans);
     spans.push(Span::raw(format!(
         "  {count:>3}  ({:>3}%)",
         percent(count, total)
@@ -157,6 +158,10 @@ fn status_label(status: Status) -> &'static str {
 mod tests {
     use super::*;
 
+    fn ui() -> UiContext {
+        UiContext::default()
+    }
+
     fn text(spans: &[Span]) -> String {
         spans.iter().map(|s| s.content.as_ref()).collect()
     }
@@ -179,21 +184,21 @@ mod tests {
 
     #[test]
     fn empty_bar_is_muted_empty_cells() {
-        let spans = stacked_bar_spans([0, 0, 0], 6);
+        let spans = stacked_bar_spans([0, 0, 0], 6, &ui());
         assert_eq!(text(&spans), "░░░░░░");
     }
 
     #[test]
     fn bar_has_exactly_the_requested_width() {
         for width in [0, 1, 2, 7, 40] {
-            let spans = stacked_bar_spans([3, 1, 2], width);
+            let spans = stacked_bar_spans([3, 1, 2], width, &ui());
             assert_eq!(text(&spans).chars().count(), width);
         }
     }
 
     #[test]
     fn status_rows_have_label_bar_count_and_percentage() {
-        let rows = status_rows([3, 1, 2], 10);
+        let rows = status_rows([3, 1, 2], 10, &ui());
         let plain: Vec<String> = rows
             .iter()
             .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
@@ -205,7 +210,7 @@ mod tests {
 
     #[test]
     fn status_rows_without_tasks_are_empty() {
-        let rows = status_rows([0, 0, 0], 4);
+        let rows = status_rows([0, 0, 0], 4, &ui());
         assert_eq!(rows.len(), 3);
         let first: String = rows[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(first, "Todo        ░░░░    0  (  0%)");

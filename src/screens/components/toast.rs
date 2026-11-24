@@ -20,10 +20,9 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
-use crate::screens::components::glyphs;
-use crate::screens::components::motion;
+use crate::screens::UiContext;
+use crate::screens::components::motion::ease_out;
 use crate::screens::components::scroll::wrapped_line_count;
-use crate::screens::components::theme;
 
 /// How long success and info messages stay on screen.
 pub const AUTO_DISMISS_AFTER: Duration = Duration::from_secs(3);
@@ -56,8 +55,8 @@ impl Severity {
         }
     }
 
-    fn icon(self) -> &'static str {
-        let glyphs = glyphs::glyphs();
+    fn icon(self, ui: &UiContext) -> &'static str {
+        let glyphs = ui.glyphs();
         match self {
             Severity::Info => glyphs.info,
             Severity::Success => glyphs.success,
@@ -65,12 +64,11 @@ impl Severity {
         }
     }
 
-    fn style(self) -> Style {
-        let theme = theme::theme();
+    fn style(self, ui: &UiContext) -> Style {
         match self {
-            Severity::Info => theme.accent_style(),
-            Severity::Success => theme.success_style(),
-            Severity::Error => theme.danger_style(),
+            Severity::Info => ui.accent_style(),
+            Severity::Success => ui.success_style(),
+            Severity::Error => ui.danger_style(),
         }
     }
 }
@@ -172,7 +170,14 @@ impl Toasts {
 ///
 /// `age` is how long the message has been queued. While motion is on, a new
 /// toast slides in from the right edge and is drawn dimmed until it settles.
-pub fn render(frame: &mut Frame, toast: &Toast, queued: usize, area: Rect, age: Duration) {
+pub fn render(
+    frame: &mut Frame,
+    toast: &Toast,
+    queued: usize,
+    area: Rect,
+    age: Duration,
+    ui: &UiContext,
+) {
     let width = MAX_WIDTH.min(area.width);
     let text_width = width.saturating_sub(CHROME_WIDTH).max(1);
     let lines = wrapped_line_count(&toast.message, text_width).max(1) as u16;
@@ -180,8 +185,8 @@ pub fn render(frame: &mut Frame, toast: &Toast, queued: usize, area: Rect, age: 
     if height == 0 || width <= CHROME_WIDTH {
         return;
     }
-    let progress = motion::entrance_progress(age);
-    let slide = ((1.0 - motion::ease_out(progress)) * width as f64).round() as u16;
+    let progress = ui.entrance_progress(age);
+    let slide = ((1.0 - ease_out(progress)) * width as f64).round() as u16;
     let rect = Rect {
         x: (area.right() - width).saturating_add(slide),
         y: area.bottom() - height,
@@ -194,11 +199,11 @@ pub fn render(frame: &mut Frame, toast: &Toast, queued: usize, area: Rect, age: 
     }
     let settling = progress < 1.0;
 
-    let mut style = toast.severity.style();
+    let mut style = toast.severity.style(ui);
     if settling {
         style = style.add_modifier(Modifier::DIM);
     }
-    let mut title = format!(" {} {}", toast.severity.icon(), toast.severity.title());
+    let mut title = format!(" {} {}", toast.severity.icon(ui), toast.severity.title());
     if queued > 1 {
         title.push_str(&format!(" (1/{queued})"));
     }
@@ -212,7 +217,7 @@ pub fn render(frame: &mut Frame, toast: &Toast, queued: usize, area: Rect, age: 
         .border_style(style);
 
     frame.render_widget(Clear, rect);
-    let mut text_style = theme::theme().text_style();
+    let mut text_style = ui.text_style();
     if settling {
         text_style = text_style.add_modifier(Modifier::DIM);
     }
@@ -332,7 +337,16 @@ mod tests {
         for (w, h) in [(0, 0), (1, 1), (4, 3), (12, 4), (80, 24)] {
             let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
             terminal
-                .draw(|frame| render(frame, toast, 1, frame.area(), Duration::ZERO))
+                .draw(|frame| {
+                    render(
+                        frame,
+                        toast,
+                        1,
+                        frame.area(),
+                        Duration::ZERO,
+                        &UiContext::default(),
+                    )
+                })
                 .unwrap();
         }
     }
@@ -347,12 +361,11 @@ mod tests {
         let toast = toasts.current().unwrap().clone();
 
         let draw = |age: Duration| {
+            let ui = UiContext::default().with_frame_time(Duration::ZERO);
             let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
-            motion::with_frame_time(Some(Duration::ZERO), || {
-                terminal
-                    .draw(|frame| render(frame, &toast, 1, frame.area(), age))
-                    .unwrap();
-            });
+            terminal
+                .draw(|frame| render(frame, &toast, 1, frame.area(), age, &ui))
+                .unwrap();
             let buffer = terminal.backend().buffer().clone();
             (0..buffer.area().height)
                 .map(|y| {
@@ -365,6 +378,6 @@ mod tests {
         };
 
         assert!(!draw(Duration::ZERO).contains("Slides in"));
-        assert!(draw(motion::TOAST_ENTRANCE).contains("Slides in"));
+        assert!(draw(crate::screens::components::motion::TOAST_ENTRANCE).contains("Slides in"));
     }
 }
