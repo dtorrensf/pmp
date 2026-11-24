@@ -1,0 +1,743 @@
+---
+source: src/mcp/server/tests/contract.rs
+expression: tools
+---
+[
+  {
+    "name": "add_task_dependency",
+    "description": "Make one task depend on another: task_id depends on depends_on_id. Both tasks must be in the same version. Rejects self-dependencies and circular dependencies.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "depends_on_id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "task_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "task_id",
+        "depends_on_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "add_task_note",
+    "description": "Add a note to a task to record progress, decisions or context. Add notes as you work so the task history reflects what was actually done.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "task_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "task_id",
+        "content"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "compact_version",
+    "description": "Compact a version into a frozen summary. Freezes only its done tasks (with their notes/dependencies) and deletes them; todo tasks stay in the version. Fails if any task is in_progress, or if there is nothing to freeze (no done tasks and no previous summary). If todo tasks remain, the version stays open; otherwise it is marked released by default. When recompacting, the new summary must preserve the relevant knowledge from the previous summary (available in the preview as previous_summary) while incorporating the new tasks, notes and dependencies with their completed_at.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "mark_released": {
+          "description": "When omitted or true, the version is marked `released` after compacting\nonce no tasks remain. Ignored while todo tasks remain: the version stays open.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "summary": {
+          "type": "string"
+        },
+        "version_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version_id",
+        "summary"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "create_project",
+    "description": "Create a new project. Use when the user asks to start a new project. Requires a non-empty name; description and working_dir are optional. working_dir must be an absolute path; it is normalized before storing. The project starts with a default version (see list_versions).",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "working_dir": {
+          "description": "Absolute path of the project's workspace on disk. Optional: omit it for\na project that is not bound to a directory yet.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "create_task",
+    "description": "Create a new task in a version of a project. Use only when the user asks for a new task or work item. Requires the project id, the version id (see list_versions), a task name, and context, requirements and benefits. The task starts as todo. Optionally accepts a priority (Low, Medium, High); defaults to Medium.",
+    "inputSchema": {
+      "$defs": {
+        "PriorityParam": {
+          "description": "Priority as accepted by MCP tools. Serialized as a plain string enum\n(`\"Low\"`, `\"Medium\"`, `\"High\"`) so the generated input schema is a\nnon-nullable string enum that clients can rely on. Defaults to Medium.",
+          "enum": [
+            "Low",
+            "Medium",
+            "High"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "benefits": {
+          "type": "string"
+        },
+        "context": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "priority": {
+          "$ref": "#/$defs/PriorityParam",
+          "description": "Task priority: `Low`, `Medium` or `High`. Defaults to `Medium`."
+        },
+        "project_id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "requirements": {
+          "type": "string"
+        },
+        "version_id": {
+          "description": "Version the task is added to; must belong to `project_id`.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "version_id",
+        "name",
+        "context",
+        "requirements",
+        "benefits"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "create_version",
+    "description": "Create a version (release line) in a project. Use when planning a new release, for example v0.2.0. Name must be unique within the project and not empty. Status is backlog (default), open or released.",
+    "inputSchema": {
+      "$defs": {
+        "VersionStatus": {
+          "enum": [
+            "backlog",
+            "open",
+            "released"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "project_id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VersionStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`backlog` (default), `open` or `released`."
+        }
+      },
+      "required": [
+        "project_id",
+        "name"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "delete_task_note",
+    "description": "Delete a task note by its note id.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "note_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "note_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "delete_version_summary",
+    "description": "Delete a version summary by its id, restricted to the given version. Use to remove a compaction artifact; tasks already deleted during compaction are not restored.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "summary_id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "version_id": {
+          "description": "The version the summary belongs to; a mismatch is reported as not found.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version_id",
+        "summary_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "export_version_summary",
+    "description": "Export a version summary to a self-contained Markdown file with Mermaid charts (status pie, priority pie, dependency flowchart) and a task table. The file is always written inside the app's exports folder; the tool takes no destination path. Use to share or render a compacted version outside the app. Returns the written path.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "summary_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "summary_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "get_task_dependencies",
+    "description": "List the task ids that a task depends on (its blockers). Check before starting a task: incomplete dependencies block marking it done.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "task_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "task_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "get_task_dependents",
+    "description": "List the task ids that depend on a task (tasks it blocks). Use to understand the impact of changing or deleting a task.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "task_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "task_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_projects",
+    "description": "List all projects of the user. Use to discover project ids before listing versions or tasks, or when the user asks what projects they have.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_task_notes",
+    "description": "List the notes of a task, newest first. Use to read progress updates, decisions, context and reminders before continuing work on it.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "task_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "task_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_tasks",
+    "description": "List tasks for a project, optionally filtered by version_id (see list_versions), status (todo, in_progress, done) and priority (Low, Medium, High). Results are paginated: use limit (default 100, max 500) and offset, and check has_more/total to fetch the next page. Use when the user asks about their tasks, to-dos, pending work or progress, or to pick the next task to work on.",
+    "inputSchema": {
+      "$defs": {
+        "PriorityParam": {
+          "description": "Priority as accepted by MCP tools. Serialized as a plain string enum\n(`\"Low\"`, `\"Medium\"`, `\"High\"`) so the generated input schema is a\nnon-nullable string enum that clients can rely on. Defaults to Medium.",
+          "enum": [
+            "Low",
+            "Medium",
+            "High"
+          ],
+          "type": "string"
+        },
+        "Status": {
+          "enum": [
+            "todo",
+            "in_progress",
+            "done"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "limit": {
+          "description": "Maximum tasks to return. Defaults to 100; capped at 500.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "offset": {
+          "description": "Number of matching tasks to skip. Defaults to 0.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "priority": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PriorityParam"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "project_id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Status"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "version_id": {
+          "description": "Restrict the list to one version of the project.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_version_summaries",
+    "description": "List the summaries of a version, newest first. A version holds at most one summary; after compaction its tasks live only in the summary snapshot. Use to review what was frozen.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "version_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_versions",
+    "description": "List the versions (release lines) of a project, open ones first, then backlog, then released. Use to find the version_id that tasks must be created in, or to check which versions are active or released.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "project_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "move_task",
+    "description": "Move a task to another version of its own project. Only the version changes: notes, status, priority and dates stay. Moving to the current version is a no-op. Fails if the target version belongs to another project, or if the task has dependencies or dependents: they must stay within one version, so clear them first with set_task_dependencies. Returns the updated task.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "task_id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "version_id": {
+          "description": "Version of the same project the task moves to.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "task_id",
+        "version_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "preview_compact_version",
+    "description": "Preview the JSON snapshot that compact_version would freeze for a version, without changing anything. Includes the version, its done tasks (todo tasks are not frozen), their notes and dependencies, plus the previous summary when recompacting. Use before compact_version to review what will be persisted.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "version_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "read_version_summary",
+    "description": "Read one version summary by id, restricted to the given version. Returns the summary prose plus its frozen snapshot JSON. Use to inspect what a compacted version contained.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "summary_id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "version_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version_id",
+        "summary_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "remove_task_dependency",
+    "description": "Remove a dependency between two tasks. The task_id depends on depends_on_id.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "depends_on_id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "task_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "task_id",
+        "depends_on_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "set_task_dependencies",
+    "description": "Set the complete list of tasks that a task depends on, replacing the current list in one atomic operation. Prefer this over add/remove when changing several dependencies. Pass an empty list to clear them. Rejects self-dependencies, cycles and tasks from another version; on error nothing is changed. Returns the resulting depends_on ids.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "depends_on_ids": {
+          "description": "Full new set of task ids that `task_id` depends on. Empty clears them.",
+          "items": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "task_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "task_id",
+        "depends_on_ids"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "update_project",
+    "description": "Rename a project and/or change its description or working directory. Requires the project id and a non-empty name. Omit description or working_dir to keep the current value; send an empty working_dir to clear it. Relative paths are rejected. Use to edit project metadata instead of editing the database.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "description": {
+          "description": "New description. When omitted, the current description is kept.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "project_id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "working_dir": {
+          "description": "New working directory. Omit it to keep the current one; send an empty\nstring to clear it. Relative paths are rejected.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "project_id",
+        "name"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "update_task",
+    "description": "Edit an existing task: name and/or the context, requirements and benefits sections. Omitted fields keep their current value, so send only what changes. Status, priority and dependencies are not changed here (use update_task_status, update_task_priority and set_task_dependencies). Returns the updated task.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "benefits": {
+          "description": "New benefits section. Omit to keep the current one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "context": {
+          "description": "New context section. Omit to keep the current one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "New name. Must not be blank when provided.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requirements": {
+          "description": "New requirements section. Omit to keep the current one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "task_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "task_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "update_task_priority",
+    "description": "Change the priority of an existing task to Low, Medium or High. Use to reprioritize work; prefer this over editing the database directly.",
+    "inputSchema": {
+      "$defs": {
+        "PriorityParam": {
+          "description": "Priority as accepted by MCP tools. Serialized as a plain string enum\n(`\"Low\"`, `\"Medium\"`, `\"High\"`) so the generated input schema is a\nnon-nullable string enum that clients can rely on. Defaults to Medium.",
+          "enum": [
+            "Low",
+            "Medium",
+            "High"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "priority": {
+          "$ref": "#/$defs/PriorityParam"
+        },
+        "task_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "task_id",
+        "priority"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "update_task_status",
+    "description": "Change the status of a task to todo, in_progress or done. Call with in_progress when you start working on a task and with done when it is finished. Marking a task done fails with a validation error while it has incomplete dependencies; finish those first. Unknown task ids return task not found.",
+    "inputSchema": {
+      "$defs": {
+        "Status": {
+          "enum": [
+            "todo",
+            "in_progress",
+            "done"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "task_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "task_id",
+        "status"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "update_version",
+    "description": "Rename a version and/or change its description or status. Requires the version id and a non-empty name. Omit description or status to keep the current ones. Status is backlog, open or released. Fails when the name already exists in the same project. Use to edit version metadata instead of editing the database.",
+    "inputSchema": {
+      "$defs": {
+        "VersionStatus": {
+          "enum": [
+            "backlog",
+            "open",
+            "released"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "description": {
+          "description": "New description. When omitted, the current description is kept.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "New name. Must not be blank.",
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VersionStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "New status: `backlog`, `open` or `released`. When omitted, the current status is kept."
+        },
+        "version_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version_id",
+        "name"
+      ],
+      "type": "object"
+    }
+  }
+]

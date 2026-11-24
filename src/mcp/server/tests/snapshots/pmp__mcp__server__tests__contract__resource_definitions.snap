@@ -1,0 +1,52 @@
+---
+source: src/mcp/server/tests/contract.rs
+expression: "serde_json::json!({\n    \"resources\": resources.resources, \"resourceTemplates\":\n    templates.resource_templates,\n})"
+---
+{
+  "resourceTemplates": [
+    {
+      "description": "A single project by id. Use to get details about a specific project.",
+      "mimeType": "application/json",
+      "name": "project",
+      "uriTemplate": "pmp://projects/{id}"
+    },
+    {
+      "description": "Tasks for a project across all its versions. Use to see all tasks and their status for a specific project.",
+      "mimeType": "application/json",
+      "name": "project_tasks",
+      "uriTemplate": "pmp://projects/{id}/tasks"
+    },
+    {
+      "description": "Versions of a project, open ones first. Use to see the release lines of a project and their status.",
+      "mimeType": "application/json",
+      "name": "project_versions",
+      "uriTemplate": "pmp://projects/{id}/versions"
+    },
+    {
+      "description": "Tasks of one version. Use to see the work scheduled for a specific release.",
+      "mimeType": "application/json",
+      "name": "version_tasks",
+      "uriTemplate": "pmp://versions/{id}/tasks"
+    },
+    {
+      "description": "Summaries of a version after compaction. Use to review what was frozen.",
+      "mimeType": "application/json",
+      "name": "version_summaries",
+      "uriTemplate": "pmp://versions/{id}/summaries"
+    },
+    {
+      "description": "A single version summary by id, including its frozen snapshot.",
+      "mimeType": "application/json",
+      "name": "version_summary",
+      "uriTemplate": "pmp://summaries/{id}"
+    }
+  ],
+  "resources": [
+    {
+      "description": "All user projects. Read this to see what projects the user is working on.",
+      "mimeType": "application/json",
+      "name": "projects",
+      "uri": "pmp://projects"
+    }
+  ]
+}
