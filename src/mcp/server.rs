@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use tokio::task;
 
 use crate::application;
+use crate::config::DEFAULT_MCP_TIMEOUT;
 use crate::db::repository::{Repository, TaskFilter};
 use crate::domain::error::AppError;
 use crate::domain::task::{Priority, Status};
@@ -50,12 +51,6 @@ const VERSION_TASKS_TEMPLATE: &str = "pmp://versions/{id}/tasks";
 const VERSION_SUMMARIES_TEMPLATE: &str = "pmp://versions/{id}/summaries";
 const SUMMARY_TEMPLATE: &str = "pmp://summaries/{id}";
 
-/// Deadline for one repository operation. A tool or resource read runs its
-/// repository work as a single blocking operation, so this bounds each MCP
-/// request. Override with `PMP_MCP_TIMEOUT_SECS` when a slow disk needs longer.
-const DEFAULT_REPOSITORY_TIMEOUT: Duration = Duration::from_secs(30);
-const REPOSITORY_TIMEOUT_ENV: &str = "PMP_MCP_TIMEOUT_SECS";
-
 /// Default and maximum page size for `list_tasks`.
 const DEFAULT_TASK_PAGE_SIZE: u32 = 100;
 const MAX_TASK_PAGE_SIZE: u32 = 500;
@@ -70,6 +65,8 @@ const RESOURCE_PAGE_SIZE: usize = 50;
 
 pub struct PmpServer {
     repo: Arc<dyn Repository>,
+    /// Upper bound for one repository operation, from the unified config.
+    timeout: Duration,
 }
 
 /// Priority as accepted by MCP tools. Serialized as a plain string enum
@@ -260,7 +257,21 @@ pub struct ExportVersionSummaryParams {
 #[tool_router]
 impl PmpServer {
     pub fn new(repo: Arc<dyn Repository>) -> Self {
-        Self { repo }
+        Self {
+            repo,
+            timeout: DEFAULT_MCP_TIMEOUT,
+        }
+    }
+
+    /// Uses `timeout` for every repository operation of this server. A zero
+    /// timeout would fail every call, so it is ignored with a warning.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        if timeout.is_zero() {
+            tracing::warn!("ignoring a zero MCP timeout");
+            return self;
+        }
+        self.timeout = timeout;
+        self
     }
 
     pub async fn list_resources_page(
@@ -313,8 +324,10 @@ impl PmpServer {
 
         match uri {
             PROJECTS_URI => {
-                read_json_resource(repo, uri, |repo| application::projects::list(repo.as_ref()))
-                    .await
+                read_json_resource(repo, self.timeout, uri, |repo| {
+                    application::projects::list(repo.as_ref())
+                })
+                .await
             }
             uri if uri.starts_with(VERSIONS_PREFIX) => {
                 let tail = &uri[VERSIONS_PREFIX.len()..];
@@ -322,7 +335,7 @@ impl PmpServer {
                     let id = prefix
                         .parse::<i64>()
                         .map_err(|_| ErrorData::invalid_params("invalid version id", None))?;
-                    read_json_resource(repo, uri, move |repo| {
+                    read_json_resource(repo, self.timeout, uri, move |repo| {
                         application::summaries::list(repo.as_ref(), id)
                     })
                     .await
@@ -332,7 +345,7 @@ impl PmpServer {
                         .ok_or_else(|| ErrorData::invalid_params("unsupported resource uri", None))?
                         .parse::<i64>()
                         .map_err(|_| ErrorData::invalid_params("invalid version id", None))?;
-                    read_json_resource(repo, uri, move |repo| {
+                    read_json_resource(repo, self.timeout, uri, move |repo| {
                         application::tasks::list_by_version(repo.as_ref(), id)
                     })
                     .await
@@ -342,7 +355,7 @@ impl PmpServer {
                 let id = uri[SUMMARIES_PREFIX.len()..]
                     .parse::<i64>()
                     .map_err(|_| ErrorData::invalid_params("invalid summary id", None))?;
-                read_json_resource(repo, uri, move |repo| {
+                read_json_resource(repo, self.timeout, uri, move |repo| {
                     application::summaries::get(repo.as_ref(), id)
                 })
                 .await
@@ -353,7 +366,7 @@ impl PmpServer {
                     let id = prefix
                         .parse::<i64>()
                         .map_err(|_| ErrorData::invalid_params("invalid project id", None))?;
-                    read_json_resource(repo, uri, move |repo| {
+                    read_json_resource(repo, self.timeout, uri, move |repo| {
                         application::versions::list(repo.as_ref(), id)
                     })
                     .await
@@ -361,7 +374,7 @@ impl PmpServer {
                     let id = prefix
                         .parse::<i64>()
                         .map_err(|_| ErrorData::invalid_params("invalid project id", None))?;
-                    read_json_resource(repo, uri, move |repo| {
+                    read_json_resource(repo, self.timeout, uri, move |repo| {
                         application::tasks::list_by_project(repo.as_ref(), id)
                     })
                     .await
@@ -369,7 +382,7 @@ impl PmpServer {
                     let id = tail
                         .parse::<i64>()
                         .map_err(|_| ErrorData::invalid_params("invalid project id", None))?;
-                    read_json_resource(repo, uri, move |repo| {
+                    read_json_resource(repo, self.timeout, uri, move |repo| {
                         application::projects::get(repo.as_ref(), id)
                     })
                     .await
@@ -402,7 +415,7 @@ impl PmpServer {
             status,
             priority,
         };
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        let result = execute_repository(self.repo.clone(), self.timeout, move |repo| {
             application::tasks::page(repo.as_ref(), &filter, limit, offset)
         })
         .await?;
@@ -414,7 +427,7 @@ impl PmpServer {
         description = "List all projects of the user. Use to discover project ids before listing versions or tasks, or when the user asks what projects they have."
     )]
     async fn list_projects(&self) -> Result<CallToolResult, ErrorData> {
-        run_tool(self.repo.clone(), PROJECT_NOT_FOUND, |repo| {
+        run_tool(self.repo.clone(), self.timeout, PROJECT_NOT_FOUND, |repo| {
             application::projects::list(repo.as_ref())
         })
         .await
@@ -428,15 +441,20 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<CreateProjectParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
-            application::projects::create(
-                repo.as_ref(),
-                NewProject {
-                    name: params.name,
-                    description: params.description.unwrap_or_default(),
-                },
-            )
-        })
+        run_tool(
+            self.repo.clone(),
+            self.timeout,
+            PROJECT_NOT_FOUND,
+            move |repo| {
+                application::projects::create(
+                    repo.as_ref(),
+                    NewProject {
+                        name: params.name,
+                        description: params.description.unwrap_or_default(),
+                    },
+                )
+            },
+        )
         .await
     }
 
@@ -448,16 +466,21 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<UpdateProjectParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
-            application::projects::edit(
-                repo.as_ref(),
-                params.project_id,
-                ProjectEdit {
-                    name: params.name,
-                    description: params.description,
-                },
-            )
-        })
+        run_tool(
+            self.repo.clone(),
+            self.timeout,
+            PROJECT_NOT_FOUND,
+            move |repo| {
+                application::projects::edit(
+                    repo.as_ref(),
+                    params.project_id,
+                    ProjectEdit {
+                        name: params.name,
+                        description: params.description,
+                    },
+                )
+            },
+        )
         .await
     }
 
@@ -469,9 +492,12 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<ListVersionsParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
-            application::versions::list(repo.as_ref(), params.project_id)
-        })
+        run_tool(
+            self.repo.clone(),
+            self.timeout,
+            PROJECT_NOT_FOUND,
+            move |repo| application::versions::list(repo.as_ref(), params.project_id),
+        )
         .await
     }
 
@@ -483,17 +509,22 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<CreateVersionParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
-            application::versions::create(
-                repo.as_ref(),
-                NewVersion {
-                    project_id: params.project_id,
-                    name: params.name,
-                    description: params.description.unwrap_or_default(),
-                    status: params.status.unwrap_or(VersionStatus::Backlog),
-                },
-            )
-        })
+        run_tool(
+            self.repo.clone(),
+            self.timeout,
+            PROJECT_NOT_FOUND,
+            move |repo| {
+                application::versions::create(
+                    repo.as_ref(),
+                    NewVersion {
+                        project_id: params.project_id,
+                        name: params.name,
+                        description: params.description.unwrap_or_default(),
+                        status: params.status.unwrap_or(VersionStatus::Backlog),
+                    },
+                )
+            },
+        )
         .await
     }
 
@@ -505,17 +536,22 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<UpdateVersionParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        run_tool(self.repo.clone(), VERSION_NOT_FOUND, move |repo| {
-            application::versions::edit(
-                repo.as_ref(),
-                params.version_id,
-                VersionEdit {
-                    name: params.name,
-                    description: params.description,
-                    status: params.status,
-                },
-            )
-        })
+        run_tool(
+            self.repo.clone(),
+            self.timeout,
+            VERSION_NOT_FOUND,
+            move |repo| {
+                application::versions::edit(
+                    repo.as_ref(),
+                    params.version_id,
+                    VersionEdit {
+                        name: params.name,
+                        description: params.description,
+                        status: params.status,
+                    },
+                )
+            },
+        )
         .await
     }
 
@@ -527,9 +563,18 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<MoveTaskParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        run_tool(self.repo.clone(), TASK_OR_VERSION_NOT_FOUND, move |repo| {
-            application::tasks::move_to_version(repo.as_ref(), params.task_id, params.version_id)
-        })
+        run_tool(
+            self.repo.clone(),
+            self.timeout,
+            TASK_OR_VERSION_NOT_FOUND,
+            move |repo| {
+                application::tasks::move_to_version(
+                    repo.as_ref(),
+                    params.task_id,
+                    params.version_id,
+                )
+            },
+        )
         .await
     }
 
@@ -543,9 +588,12 @@ impl PmpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let task_id = params.task_id;
         let priority = params.priority;
-        run_tool(self.repo.clone(), TASK_NOT_FOUND, move |repo| {
-            application::tasks::set_priority(repo.as_ref(), task_id, priority.into())
-        })
+        run_tool(
+            self.repo.clone(),
+            self.timeout,
+            TASK_NOT_FOUND,
+            move |repo| application::tasks::set_priority(repo.as_ref(), task_id, priority.into()),
+        )
         .await
     }
 
@@ -557,19 +605,24 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<UpdateTaskParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        run_tool(self.repo.clone(), TASK_NOT_FOUND, move |repo| {
-            application::tasks::edit(
-                repo.as_ref(),
-                params.task_id,
-                TaskEdit {
-                    name: params.name,
-                    context: params.context,
-                    requirements: params.requirements,
-                    benefits: params.benefits,
-                    ..TaskEdit::default()
-                },
-            )
-        })
+        run_tool(
+            self.repo.clone(),
+            self.timeout,
+            TASK_NOT_FOUND,
+            move |repo| {
+                application::tasks::edit(
+                    repo.as_ref(),
+                    params.task_id,
+                    TaskEdit {
+                        name: params.name,
+                        context: params.context,
+                        requirements: params.requirements,
+                        benefits: params.benefits,
+                        ..TaskEdit::default()
+                    },
+                )
+            },
+        )
         .await
     }
 
@@ -581,26 +634,31 @@ impl PmpServer {
         &self,
         Parameters(params): Parameters<CreateTaskParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        run_tool(self.repo.clone(), PROJECT_NOT_FOUND, move |repo| {
-            validate_text("task", "context", &params.context)?;
-            validate_text("task", "requirements", &params.requirements)?;
-            validate_text("task", "benefits", &params.benefits)?;
-            let description =
-                compose_description(&params.context, &params.requirements, &params.benefits);
-            validate_text("task", "description", &description)?;
-            application::tasks::create(
-                repo.as_ref(),
-                NewTask {
-                    project_id: Some(params.project_id),
-                    version_id: params.version_id,
-                    name: params.name,
-                    description,
-                    status: Status::Todo,
-                    priority: params.priority.into(),
-                    depends_on: Vec::new(),
-                },
-            )
-        })
+        run_tool(
+            self.repo.clone(),
+            self.timeout,
+            PROJECT_NOT_FOUND,
+            move |repo| {
+                validate_text("task", "context", &params.context)?;
+                validate_text("task", "requirements", &params.requirements)?;
+                validate_text("task", "benefits", &params.benefits)?;
+                let description =
+                    compose_description(&params.context, &params.requirements, &params.benefits);
+                validate_text("task", "description", &description)?;
+                application::tasks::create(
+                    repo.as_ref(),
+                    NewTask {
+                        project_id: Some(params.project_id),
+                        version_id: params.version_id,
+                        name: params.name,
+                        description,
+                        status: Status::Todo,
+                        priority: params.priority.into(),
+                        depends_on: Vec::new(),
+                    },
+                )
+            },
+        )
         .await
     }
 
@@ -614,9 +672,12 @@ impl PmpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let task_id = params.task_id;
         let new_status = params.status;
-        run_tool(self.repo.clone(), TASK_NOT_FOUND, move |repo| {
-            application::tasks::set_status(repo.as_ref(), task_id, new_status)
-        })
+        run_tool(
+            self.repo.clone(),
+            self.timeout,
+            TASK_NOT_FOUND,
+            move |repo| application::tasks::set_status(repo.as_ref(), task_id, new_status),
+        )
         .await
     }
 
@@ -629,7 +690,7 @@ impl PmpServer {
         Parameters(params): Parameters<TaskIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let task_id = params.task_id;
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        let result = execute_repository(self.repo.clone(), self.timeout, move |repo| {
             application::dependencies::list(repo.as_ref(), task_id)
         })
         .await?;
@@ -653,7 +714,7 @@ impl PmpServer {
         Parameters(params): Parameters<TaskIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let task_id = params.task_id;
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        let result = execute_repository(self.repo.clone(), self.timeout, move |repo| {
             application::dependencies::dependents(repo.as_ref(), task_id)
         })
         .await?;
@@ -678,7 +739,7 @@ impl PmpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let task_id = params.task_id;
         let depends_on_id = params.depends_on_id;
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        let result = execute_repository(self.repo.clone(), self.timeout, move |repo| {
             application::dependencies::add(repo.as_ref(), task_id, depends_on_id)
         })
         .await?;
@@ -702,7 +763,7 @@ impl PmpServer {
         Parameters(params): Parameters<SetTaskDependenciesParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let task_id = params.task_id;
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        let result = execute_repository(self.repo.clone(), self.timeout, move |repo| {
             application::dependencies::set(repo.as_ref(), task_id, &params.depends_on_ids)
         })
         .await?;
@@ -727,7 +788,7 @@ impl PmpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let task_id = params.task_id;
         let depends_on_id = params.depends_on_id;
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        let result = execute_repository(self.repo.clone(), self.timeout, move |repo| {
             application::dependencies::remove(repo.as_ref(), task_id, depends_on_id)
         })
         .await?;
@@ -751,9 +812,12 @@ impl PmpServer {
         Parameters(params): Parameters<TaskIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let task_id = params.task_id;
-        run_tool(self.repo.clone(), TASK_NOT_FOUND, move |repo| {
-            application::notes::list(repo.as_ref(), task_id)
-        })
+        run_tool(
+            self.repo.clone(),
+            self.timeout,
+            TASK_NOT_FOUND,
+            move |repo| application::notes::list(repo.as_ref(), task_id),
+        )
         .await
     }
 
@@ -767,9 +831,12 @@ impl PmpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let task_id = params.task_id;
         let content = params.content;
-        run_tool(self.repo.clone(), TASK_NOT_FOUND, move |repo| {
-            application::notes::add(repo.as_ref(), task_id, &content)
-        })
+        run_tool(
+            self.repo.clone(),
+            self.timeout,
+            TASK_NOT_FOUND,
+            move |repo| application::notes::add(repo.as_ref(), task_id, &content),
+        )
         .await
     }
 
@@ -782,7 +849,7 @@ impl PmpServer {
         Parameters(params): Parameters<NoteIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let note_id = params.note_id;
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        let result = execute_repository(self.repo.clone(), self.timeout, move |repo| {
             application::notes::delete(repo.as_ref(), note_id)
         })
         .await?;
@@ -801,9 +868,12 @@ impl PmpServer {
         Parameters(params): Parameters<VersionIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let version_id = params.version_id;
-        run_tool(self.repo.clone(), VERSION_NOT_FOUND, move |repo| {
-            application::summaries::preview(repo.as_ref(), version_id)
-        })
+        run_tool(
+            self.repo.clone(),
+            self.timeout,
+            VERSION_NOT_FOUND,
+            move |repo| application::summaries::preview(repo.as_ref(), version_id),
+        )
         .await
     }
 
@@ -818,9 +888,14 @@ impl PmpServer {
         let version_id = params.version_id;
         let summary = params.summary;
         let mark_released = params.mark_released.unwrap_or(true);
-        run_tool(self.repo.clone(), VERSION_NOT_FOUND, move |repo| {
-            application::summaries::compact(repo.as_ref(), version_id, &summary, mark_released)
-        })
+        run_tool(
+            self.repo.clone(),
+            self.timeout,
+            VERSION_NOT_FOUND,
+            move |repo| {
+                application::summaries::compact(repo.as_ref(), version_id, &summary, mark_released)
+            },
+        )
         .await
     }
 
@@ -833,9 +908,12 @@ impl PmpServer {
         Parameters(params): Parameters<VersionIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let version_id = params.version_id;
-        run_tool(self.repo.clone(), VERSION_NOT_FOUND, move |repo| {
-            application::summaries::list(repo.as_ref(), version_id)
-        })
+        run_tool(
+            self.repo.clone(),
+            self.timeout,
+            VERSION_NOT_FOUND,
+            move |repo| application::summaries::list(repo.as_ref(), version_id),
+        )
         .await
     }
 
@@ -849,9 +927,12 @@ impl PmpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let version_id = params.version_id;
         let summary_id = params.summary_id;
-        run_tool(self.repo.clone(), SUMMARY_NOT_FOUND, move |repo| {
-            application::summaries::read(repo.as_ref(), version_id, summary_id)
-        })
+        run_tool(
+            self.repo.clone(),
+            self.timeout,
+            SUMMARY_NOT_FOUND,
+            move |repo| application::summaries::read(repo.as_ref(), version_id, summary_id),
+        )
         .await
     }
 
@@ -865,10 +946,15 @@ impl PmpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let version_id = params.version_id;
         let summary_id = params.summary_id;
-        run_tool(self.repo.clone(), SUMMARY_NOT_FOUND, move |repo| {
-            application::summaries::delete(repo.as_ref(), version_id, summary_id)?;
-            Ok(serde_json::json!({ "summary_id": summary_id }))
-        })
+        run_tool(
+            self.repo.clone(),
+            self.timeout,
+            SUMMARY_NOT_FOUND,
+            move |repo| {
+                application::summaries::delete(repo.as_ref(), version_id, summary_id)?;
+                Ok(serde_json::json!({ "summary_id": summary_id }))
+            },
+        )
         .await
     }
 
@@ -881,7 +967,7 @@ impl PmpServer {
         Parameters(params): Parameters<ExportVersionSummaryParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let summary_id = params.summary_id;
-        let result = execute_repository(self.repo.clone(), move |repo| {
+        let result = execute_repository(self.repo.clone(), self.timeout, move |repo| {
             application::summaries::export_markdown(repo.as_ref(), summary_id)
         })
         .await?;
@@ -904,13 +990,14 @@ fn internal_error(detail: impl std::fmt::Display) -> ErrorData {
 
 async fn execute_repository<T, F>(
     repo: Arc<dyn Repository>,
+    timeout: Duration,
     operation: F,
 ) -> Result<Result<T, AppError>, ErrorData>
 where
     T: Send + 'static,
     F: FnOnce(Arc<dyn Repository>) -> Result<T, AppError> + Send + 'static,
 {
-    execute_repository_with_timeout(repo, operation, repository_timeout()).await
+    execute_repository_with_timeout(repo, operation, timeout).await
 }
 
 async fn execute_repository_with_timeout<T, F>(
@@ -929,20 +1016,9 @@ where
     }
 }
 
-/// Timeout for repository operations: `PMP_MCP_TIMEOUT_SECS` when it is a
-/// positive integer, otherwise the default. An invalid value is ignored rather
-/// than preventing the server from starting.
-fn repository_timeout() -> Duration {
-    std::env::var(REPOSITORY_TIMEOUT_ENV)
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .filter(|seconds| *seconds > 0)
-        .map(Duration::from_secs)
-        .unwrap_or(DEFAULT_REPOSITORY_TIMEOUT)
-}
-
 async fn read_json_resource<T, F>(
     repo: Arc<dyn Repository>,
+    timeout: Duration,
     uri: &str,
     operation: F,
 ) -> Result<ReadResourceResult, ErrorData>
@@ -950,7 +1026,7 @@ where
     T: Serialize + Send + 'static,
     F: FnOnce(Arc<dyn Repository>) -> Result<T, AppError> + Send + 'static,
 {
-    let value = execute_repository(repo, operation)
+    let value = execute_repository(repo, timeout, operation)
         .await?
         .map_err(app_error_to_mcp)?;
     let text = serde_json::to_string_pretty(&value).map_err(internal_error)?;
@@ -1034,6 +1110,7 @@ fn tool_result<T: Serialize>(
 /// result, using `not_found` as the text for a missing record.
 async fn run_tool<T, F>(
     repo: Arc<dyn Repository>,
+    timeout: Duration,
     not_found: &str,
     operation: F,
 ) -> Result<CallToolResult, ErrorData>
@@ -1041,7 +1118,7 @@ where
     T: Serialize + Send + 'static,
     F: FnOnce(Arc<dyn Repository>) -> Result<T, AppError> + Send + 'static,
 {
-    let result = execute_repository(repo, operation).await?;
+    let result = execute_repository(repo, timeout, operation).await?;
     tool_result(result, not_found)
 }
 
@@ -1094,8 +1171,8 @@ Only change status for tasks you are actually working on. Use create_task only w
     }
 }
 
-pub async fn serve(repo: Arc<dyn Repository>) -> Result<()> {
-    let server = PmpServer::new(repo);
+pub async fn serve(repo: Arc<dyn Repository>, timeout: Duration) -> Result<()> {
+    let server = PmpServer::new(repo).with_timeout(timeout);
     let service = rmcp::service::serve_server(server, rmcp::transport::io::stdio()).await?;
     eprintln!("[pmp] MCP server listening on stdio");
     service.waiting().await?;

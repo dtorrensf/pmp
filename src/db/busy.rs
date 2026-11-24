@@ -15,8 +15,8 @@
 //! `busy_timeout` alone: in WAL a reader never blocks a writer and is only
 //! delayed by a checkpoint, so they get no retry layer.
 //!
-//! The policy is read from the environment for now; the unified `config.toml`
-//! lands with A3.
+//! [`crate::config`] resolves the policy once from `config.toml` and the
+//! `PMP_DB_*` environment overrides, then injects it into the repository.
 
 use std::time::Duration;
 
@@ -78,28 +78,40 @@ impl BusyOptions {
     /// Reads the policy from the process environment, keeping the default for
     /// every value that is missing or invalid. A bad value never prevents the
     /// store from opening.
-    pub fn from_env() -> Self {
-        Self::from_lookup(|name| std::env::var(name).ok())
-    }
-
-    /// Same as [`Self::from_env`] but with an injectable lookup, so the parsing
-    /// rules are testable without touching the process environment.
-    pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Self {
-        let defaults = Self::default();
-        let millis = |name: &str| {
-            lookup(name)
-                .and_then(|value| value.trim().parse::<u64>().ok())
-                .filter(|value| *value > 0)
-                .map(Duration::from_millis)
+    ///
+    /// Values come from the unified configuration; the `PMP_DB_*` environment
+    /// variables still win over it, with invalid values logged and ignored.
+    pub fn with_env_overrides(self, lookup: impl Fn(&str) -> Option<String>) -> Self {
+        let millis = |name: &str, current: Duration| match lookup(name) {
+            Some(value) => match value.trim().parse::<u64>() {
+                Ok(millis) if millis > 0 => Duration::from_millis(millis),
+                _ => {
+                    tracing::warn!(variable = name, value, "invalid value; keeping {current:?}");
+                    current
+                }
+            },
+            None => current,
         };
-        let attempts = lookup(RETRY_ATTEMPTS_ENV)
-            .and_then(|value| value.trim().parse::<u32>().ok())
-            .filter(|value| (1..=MAX_ATTEMPTS).contains(value));
+        let attempts = match lookup(RETRY_ATTEMPTS_ENV) {
+            Some(value) => match value.trim().parse::<u32>() {
+                Ok(attempts) if (1..=MAX_ATTEMPTS).contains(&attempts) => attempts,
+                _ => {
+                    tracing::warn!(
+                        variable = RETRY_ATTEMPTS_ENV,
+                        value,
+                        kept = self.max_attempts,
+                        "invalid value; keeping the configured attempts"
+                    );
+                    self.max_attempts
+                }
+            },
+            None => self.max_attempts,
+        };
         Self {
-            busy_timeout: millis(BUSY_TIMEOUT_ENV).unwrap_or(defaults.busy_timeout),
-            max_attempts: attempts.unwrap_or(defaults.max_attempts),
-            base_delay: millis(RETRY_BASE_DELAY_ENV).unwrap_or(defaults.base_delay),
-            max_delay: millis(RETRY_MAX_DELAY_ENV).unwrap_or(defaults.max_delay),
+            busy_timeout: millis(BUSY_TIMEOUT_ENV, self.busy_timeout),
+            max_attempts: attempts,
+            base_delay: millis(RETRY_BASE_DELAY_ENV, self.base_delay),
+            max_delay: millis(RETRY_MAX_DELAY_ENV, self.max_delay),
         }
     }
 
@@ -197,8 +209,8 @@ mod tests {
     }
 
     #[test]
-    fn lookup_overrides_every_value() {
-        let options = BusyOptions::from_lookup(lookup(&[
+    fn environment_overrides_every_value() {
+        let options = BusyOptions::default().with_env_overrides(lookup(&[
             (BUSY_TIMEOUT_ENV, "1200"),
             (RETRY_ATTEMPTS_ENV, "9"),
             (RETRY_BASE_DELAY_ENV, "5"),
@@ -211,24 +223,31 @@ mod tests {
     }
 
     #[test]
-    fn invalid_values_fall_back_to_the_defaults() {
-        let defaults = BusyOptions::default();
+    fn invalid_values_keep_the_configured_value() {
+        let configured = BusyOptions {
+            busy_timeout: Duration::from_millis(1_500),
+            max_attempts: 4,
+            base_delay: Duration::from_millis(7),
+            max_delay: Duration::from_millis(90),
+        };
         for invalid in ["", "0", "-1", "soon", "3.5"] {
-            let options = BusyOptions::from_lookup(lookup(&[
+            let options = configured.with_env_overrides(lookup(&[
                 (BUSY_TIMEOUT_ENV, invalid),
                 (RETRY_ATTEMPTS_ENV, invalid),
                 (RETRY_BASE_DELAY_ENV, invalid),
                 (RETRY_MAX_DELAY_ENV, invalid),
             ]));
-            assert_eq!(options, defaults, "value {invalid:?}");
+            assert_eq!(options, configured, "value {invalid:?}");
         }
     }
 
     #[test]
     fn attempts_are_clamped_to_a_bounded_budget() {
-        let options = BusyOptions::from_lookup(lookup(&[(RETRY_ATTEMPTS_ENV, "100000")]));
+        let options =
+            BusyOptions::default().with_env_overrides(lookup(&[(RETRY_ATTEMPTS_ENV, "100000")]));
         assert_eq!(options.max_attempts, DEFAULT_ATTEMPTS);
-        let options = BusyOptions::from_lookup(lookup(&[(RETRY_ATTEMPTS_ENV, "0")]));
+        let options =
+            BusyOptions::default().with_env_overrides(lookup(&[(RETRY_ATTEMPTS_ENV, "0")]));
         assert_eq!(options.max_attempts, DEFAULT_ATTEMPTS);
     }
 

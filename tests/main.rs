@@ -8,8 +8,8 @@ fn main_rs_is_a_thin_entrypoint() {
     let source = fs::read_to_string("src/main.rs").expect("src/main.rs should exist");
     let lines: Vec<&str> = source.lines().collect();
     assert!(
-        lines.len() <= 35,
-        "main.rs must be at most 35 lines, got {}",
+        lines.len() <= 45,
+        "main.rs must stay a thin entrypoint, got {} lines",
         lines.len()
     );
     assert!(
@@ -56,6 +56,22 @@ fn main_rs_opens_xdg_database_path() {
     assert!(
         source.contains("dirs::data_dir"),
         "main.rs must resolve the XDG data directory"
+    );
+    assert!(
+        source.contains("Config::load"),
+        "main.rs must resolve the configuration once, in the composition root"
+    );
+    assert!(
+        source.contains("config.database.busy"),
+        "main.rs must inject the database lock policy"
+    );
+    assert!(
+        source.contains("config.mcp.timeout"),
+        "main.rs must inject the MCP timeout"
+    );
+    assert!(
+        source.contains("config.appearance"),
+        "main.rs must inject the appearance settings"
     );
     assert!(source.contains("pmp.db"), "main.rs must open pmp.db");
 }

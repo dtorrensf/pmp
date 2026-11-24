@@ -128,16 +128,10 @@ impl Glyphs {
         self.ascii
     }
 
-    /// The glyph set requested by the environment: ASCII when `PMP_ASCII` is
-    /// set to a non-empty value, Unicode otherwise. Resolved once by the
-    /// composition root.
-    pub fn from_env() -> Glyphs {
-        Glyphs::from_lookup(&|key| std::env::var(key).ok())
-    }
-
-    /// Same as [`Self::from_env`] with an injectable lookup, for tests.
+    /// The glyph set requested by a lookup. The unified configuration resolves
+    /// the preference once at startup; tests can inject their own lookup.
     pub fn from_lookup(lookup: &impl Fn(&str) -> Option<String>) -> Glyphs {
-        if ascii_requested_in(lookup) {
+        if ascii_requested(lookup).unwrap_or(false) {
             Glyphs::ascii()
         } else {
             Glyphs::unicode()
@@ -199,9 +193,12 @@ impl Glyphs {
     }
 }
 
-/// `true` when the given lookup yields a non-empty `PMP_ASCII` value.
-fn ascii_requested_in(lookup: &impl Fn(&str) -> Option<String>) -> bool {
-    lookup(ASCII_ENV).is_some_and(|value| !value.is_empty())
+/// The `PMP_ASCII` preference from a lookup: `Some(true)` when the ASCII set is
+/// requested, `None` when the variable is unset or empty.
+pub fn ascii_requested(lookup: &impl Fn(&str) -> Option<String>) -> Option<bool> {
+    lookup(ASCII_ENV)
+        .filter(|value| !value.is_empty())
+        .map(|_| true)
 }
 
 #[cfg(test)]
@@ -313,12 +310,14 @@ mod tests {
 
     #[test]
     fn ascii_requested_ignores_an_empty_value() {
-        assert!(!ascii_requested_in(
-            &|key| (key == ASCII_ENV).then(String::new)
-        ));
-        assert!(ascii_requested_in(
-            &|key| (key == ASCII_ENV).then(|| "1".to_string())
-        ));
-        assert!(!ascii_requested_in(&|_| None));
+        assert_eq!(
+            ascii_requested(&|key| (key == ASCII_ENV).then(String::new)),
+            None
+        );
+        assert_eq!(
+            ascii_requested(&|key| (key == ASCII_ENV).then(|| "1".to_string())),
+            Some(true)
+        );
+        assert_eq!(ascii_requested(&|_| None), None);
     }
 }

@@ -103,12 +103,6 @@ impl Motion {
         self.frame_time.unwrap_or_default()
     }
 
-    /// `true` when the environment asks for reduced motion, read once by the
-    /// composition root. Kept pure so it can be tested with a lookup.
-    pub fn reduced_from_env() -> bool {
-        reduced_in(&|key| std::env::var(key).ok())
-    }
-
     /// Glyph of the spinner shown next to tasks in progress. Reduced motion
     /// shows the static status icon; when nothing is animating the first frame
     /// is used, so renders stay deterministic.
@@ -170,10 +164,13 @@ impl Default for Motion {
     }
 }
 
-/// `true` when the given lookup yields a `PMP_REDUCED_MOTION` value other
-/// than empty or `0`.
-fn reduced_in(lookup: &impl Fn(&str) -> Option<String>) -> bool {
-    lookup(REDUCED_MOTION_ENV).is_some_and(|value| !value.is_empty() && value != "0")
+/// The `PMP_REDUCED_MOTION` preference from a lookup: `Some(true)` to reduce,
+/// `Some(false)` when the variable explicitly disables it (`0`) and `None` when
+/// it is unset or empty.
+pub fn reduced_requested(lookup: &impl Fn(&str) -> Option<String>) -> Option<bool> {
+    lookup(REDUCED_MOTION_ENV)
+        .filter(|value| !value.is_empty())
+        .map(|value| value != "0")
 }
 
 /// A value that moves smoothly toward its target with ease-out cubic easing.
@@ -272,12 +269,12 @@ mod tests {
     }
 
     #[test]
-    fn reduced_motion_is_read_from_the_environment() {
-        assert!(reduced_in(&|_| Some("1".to_string())));
-        assert!(reduced_in(&|_| Some("yes".to_string())));
-        assert!(!reduced_in(&|_| Some("0".to_string())));
-        assert!(!reduced_in(&|_| Some(String::new())));
-        assert!(!reduced_in(&|_| None));
+    fn reduced_motion_is_read_from_the_lookup() {
+        assert_eq!(reduced_requested(&|_| Some("1".to_string())), Some(true));
+        assert_eq!(reduced_requested(&|_| Some("yes".to_string())), Some(true));
+        assert_eq!(reduced_requested(&|_| Some("0".to_string())), Some(false));
+        assert_eq!(reduced_requested(&|_| Some(String::new())), None);
+        assert_eq!(reduced_requested(&|_| None), None);
     }
 
     #[test]

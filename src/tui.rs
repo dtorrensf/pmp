@@ -19,8 +19,11 @@ use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
 
 use crate::app::App;
+use crate::config::AppearanceConfig;
+use crate::screens::components::glyphs::Glyphs;
 use crate::screens::components::help;
 use crate::screens::components::popup::{centered_rect, render_popup_scaffold};
+use crate::screens::components::theme::Theme;
 use crate::screens::components::toast;
 use crate::screens::components::top_bar;
 use crate::screens::keybinding_footer::render_footer;
@@ -104,7 +107,7 @@ fn install_panic_hook() {
     }));
 }
 
-pub fn run(mut app: App) -> anyhow::Result<()> {
+pub fn run(mut app: App, appearance: &AppearanceConfig) -> anyhow::Result<()> {
     let _cancel_update_check = CancelUpdateCheckOnDrop(app.update_check_cancel_handle());
     install_panic_hook();
     let _terminal_guard = TerminalGuard::install()?;
@@ -113,11 +116,28 @@ pub fn run(mut app: App) -> anyhow::Result<()> {
     let mut terminal = Terminal::new(backend).context("create terminal")?;
     let terminate = setup_signal_flag().context("setup signal flag")?;
     let mut events = CrosstermEvents;
-    // Composition root: the theme file, the environment and the motion
-    // preference are read exactly once, before the first frame.
-    let ui = UiContext::from_env();
+    // Composition root: the resolved configuration becomes the UI context
+    // once, before the first frame.
+    let ui = ui_context(appearance);
 
     run_loop(&mut app, &mut terminal, &mut events, &terminate, &ui)
+}
+
+/// Builds the UI context from the resolved appearance settings. This is the
+/// only place where a palette, a token override and a glyph/motion switch
+/// become the values a render sees.
+fn ui_context(appearance: &AppearanceConfig) -> UiContext {
+    let theme = Theme::from_parts(
+        appearance.palette.as_deref(),
+        &appearance.tokens,
+        appearance.colors_enabled,
+    );
+    let glyphs = if appearance.ascii {
+        Glyphs::ascii()
+    } else {
+        Glyphs::unicode()
+    };
+    UiContext::new(theme, glyphs, appearance.reduced_motion)
 }
 
 fn setup_signal_flag() -> anyhow::Result<Arc<AtomicBool>> {
@@ -315,6 +335,28 @@ mod tests {
     use crate::screens::{Action, Screen};
 
     use super::*;
+
+    #[test]
+    fn ui_context_reflects_the_resolved_appearance() {
+        use std::collections::BTreeMap;
+
+        use ratatui::style::Color;
+
+        let appearance = AppearanceConfig {
+            palette: Some("bright".to_string()),
+            colors_enabled: false,
+            tokens: BTreeMap::from([("accent".to_string(), "red".to_string())]),
+            ascii: true,
+            reduced_motion: true,
+        };
+
+        let ui = ui_context(&appearance);
+
+        assert!(!ui.theme().colors_enabled);
+        assert_eq!(ui.theme().accent, Color::Red);
+        assert_eq!(ui.glyphs(), Glyphs::ascii());
+        assert!(ui.motion().is_reduced());
+    }
 
     #[test]
     fn restore_terminal_leaves_alternate_screen_and_shows_cursor() {

@@ -55,16 +55,6 @@ impl UiContext {
         }
     }
 
-    /// Resolves the context from the process environment and the user theme
-    /// file. Called once, by the composition root, before the first frame.
-    pub fn from_env() -> Self {
-        Self::new(
-            Theme::from_env(),
-            Glyphs::from_env(),
-            Motion::reduced_from_env(),
-        )
-    }
-
     /// The same context with another palette.
     pub const fn with_theme(self, theme: Theme) -> Self {
         Self { theme, ..self }

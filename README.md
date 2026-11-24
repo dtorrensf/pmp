@@ -82,9 +82,51 @@ pmp
 
 Use the **arrow keys** to navigate, **Tab** to change statuses or jump between panels, and follow the on-screen keyboard shortcuts to manage your projects. Press **?** on any screen to see the full list of shortcuts.
 
-#### Appearance
+### Configuration
 
-PMP uses the terminal's own ANSI palette, so it adapts to light and dark themes without extra configuration. These environment variables are available:
+All settings live in one optional file, `~/.config/pmp/config.toml` (under
+`$XDG_CONFIG_HOME` when set):
+
+```toml
+[appearance]
+palette = "bright"   # default | bright
+colors = true        # false keeps shapes and bold only
+ascii = false        # ASCII glyph fallback
+reduced_motion = false
+
+[appearance.tokens]  # per-token color overrides
+accent = "#7aa2f7"
+
+[database]
+busy_timeout_ms = 2000
+retry_attempts = 5
+retry_base_delay_ms = 10
+retry_max_delay_ms = 250
+
+[mcp]
+timeout_secs = 30    # deadline for one MCP repository operation
+
+[logging]
+level = "warn"       # trace | debug | info | warn | error
+file = "pmp.log"     # omit to log to stderr
+
+[agents.claude]      # profiles the ACP client can launch
+command = "claude-code-acp"
+args = ["--stdio"]
+env = { ANTHROPIC_API_KEY = "..." }
+```
+
+Precedence, lowest to highest: built-in defaults, the legacy `theme.toml`, this
+file and, finally, the environment. PMP reads all of it once at startup and
+injects the resolved values, so the TUI, the MCP server and the repository never
+read the environment themselves. A missing file is normal; a malformed file or
+an invalid value is logged and replaced by the previous layer, never fatal. A
+zero or negative timeout, an out-of-range retry count, an unknown log level or
+an agent profile without a `command` all fall back safely.
+
+#### Appearance and environment
+
+PMP uses the terminal's own ANSI palette, so it adapts to light and dark themes without extra configuration. The appearance values can also come from the environment, which wins over the file:
 
 | Variable | Effect |
 | --- | --- |
@@ -100,9 +142,11 @@ PMP_ASCII=1 pmp        # ASCII glyphs
 PMP_REDUCED_MOTION=1 pmp  # no animations
 ```
 
-#### Theme file
+#### Legacy theme file
 
-To keep a custom palette, create `~/.config/pmp/theme.toml` (on Linux, under `$XDG_CONFIG_HOME` if set). It picks a base palette and overrides individual colors:
+`~/.config/pmp/theme.toml` keeps working: its palette is the base and its
+`[colors]` overrides are merged below `[appearance.tokens]` from
+`config.toml`. To keep a custom palette only for colors, you can still use it:
 
 ```toml
 palette = "bright"
@@ -112,7 +156,13 @@ accent = "#7aa2f7"
 muted = "dark gray"
 ```
 
-`palette` accepts `default` or `bright`. Each key in `[colors]` is a semantic token such as `bg`, `text`, `muted`, `accent`, `success`, `warning`, `danger`, `selection_bg`, `status_done` or `priority_high`. Colors can be names (such as `dark gray`) or hex values (`#rrggbb`). `PMP_THEME` takes precedence over the file's `palette`. A missing or malformed file, unknown token names and invalid colors never stop PMP: the default values are kept.
+`palette` accepts `default` or `bright`. Each key in `[colors]` (or
+`[appearance.tokens]`) is a semantic token such as `bg`, `text`, `muted`,
+`accent`, `success`, `warning`, `danger`, `selection_bg`, `status_done` or
+`priority_high`. Colors can be names (such as `dark gray`) or hex values
+(`#rrggbb`). `PMP_THEME` takes precedence over both files' palettes. A missing or
+malformed file, unknown token names and invalid colors never stop PMP: the
+previous layer's values are kept.
 
 ### MCP Server
 
@@ -131,8 +181,9 @@ The TUI, the MCP server and agents launched through ACP share one SQLite file
 `busy_timeout`, so a write waits for the lock instead of failing; when the wait
 is not enough, transient lock errors are retried with a bounded exponential
 backoff, and compound writes run inside `BEGIN IMMEDIATE`. Only a lock that
-outlasts the whole budget surfaces as the retryable `db_busy` error. These
-variables tune the policy:
+outlasts the whole budget surfaces as the retryable `db_busy` error. The
+`[database]` section tunes the policy, and these environment variables override
+it:
 
 | Variable | Default | Effect |
 | --- | --- | --- |
@@ -140,9 +191,10 @@ variables tune the policy:
 | `PMP_DB_RETRY_ATTEMPTS` | `5` | Total attempts per operation, counting the first one. |
 | `PMP_DB_RETRY_BASE_DELAY_MS` | `10` | Delay before the first retry; it doubles on every subsequent attempt. |
 | `PMP_DB_RETRY_MAX_DELAY_MS` | `250` | Ceiling for the backoff between retries. |
+| `PMP_MCP_TIMEOUT_SECS` | `30` | Deadline for one MCP repository operation. |
 
-Invalid values are ignored and the default is kept, so a typo never prevents the
-store from opening.
+Invalid values are ignored and the configured (or default) value is kept, so a
+typo never prevents the store from opening or the server from starting.
 
 ### Error codes
 

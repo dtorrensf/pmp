@@ -7,15 +7,20 @@
 //! The default palette uses ANSI colors so the terminal's own palette
 //! applies, which keeps the app readable on both light and dark terminals.
 //!
-//! Two environment variables tune it:
+//! Values are resolved once by [`crate::config`] and reach a render inside the
+//! [`UiContext`](crate::screens::UiContext); this module never reads the
+//! environment itself. Two environment variables still take precedence over
+//! the files:
 //!
 //! - `NO_COLOR`: when set to a non-empty value, colors are disabled while
 //!   shapes and bold text are kept (see <https://no-color.org>).
 //! - `PMP_THEME`: selects one of the built-in palettes (`default`, `bright`).
 //!   Unknown names fall back to `default`.
 //!
-//! A user file at `~/.config/pmp/theme.toml` (see [`THEME_FILE`]) can pick a
-//! base palette and override individual tokens:
+//! The base palette and the token overrides come from
+//! `~/.config/pmp/config.toml` (`[appearance]` and `[appearance.tokens]`). The
+//! legacy `~/.config/pmp/theme.toml` (see [`THEME_FILE`]) is still honored as a
+//! lower layer:
 //!
 //! ```toml
 //! palette = "bright"
@@ -25,9 +30,9 @@
 //! muted = "dark gray"
 //! ```
 //!
-//! `PMP_THEME` takes precedence over the file's `palette`. A missing or
+//! `PMP_THEME` takes precedence over every file's palette. A missing or
 //! malformed file, unknown token names and invalid colors never stop the
-//! app: they are logged and the default values are kept.
+//! app: they are logged and the previous layer's values are kept.
 //!
 //! The mapping from domain enums (`Status`, `Priority`, `VersionStatus`) to
 //! styles lives here, so the domain layer stays free of any `ratatui`
@@ -180,18 +185,31 @@ impl Theme {
         theme
     }
 
-    /// Builds the theme from the process environment and the user theme file.
-    pub fn from_env() -> Theme {
-        Theme::from_sources(|key| std::env::var(key).ok(), read_theme_file().as_deref())
+    /// Builds the theme from an already resolved palette, token overrides and
+    /// the color preference. This is how the unified configuration builds the
+    /// theme, so a render never reads a file or the environment.
+    pub fn from_parts(
+        palette: Option<&str>,
+        tokens: &BTreeMap<String, String>,
+        colors_enabled: bool,
+    ) -> Theme {
+        let mut theme = Theme::new(palette, !colors_enabled);
+        for (name, value) in tokens {
+            theme.apply_override(name, value);
+        }
+        theme
     }
 
     /// Builds the theme from an environment lookup and the contents of the
-    /// theme file, if any. `PMP_THEME` wins over the file's `palette`; the
-    /// file's `[colors]` overrides apply on top of the chosen palette.
+    /// legacy theme file, if any. `PMP_THEME` wins over the file's `palette`;
+    /// the file's `[colors]` overrides apply on top of the chosen palette.
     pub fn from_sources(lookup: impl Fn(&str) -> Option<String>, file: Option<&str>) -> Theme {
         let file = file.and_then(parse_theme_file);
         let palette = lookup(THEME_ENV).or_else(|| file.as_ref().and_then(|f| f.palette.clone()));
-        let mut theme = Theme::new(palette.as_deref(), no_color_in(&lookup));
+        let mut theme = Theme::new(
+            palette.as_deref(),
+            no_color_requested(&lookup).unwrap_or(false),
+        );
         if let Some(file) = file {
             for (name, value) in &file.colors {
                 theme.apply_override(name, value);
@@ -206,7 +224,7 @@ impl Theme {
         let color = match Color::from_str(value) {
             Ok(color) => color,
             Err(_) => {
-                tracing::warn!(token = name, value, "invalid color in theme file");
+                tracing::warn!(token = name, value, "ignoring invalid color");
                 return;
             }
         };
@@ -233,7 +251,7 @@ impl Theme {
             "version_open" => &mut self.version_open,
             "version_released" => &mut self.version_released,
             _ => {
-                tracing::warn!(token = name, "unknown token in theme file");
+                tracing::warn!(token = name, "ignoring unknown color token");
                 return;
             }
         };
@@ -245,7 +263,10 @@ impl Theme {
     /// Taking the lookup as a parameter keeps the resolution logic testable
     /// without touching the process-wide environment.
     pub fn from_env_with(lookup: impl Fn(&str) -> Option<String>) -> Theme {
-        Theme::new(lookup(THEME_ENV).as_deref(), no_color_in(&lookup))
+        Theme::new(
+            lookup(THEME_ENV).as_deref(),
+            no_color_requested(&lookup).unwrap_or(false),
+        )
     }
 
     /// Foreground style for `color`, honoring the color preference.
@@ -373,21 +394,16 @@ impl Theme {
     }
 }
 
-/// Contents of the user theme file, when it exists and can be read.
-pub fn read_theme_file() -> Option<String> {
-    let path = dirs::config_dir()?.join(THEME_FILE);
-    std::fs::read_to_string(path).ok()
-}
-
 /// The user theme file, or `None` (with a log entry) when it is malformed.
 #[derive(Debug, Default, Deserialize)]
-struct ThemeFile {
-    palette: Option<String>,
+pub struct ThemeFile {
+    pub palette: Option<String>,
     #[serde(default)]
-    colors: BTreeMap<String, String>,
+    pub colors: BTreeMap<String, String>,
 }
 
-fn parse_theme_file(text: &str) -> Option<ThemeFile> {
+/// Parses the legacy theme file, logging and ignoring a malformed one.
+pub fn parse_theme_file(text: &str) -> Option<ThemeFile> {
     match toml::from_str(text) {
         Ok(file) => Some(file),
         Err(error) => {
@@ -397,9 +413,12 @@ fn parse_theme_file(text: &str) -> Option<ThemeFile> {
     }
 }
 
-/// `true` when the given lookup yields a non-empty `NO_COLOR` value.
-fn no_color_in(lookup: &impl Fn(&str) -> Option<String>) -> bool {
-    lookup(NO_COLOR_ENV).is_some_and(|value| !value.is_empty())
+/// The `NO_COLOR` preference from a lookup: `Some(true)` when colors must be
+/// turned off, `None` when the variable is unset or empty.
+pub fn no_color_requested(lookup: &impl Fn(&str) -> Option<String>) -> Option<bool> {
+    lookup(NO_COLOR_ENV)
+        .filter(|value| !value.is_empty())
+        .map(|_| true)
 }
 
 #[cfg(test)]

@@ -40,10 +40,11 @@ pub struct SqliteRepository {
 }
 
 impl SqliteRepository {
-    /// Opens the store with the default locking policy, overridable through the
-    /// `PMP_DB_*` environment variables.
+    /// Opens the store with the default locking policy. The unified
+    /// configuration resolves the policy once and passes it to
+    /// [`Self::open_with`]; this shortcut keeps tests and one-off tools simple.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, AppError> {
-        Self::open_with(path, BusyOptions::from_env())
+        Self::open_with(path, BusyOptions::default())
     }
 
     /// Opens the store with an explicit locking policy.
