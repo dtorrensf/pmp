@@ -124,6 +124,26 @@ pmp mcp
 
 The server will start and interact smoothly with your environment.
 
+#### Shared database and locking
+
+The TUI, the MCP server and agents launched through ACP share one SQLite file
+(`pmp.db` in the PMP data directory). PMP opens it in WAL mode and configures a
+`busy_timeout`, so a write waits for the lock instead of failing; when the wait
+is not enough, transient lock errors are retried with a bounded exponential
+backoff, and compound writes run inside `BEGIN IMMEDIATE`. Only a lock that
+outlasts the whole budget surfaces as the retryable `db_busy` error. These
+variables tune the policy:
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `PMP_DB_BUSY_TIMEOUT_MS` | `2000` | How long SQLite waits for a lock before reporting it as busy. |
+| `PMP_DB_RETRY_ATTEMPTS` | `5` | Total attempts per operation, counting the first one. |
+| `PMP_DB_RETRY_BASE_DELAY_MS` | `10` | Delay before the first retry; it doubles on every subsequent attempt. |
+| `PMP_DB_RETRY_MAX_DELAY_MS` | `250` | Ceiling for the backoff between retries. |
+
+Invalid values are ignored and the default is kept, so a typo never prevents the
+store from opening.
+
 ### Error codes
 
 Every failure carries a stable code, shared by the TUI (as the error toast) and

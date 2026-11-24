@@ -5,12 +5,16 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, Value, ValueRef};
-use rusqlite::{Connection, Row, params, params_from_iter};
+use rusqlite::{
+    Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params, params_from_iter,
+};
+
+use crate::db::busy::{BusyOptions, is_lock_error, retry_busy};
 
 use crate::db::repository::{
-    DependencyRepository, LIST_LIMIT, NoteRepository, ProjectRepository, Repository,
-    SummaryRepository, TaskFilter, TaskRepository, VersionRepository, check_dependency_set,
-    check_done_transition, check_list_size, check_task_move, unique_ids,
+    DependencyRepository, LIST_LIMIT, NoteRepository, ProjectRepository, SummaryRepository,
+    TaskFilter, TaskRepository, VersionRepository, check_dependency_set, check_done_transition,
+    check_list_size, check_task_move, unique_ids,
 };
 use crate::domain::error::AppError;
 use crate::domain::project::Project;
@@ -32,36 +36,188 @@ const VERSION_COLUMNS: &str = "id, project_id, name, description, status, create
 
 pub struct SqliteRepository {
     conn: Mutex<Connection>,
+    options: BusyOptions,
 }
 
 impl SqliteRepository {
+    /// Opens the store with the default locking policy, overridable through the
+    /// `PMP_DB_*` environment variables.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, AppError> {
+        Self::open_with(path, BusyOptions::from_env())
+    }
+
+    /// Opens the store with an explicit locking policy.
+    pub fn open_with(path: impl AsRef<Path>, options: BusyOptions) -> Result<Self, AppError> {
         let mut conn = Connection::open(path)?;
-        conn.execute_batch(
-            "PRAGMA journal_mode = WAL;
-             PRAGMA foreign_keys = ON;",
-        )?;
-        embedded::migrations::runner()
-            .run(&mut conn)
-            .map_err(|e| AppError::Validation(format!("migration error: {e}")))?;
+        conn.busy_timeout(options.busy_timeout)?;
+        // `journal_mode` needs a write lock the first time the file switches to
+        // WAL, so two processes opening a fresh database at once can collide.
+        retry_busy(&options, || {
+            conn.execute_batch(
+                "PRAGMA journal_mode = WAL;
+                 PRAGMA foreign_keys = ON;",
+            )?;
+            Ok(())
+        })?;
+        retry_busy(&options, || {
+            embedded::migrations::runner()
+                .run(&mut conn)
+                .map_err(migration_error)?;
+            Ok(())
+        })?;
         Ok(Self {
             conn: Mutex::new(conn),
+            options,
         })
     }
 
-    fn load_dependency_graph(&self) -> Result<HashMap<i64, Vec<i64>>, AppError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare("SELECT task_id, depends_on_id FROM task_dependencies")?;
-        let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?;
-        let mut graph = HashMap::new();
-        for row in rows {
-            let (task_id, depends_on_id) = row?;
-            graph
-                .entry(task_id)
-                .or_insert_with(Vec::new)
-                .push(depends_on_id);
-        }
-        Ok(graph)
+    /// Locks the connection and runs one write statement, retrying transient
+    /// lock errors. The lock is released between attempts so the other threads
+    /// of this process can make progress.
+    fn write<T>(
+        &self,
+        mut operation: impl FnMut(&Connection) -> Result<T, AppError>,
+    ) -> Result<T, AppError> {
+        retry_busy(&self.options, || {
+            let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+            operation(&conn)
+        })
+    }
+
+    /// Applies a status change together with its done-transition check inside
+    /// one write transaction, so a concurrent dependency insert cannot slip
+    /// between the check and the update.
+    ///
+    /// `apply` runs inside the transaction and must only write: no repository
+    /// call (it would take the connection lock again) and no user input.
+    fn checked_status_write(
+        &self,
+        id: i64,
+        new_status: Status,
+        apply: impl Fn(&Connection, Status) -> Result<usize, AppError>,
+    ) -> Result<Task, AppError> {
+        self.write_transaction(|tx| {
+            let current = task_by_id(tx, id)?;
+            check_done_transition(current.status, new_status, || {
+                incomplete_dependencies_of(tx, id)
+            })?;
+            apply(tx, new_status)?;
+            task_by_id(tx, id)
+        })
+    }
+
+    /// Runs a compound write inside `BEGIN IMMEDIATE`, retrying the whole block
+    /// on transient lock errors.
+    ///
+    /// Taking the write lock up front is what makes the retry deterministic:
+    /// with a deferred transaction SQLite upgrades the lock on the first write
+    /// and fails immediately with `SQLITE_BUSY` if someone else got there first,
+    /// no matter the `busy_timeout`.
+    ///
+    /// The closure must only talk to the database: it may never wait for user
+    /// input, or the write lock would be held while the UI blocks. Dropping the
+    /// transaction without committing (any `?`) rolls every write back.
+    fn write_transaction<T>(
+        &self,
+        mut operation: impl FnMut(&Transaction<'_>) -> Result<T, AppError>,
+    ) -> Result<T, AppError> {
+        retry_busy(&self.options, || {
+            let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let value = operation(&tx)?;
+            tx.commit()?;
+            Ok(value)
+        })
+    }
+}
+
+/// Whole dependency graph, loaded inside a transaction when a write needs to
+/// validate it against the same snapshot it is about to modify.
+fn dependency_graph(conn: &Connection) -> Result<HashMap<i64, Vec<i64>>, AppError> {
+    let mut stmt = conn.prepare("SELECT task_id, depends_on_id FROM task_dependencies")?;
+    let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?;
+    let mut graph = HashMap::new();
+    for row in rows {
+        let (task_id, depends_on_id) = row?;
+        graph
+            .entry(task_id)
+            .or_insert_with(Vec::new)
+            .push(depends_on_id);
+    }
+    Ok(graph)
+}
+
+/// Reads a task from any connection, including one inside a write transaction.
+fn task_by_id(conn: &Connection, id: i64) -> Result<Task, AppError> {
+    conn.query_row(
+        &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id = ?1"),
+        [id],
+        task_from_row,
+    )
+    .map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => AppError::NotFound,
+        _ => e.into(),
+    })
+}
+
+/// Reads a version from any connection, including one inside a write
+/// transaction.
+fn version_by_id(conn: &Connection, id: i64) -> Result<Version, AppError> {
+    conn.query_row(
+        &format!("SELECT {VERSION_COLUMNS} FROM versions WHERE id = ?1"),
+        [id],
+        version_from_row,
+    )
+    .map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => AppError::NotFound,
+        _ => e.into(),
+    })
+}
+
+/// Dependencies of `task_id` that are not Done yet, read from any connection so
+/// the done transition can be checked inside its own write transaction.
+fn incomplete_dependencies_of(conn: &Connection, task_id: i64) -> Result<Vec<i64>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT d.depends_on_id FROM task_dependencies d
+         JOIN tasks t ON t.id = d.depends_on_id
+         WHERE d.task_id = ?1 AND t.status != ?2
+         ORDER BY d.depends_on_id",
+    )?;
+    let blockers = stmt
+        .query_map(params![task_id, Status::Done.as_str()], |row| row.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(blockers)
+}
+
+/// Direct dependencies of a task, read from any connection.
+fn dependencies_of(conn: &Connection, task_id: i64) -> Result<Vec<i64>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT depends_on_id FROM task_dependencies WHERE task_id = ?1 ORDER BY depends_on_id",
+    )?;
+    let deps = stmt
+        .query_map([task_id], |row| row.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(deps)
+}
+
+/// Direct dependents of a task, read from any connection.
+fn dependents_of(conn: &Connection, task_id: i64) -> Result<Vec<i64>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT task_id FROM task_dependencies WHERE depends_on_id = ?1 ORDER BY task_id",
+    )?;
+    let dependents = stmt
+        .query_map([task_id], |row| row.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(dependents)
+}
+
+/// Classifies a migration failure: a locked database is transient and retried,
+/// anything else is reported as before.
+fn migration_error(error: refinery::Error) -> AppError {
+    if is_lock_error(&error) {
+        AppError::DbBusy
+    } else {
+        AppError::Validation(format!("migration error: {error}"))
     }
 }
 
@@ -80,35 +236,39 @@ impl ProjectRepository for SqliteRepository {
     fn create_project(&self, name: &str, description: &str) -> Result<Project, AppError> {
         validation::validate_name("project", name)?;
         validation::validate_text("project", "description", description)?;
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "INSERT INTO projects (name, description) VALUES (?1, ?2)",
-            [name, description],
-        )?;
-        let id = conn.last_insert_rowid();
-        // Every project starts with the default version in Backlog, as the V3
-        // backfill does for pre-existing projects.
-        conn.execute(
-            "INSERT INTO versions (project_id, name, status) VALUES (?1, ?2, ?3)",
-            params![
-                id,
-                version::DEFAULT_VERSION_NAME,
-                VersionStatus::Backlog.as_str()
-            ],
-        )?;
-        drop(conn);
+        // The project and its default version land together: a retry must never
+        // leave a project without the version every screen expects.
+        let id = self.write_transaction(|tx| {
+            tx.execute(
+                "INSERT INTO projects (name, description) VALUES (?1, ?2)",
+                [name, description],
+            )?;
+            let id = tx.last_insert_rowid();
+            // Every project starts with the default version in Backlog, as the V3
+            // backfill does for pre-existing projects.
+            tx.execute(
+                "INSERT INTO versions (project_id, name, status) VALUES (?1, ?2, ?3)",
+                params![
+                    id,
+                    version::DEFAULT_VERSION_NAME,
+                    VersionStatus::Backlog.as_str()
+                ],
+            )?;
+            Ok(id)
+        })?;
         self.get_project(id)
     }
 
     fn update_project(&self, id: i64, name: &str, description: &str) -> Result<Project, AppError> {
         validation::validate_name("project", name)?;
         validation::validate_text("project", "description", description)?;
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "UPDATE projects SET name = ?1, description = ?2 WHERE id = ?3",
-            params![name, description, id],
-        )?;
-        drop(conn);
+        self.write(|conn| {
+            conn.execute(
+                "UPDATE projects SET name = ?1, description = ?2 WHERE id = ?3",
+                params![name, description, id],
+            )?;
+            Ok(())
+        })?;
         self.get_project(id)
     }
 
@@ -126,9 +286,10 @@ impl ProjectRepository for SqliteRepository {
     }
 
     fn delete_project(&self, id: i64) -> Result<(), AppError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute("DELETE FROM projects WHERE id = ?1", [id])?;
-        Ok(())
+        self.write(|conn| {
+            conn.execute("DELETE FROM projects WHERE id = ?1", [id])?;
+            Ok(())
+        })
     }
 }
 
@@ -163,28 +324,20 @@ impl VersionRepository for SqliteRepository {
         validation::validate_name("version", name)?;
         validation::validate_text("version", "description", description)?;
         self.get_project(project_id)?;
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "INSERT INTO versions (project_id, name, description, status) VALUES (?1, ?2, ?3, ?4)",
-            params![project_id, name, description, status.as_str()],
-        )
-        .map_err(|e| version_write_error(e, name))?;
-        let id = conn.last_insert_rowid();
-        drop(conn);
+        let id = self.write(|conn| {
+            conn.execute(
+                "INSERT INTO versions (project_id, name, description, status) VALUES (?1, ?2, ?3, ?4)",
+                params![project_id, name, description, status.as_str()],
+            )
+            .map_err(|e| version_write_error(e, name))?;
+            Ok(conn.last_insert_rowid())
+        })?;
         self.get_version(id)
     }
 
     fn get_version(&self, id: i64) -> Result<Version, AppError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.query_row(
-            &format!("SELECT {VERSION_COLUMNS} FROM versions WHERE id = ?1"),
-            [id],
-            version_from_row,
-        )
-        .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => AppError::NotFound,
-            _ => e.into(),
-        })
+        version_by_id(&conn, id)
     }
 
     fn update_version(
@@ -196,14 +349,13 @@ impl VersionRepository for SqliteRepository {
     ) -> Result<Version, AppError> {
         validation::validate_name("version", name)?;
         validation::validate_text("version", "description", description)?;
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let updated = conn
-            .execute(
+        let updated = self.write(|conn| {
+            conn.execute(
                 "UPDATE versions SET name = ?1, description = ?2, status = ?3 WHERE id = ?4",
                 params![name, description, status.as_str(), id],
             )
-            .map_err(|e| version_write_error(e, name))?;
-        drop(conn);
+            .map_err(|e| version_write_error(e, name))
+        })?;
         if updated == 0 {
             return Err(AppError::NotFound);
         }
@@ -211,9 +363,10 @@ impl VersionRepository for SqliteRepository {
     }
 
     fn delete_version(&self, id: i64) -> Result<(), AppError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute("DELETE FROM versions WHERE id = ?1", [id])?;
-        Ok(())
+        self.write(|conn| {
+            conn.execute("DELETE FROM versions WHERE id = ?1", [id])?;
+            Ok(())
+        })
     }
 }
 
@@ -310,50 +463,41 @@ impl TaskRepository for SqliteRepository {
     ) -> Result<Task, AppError> {
         validation::validate_name("task", name)?;
         validation::validate_text("task", "description", description)?;
-        let version_project: Option<i64> = self
-            .conn
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .query_row(
-                "SELECT project_id FROM versions WHERE id = ?1",
-                [version_id],
-                |row| row.get(0),
-            )
-            .ok();
-        if version_project != Some(project_id) {
-            return Err(AppError::Validation(
-                "version does not belong to the project".to_string(),
-            ));
-        }
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "INSERT INTO tasks (project_id, version_id, name, description, status, priority)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                project_id,
-                version_id,
-                name,
-                description,
-                status.as_str(),
-                i64::from(priority)
-            ],
-        )?;
-        let id = conn.last_insert_rowid();
-        drop(conn);
+        // Validation and insert share one write lock, so the version cannot
+        // change project between the check and the insert.
+        let id = self.write_transaction(|tx| {
+            let version_project: Option<i64> = tx
+                .query_row(
+                    "SELECT project_id FROM versions WHERE id = ?1",
+                    [version_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if version_project != Some(project_id) {
+                return Err(AppError::Validation(
+                    "version does not belong to the project".to_string(),
+                ));
+            }
+            tx.execute(
+                "INSERT INTO tasks (project_id, version_id, name, description, status, priority)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    project_id,
+                    version_id,
+                    name,
+                    description,
+                    status.as_str(),
+                    i64::from(priority)
+                ],
+            )?;
+            Ok(tx.last_insert_rowid())
+        })?;
         self.get_task(id)
     }
 
     fn get_task(&self, id: i64) -> Result<Task, AppError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.query_row(
-            &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id = ?1"),
-            [id],
-            task_from_row,
-        )
-        .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => AppError::NotFound,
-            _ => e.into(),
-        })
+        task_by_id(&conn, id)
     }
 
     fn update_task(
@@ -366,64 +510,45 @@ impl TaskRepository for SqliteRepository {
     ) -> Result<Task, AppError> {
         validation::validate_name("task", name)?;
         validation::validate_text("task", "description", description)?;
-        let current = self.get_task(id)?;
-        check_done_transition(current.status, status, || self.incomplete_dependencies(id))?;
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        match status {
-            Status::Done => {
-                conn.execute(
-                    "UPDATE tasks
-                     SET name = ?1, description = ?2, status = ?3, priority = ?4,
-                         completed_at = COALESCE(completed_at, datetime('now'))
-                     WHERE id = ?5",
-                    params![name, description, status.as_str(), i64::from(priority), id],
-                )?;
-            }
-            _ => {
-                conn.execute(
-                    "UPDATE tasks
-                     SET name = ?1, description = ?2, status = ?3, priority = ?4,
-                         completed_at = NULL
-                     WHERE id = ?5",
-                    params![name, description, status.as_str(), i64::from(priority), id],
-                )?;
-            }
-        }
-        drop(conn);
-        self.get_task(id)
+        self.checked_status_write(id, status, |conn, status| match status {
+            Status::Done => Ok(conn.execute(
+                "UPDATE tasks
+                 SET name = ?1, description = ?2, status = ?3, priority = ?4,
+                     completed_at = COALESCE(completed_at, datetime('now'))
+                 WHERE id = ?5",
+                params![name, description, status.as_str(), i64::from(priority), id],
+            )?),
+            _ => Ok(conn.execute(
+                "UPDATE tasks
+                 SET name = ?1, description = ?2, status = ?3, priority = ?4,
+                     completed_at = NULL
+                 WHERE id = ?5",
+                params![name, description, status.as_str(), i64::from(priority), id],
+            )?),
+        })
     }
 
     fn update_task_status(&self, id: i64, new_status: Status) -> Result<Task, AppError> {
-        let current = self.get_task(id)?;
-        check_done_transition(current.status, new_status, || {
-            self.incomplete_dependencies(id)
-        })?;
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        match new_status {
-            Status::Done => {
-                conn.execute(
-                    "UPDATE tasks SET status = ?1, completed_at = COALESCE(completed_at, datetime('now')) WHERE id = ?2",
-                    params![new_status.as_str(), id],
-                )?;
-            }
-            _ => {
-                conn.execute(
-                    "UPDATE tasks SET status = ?1, completed_at = NULL WHERE id = ?2",
-                    params![new_status.as_str(), id],
-                )?;
-            }
-        }
-        drop(conn);
-        self.get_task(id)
+        self.checked_status_write(id, new_status, |conn, new_status| match new_status {
+            Status::Done => Ok(conn.execute(
+                "UPDATE tasks SET status = ?1, completed_at = COALESCE(completed_at, datetime('now')) WHERE id = ?2",
+                params![new_status.as_str(), id],
+            )?),
+            _ => Ok(conn.execute(
+                "UPDATE tasks SET status = ?1, completed_at = NULL WHERE id = ?2",
+                params![new_status.as_str(), id],
+            )?),
+        })
     }
 
     fn update_task_priority(&self, id: i64, priority: Priority) -> Result<Task, AppError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let updated = conn.execute(
-            "UPDATE tasks SET priority = ?1 WHERE id = ?2",
-            params![i64::from(priority), id],
-        )?;
-        drop(conn);
+        let updated = self.write(|conn| {
+            conn.execute(
+                "UPDATE tasks SET priority = ?1 WHERE id = ?2",
+                params![i64::from(priority), id],
+            )
+            .map_err(AppError::from)
+        })?;
         if updated == 0 {
             return Err(AppError::NotFound);
         }
@@ -431,39 +556,43 @@ impl TaskRepository for SqliteRepository {
     }
 
     fn move_task(&self, task_id: i64, version_id: i64) -> Result<Task, AppError> {
-        let task = self.get_task(task_id)?;
-        let target = self.get_version(version_id)?;
-        if task.version_id == version_id {
-            return Ok(task);
-        }
-        check_task_move(
-            &task,
-            &target,
-            &self.get_dependencies(task_id)?,
-            &self.get_dependents(task_id)?,
-        )?;
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "UPDATE tasks SET version_id = ?1 WHERE id = ?2",
-            params![version_id, task_id],
-        )?;
-        drop(conn);
-        self.get_task(task_id)
+        // Edges and target are checked under the write lock, so a dependency
+        // added meanwhile cannot leave a task in another version with edges.
+        self.write_transaction(|tx| {
+            let task = task_by_id(tx, task_id)?;
+            let target = version_by_id(tx, version_id)?;
+            if task.version_id == version_id {
+                return Ok(task);
+            }
+            check_task_move(
+                &task,
+                &target,
+                &dependencies_of(tx, task_id)?,
+                &dependents_of(tx, task_id)?,
+            )?;
+            tx.execute(
+                "UPDATE tasks SET version_id = ?1 WHERE id = ?2",
+                params![version_id, task_id],
+            )?;
+            task_by_id(tx, task_id)
+        })
     }
 
     fn delete_task(&self, id: i64) -> Result<(), AppError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute("DELETE FROM tasks WHERE id = ?1", [id])?;
-        Ok(())
+        self.write(|conn| {
+            conn.execute("DELETE FROM tasks WHERE id = ?1", [id])?;
+            Ok(())
+        })
     }
 
     fn delete_done_tasks_by_version(&self, version_id: i64) -> Result<(), AppError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "DELETE FROM tasks WHERE version_id = ?1 AND status = ?2",
-            params![version_id, Status::Done.as_str()],
-        )?;
-        Ok(())
+        self.write(|conn| {
+            conn.execute(
+                "DELETE FROM tasks WHERE version_id = ?1 AND status = ?2",
+                params![version_id, Status::Done.as_str()],
+            )?;
+            Ok(())
+        })
     }
 }
 
@@ -472,104 +601,88 @@ impl DependencyRepository for SqliteRepository {
         if task_id == depends_on_id {
             return Err(AppError::DependencyCycle);
         }
-        let task = self.get_task(task_id)?;
-        let depends_on = self.get_task(depends_on_id)?;
-        if task.version_id != depends_on.version_id {
-            return Err(AppError::Validation(
-                "dependencies must be within the same version".to_string(),
-            ));
-        }
-        let graph = self.load_dependency_graph()?;
-        if would_create_cycle(&graph, task_id, depends_on_id) {
-            return Err(AppError::DependencyCycle);
-        }
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
-            params![task_id, depends_on_id],
-        )?;
-        Ok(())
-    }
-
-    fn remove_dependency(&self, task_id: i64, depends_on_id: i64) -> Result<(), AppError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "DELETE FROM task_dependencies WHERE task_id = ?1 AND depends_on_id = ?2",
-            params![task_id, depends_on_id],
-        )?;
-        Ok(())
-    }
-
-    fn set_dependencies(&self, task_id: i64, depends_on_ids: &[i64]) -> Result<(), AppError> {
-        validation::validate_dependency_count(depends_on_ids.len())?;
-        let task = self.get_task(task_id)?;
-        let unique = unique_ids(depends_on_ids);
-        for &dep in &unique {
-            let depends_on = self.get_task(dep)?;
-            if depends_on.version_id != task.version_id {
+        // Cycle detection and insert share the write lock: two processes adding
+        // edges at once can no longer close a cycle between check and write.
+        self.write_transaction(|tx| {
+            let task = task_by_id(tx, task_id)?;
+            let depends_on = task_by_id(tx, depends_on_id)?;
+            if task.version_id != depends_on.version_id {
                 return Err(AppError::Validation(
                     "dependencies must be within the same version".to_string(),
                 ));
             }
-        }
-        let graph = self.load_dependency_graph()?;
-        check_dependency_set(&graph, task_id, &unique)?;
-
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let tx = conn.transaction()?;
-        tx.execute(
-            "DELETE FROM task_dependencies WHERE task_id = ?1",
-            params![task_id],
-        )?;
-        for dep in &unique {
+            let graph = dependency_graph(tx)?;
+            if would_create_cycle(&graph, task_id, depends_on_id) {
+                return Err(AppError::DependencyCycle);
+            }
             tx.execute(
-                "INSERT INTO task_dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
-                params![task_id, dep],
+                "INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
+                params![task_id, depends_on_id],
             )?;
-        }
-        tx.commit()?;
-        Ok(())
+            Ok(())
+        })
+    }
+
+    fn remove_dependency(&self, task_id: i64, depends_on_id: i64) -> Result<(), AppError> {
+        self.write(|conn| {
+            conn.execute(
+                "DELETE FROM task_dependencies WHERE task_id = ?1 AND depends_on_id = ?2",
+                params![task_id, depends_on_id],
+            )?;
+            Ok(())
+        })
+    }
+
+    fn set_dependencies(&self, task_id: i64, depends_on_ids: &[i64]) -> Result<(), AppError> {
+        validation::validate_dependency_count(depends_on_ids.len())?;
+        let unique = unique_ids(depends_on_ids);
+        self.write_transaction(|tx| {
+            let task = task_by_id(tx, task_id)?;
+            for &dep in &unique {
+                let depends_on = task_by_id(tx, dep)?;
+                if depends_on.version_id != task.version_id {
+                    return Err(AppError::Validation(
+                        "dependencies must be within the same version".to_string(),
+                    ));
+                }
+            }
+            let graph = dependency_graph(tx)?;
+            check_dependency_set(&graph, task_id, &unique)?;
+            tx.execute(
+                "DELETE FROM task_dependencies WHERE task_id = ?1",
+                params![task_id],
+            )?;
+            for dep in &unique {
+                tx.execute(
+                    "INSERT INTO task_dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
+                    params![task_id, dep],
+                )?;
+            }
+            Ok(())
+        })
     }
 
     fn get_dependencies(&self, task_id: i64) -> Result<Vec<i64>, AppError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare(
-            "SELECT depends_on_id FROM task_dependencies WHERE task_id = ?1 ORDER BY depends_on_id",
-        )?;
-        let deps = stmt
-            .query_map([task_id], |row| row.get(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(deps)
+        dependencies_of(&conn, task_id)
     }
 
     fn has_incomplete_dependencies(&self, task_id: i64) -> Result<bool, AppError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM task_dependencies d
-             JOIN tasks t ON d.depends_on_id = t.id
-             WHERE d.task_id = ?1 AND t.status != ?2",
-            params![task_id, Status::Done.as_str()],
-            |row| row.get(0),
-        )?;
-        Ok(count > 0)
+        Ok(!incomplete_dependencies_of(&conn, task_id)?.is_empty())
     }
 
     fn get_dependents(&self, task_id: i64) -> Result<Vec<i64>, AppError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare(
-            "SELECT task_id FROM task_dependencies WHERE depends_on_id = ?1 ORDER BY task_id",
-        )?;
-        let dependents = stmt
-            .query_map([task_id], |row| row.get(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(dependents)
+        dependents_of(&conn, task_id)
     }
 
     fn would_create_cycle(&self, task_id: i64, candidate_id: i64) -> Result<bool, AppError> {
         if task_id == candidate_id {
             return Ok(true);
         }
-        let graph = self.load_dependency_graph()?;
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let graph = dependency_graph(&conn)?;
         Ok(would_create_cycle(&graph, task_id, candidate_id))
     }
 }
@@ -591,23 +704,26 @@ impl NoteRepository for SqliteRepository {
 
     fn add_task_note(&self, task_id: i64, content: &str) -> Result<TaskNote, AppError> {
         let note = TaskNote::new(task_id, content)?;
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "INSERT INTO task_notes(task_id, content) VALUES(?1, ?2)",
-            params![note.task_id, note.content],
-        )?;
-        let id = conn.last_insert_rowid();
-        let note = conn.query_row(
-            "SELECT id, task_id, content, created_at FROM task_notes WHERE id = ?1",
-            [id],
-            task_note_from_row,
-        )?;
-        Ok(note)
+        self.write_transaction(|tx| {
+            tx.execute(
+                "INSERT INTO task_notes(task_id, content) VALUES(?1, ?2)",
+                params![note.task_id, note.content],
+            )?;
+            let id = tx.last_insert_rowid();
+            let note = tx.query_row(
+                "SELECT id, task_id, content, created_at FROM task_notes WHERE id = ?1",
+                [id],
+                task_note_from_row,
+            )?;
+            Ok(note)
+        })
     }
 
     fn delete_task_note(&self, note_id: i64) -> Result<(), AppError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let rows = conn.execute("DELETE FROM task_notes WHERE id = ?1", [note_id])?;
+        let rows = self.write(|conn| {
+            conn.execute("DELETE FROM task_notes WHERE id = ?1", [note_id])
+                .map_err(AppError::from)
+        })?;
         if rows == 0 {
             return Err(AppError::NotFound);
         }
@@ -652,21 +768,23 @@ impl SummaryRepository for SqliteRepository {
     ) -> Result<VersionSummary, AppError> {
         validation::validate_text("version summary", "summary", summary)?;
         self.get_version(version_id)?;
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "INSERT INTO version_summaries (version_id, summary, snapshot_json)
-             VALUES (?1, ?2, ?3)",
-            params![version_id, summary, snapshot_json],
-        )
-        .map_err(version_summary_write_error)?;
-        let id = conn.last_insert_rowid();
-        drop(conn);
+        let id = self.write(|conn| {
+            conn.execute(
+                "INSERT INTO version_summaries (version_id, summary, snapshot_json)
+                 VALUES (?1, ?2, ?3)",
+                params![version_id, summary, snapshot_json],
+            )
+            .map_err(version_summary_write_error)?;
+            Ok(conn.last_insert_rowid())
+        })?;
         self.get_version_summary(id)
     }
 
     fn delete_version_summary(&self, id: i64) -> Result<(), AppError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let rows = conn.execute("DELETE FROM version_summaries WHERE id = ?1", [id])?;
+        let rows = self.write(|conn| {
+            conn.execute("DELETE FROM version_summaries WHERE id = ?1", [id])
+                .map_err(AppError::from)
+        })?;
         if rows == 0 {
             return Err(AppError::NotFound);
         }
@@ -681,27 +799,27 @@ impl SummaryRepository for SqliteRepository {
     ) -> Result<VersionSummary, AppError> {
         validation::validate_text("version summary", "summary", summary)?;
         self.get_version(version_id)?;
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        // Single transaction: dropping it without commit (on any error) rolls
-        // back every write, so done tasks are never deleted without a snapshot.
-        let tx = conn.transaction()?;
-        tx.execute(
-            "DELETE FROM version_summaries WHERE version_id = ?1",
-            [version_id],
-        )?;
-        tx.execute(
-            "INSERT INTO version_summaries (version_id, summary, snapshot_json)
-             VALUES (?1, ?2, ?3)",
-            params![version_id, summary, snapshot_json],
-        )
-        .map_err(version_summary_write_error)?;
-        let id = tx.last_insert_rowid();
-        tx.execute(
-            "DELETE FROM tasks WHERE version_id = ?1 AND status = ?2",
-            params![version_id, Status::Done.as_str()],
-        )?;
-        tx.commit()?;
-        drop(conn);
+        // Single transaction: dropping it without commit (on any error or a
+        // retried busy lock) rolls back every write, so done tasks are never
+        // deleted without a snapshot.
+        let id = self.write_transaction(|tx| {
+            tx.execute(
+                "DELETE FROM version_summaries WHERE version_id = ?1",
+                [version_id],
+            )?;
+            tx.execute(
+                "INSERT INTO version_summaries (version_id, summary, snapshot_json)
+                 VALUES (?1, ?2, ?3)",
+                params![version_id, summary, snapshot_json],
+            )
+            .map_err(version_summary_write_error)?;
+            let id = tx.last_insert_rowid();
+            tx.execute(
+                "DELETE FROM tasks WHERE version_id = ?1 AND status = ?2",
+                params![version_id, Status::Done.as_str()],
+            )?;
+            Ok(id)
+        })?;
         self.get_version_summary(id)
     }
 }
@@ -823,6 +941,10 @@ fn version_summary_write_error(err: rusqlite::Error) -> AppError {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+    use std::time::Duration;
+
+    use crate::db::busy::BusyOptions;
     use crate::db::repository::*;
     use crate::domain::task::{Priority, Status};
 
@@ -885,6 +1007,109 @@ mod tests {
             .query_row("PRAGMA foreign_keys;", [], |row| row.get(0))
             .unwrap();
         assert_eq!(foreign_keys, 1);
+    }
+
+    #[test]
+    fn open_applies_the_configured_busy_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let options = BusyOptions {
+            busy_timeout: Duration::from_millis(1_234),
+            ..BusyOptions::default()
+        };
+        let repo = SqliteRepository::open_with(&path, options).unwrap();
+        assert_eq!(busy_timeout_of(&repo), 1_234);
+
+        let repo = SqliteRepository::open_with(&path, BusyOptions::default()).unwrap();
+        assert_eq!(
+            busy_timeout_of(&repo),
+            BusyOptions::default().busy_timeout.as_millis() as i64
+        );
+    }
+
+    fn busy_timeout_of(repo: &SqliteRepository) -> i64 {
+        repo.conn
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .query_row("PRAGMA busy_timeout;", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn write_transaction_holds_the_write_lock_from_the_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let repo = SqliteRepository::open_with(&path, BusyOptions::default()).unwrap();
+        let probe = Connection::open(&path).unwrap();
+        probe.busy_timeout(Duration::from_millis(50)).unwrap();
+
+        let probe_was_locked = Cell::new(false);
+        let id = repo
+            .write_transaction(|tx| {
+                tx.execute("INSERT INTO projects (name) VALUES ('inside')", [])?;
+                // A deferred transaction would let the probe take the lock here.
+                match probe.execute_batch("BEGIN IMMEDIATE") {
+                    Ok(()) => probe.execute_batch("ROLLBACK").unwrap(),
+                    Err(error) => probe_was_locked.set(AppError::is_lock(&error)),
+                }
+                Ok(tx.last_insert_rowid())
+            })
+            .unwrap();
+
+        assert!(
+            probe_was_locked.get(),
+            "BEGIN IMMEDIATE must hold the write lock up front"
+        );
+        assert_eq!(repo.get_project(id).unwrap().name, "inside");
+    }
+
+    #[test]
+    fn create_project_rolls_back_when_the_default_version_fails() {
+        let (_dir, repo) = setup();
+        repo.conn
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .execute_batch(
+                "CREATE TRIGGER fail_version_insert BEFORE INSERT ON versions
+                 BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+            )
+            .unwrap();
+
+        assert!(repo.create_project("P", "").is_err());
+        assert!(
+            repo.list_projects().unwrap().is_empty(),
+            "the project must not survive without its default version"
+        );
+    }
+
+    #[test]
+    fn set_dependencies_rolls_back_as_a_whole() {
+        let (_dir, repo) = setup();
+        let pid = repo.create_project("P", "").unwrap().id.unwrap();
+        let version = repo.create_version(pid, "v1.0.0", "").unwrap().id.unwrap();
+        let task = |name: &str| {
+            repo.create_task(pid, version, name, "", Status::Todo, Priority::Medium)
+                .unwrap()
+                .id
+                .unwrap()
+        };
+        let (a, b, c) = (task("a"), task("b"), task("c"));
+        repo.set_dependencies(a, &[b]).unwrap();
+        repo.conn
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .execute_batch(
+                "CREATE TRIGGER fail_dependency_insert BEFORE INSERT ON task_dependencies
+                 BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+            )
+            .unwrap();
+
+        assert!(repo.set_dependencies(a, &[c]).is_err());
+        assert_eq!(
+            repo.get_dependencies(a).unwrap(),
+            vec![b],
+            "the previous edge set must survive the failed transaction"
+        );
     }
 
     #[test]

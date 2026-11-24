@@ -148,6 +148,19 @@ impl AppError {
         }
     }
 
+    /// Whether a SQLite failure is transient lock contention that a later retry
+    /// may overcome. Kept next to the conversion so both stay in sync.
+    pub fn is_lock(err: &rusqlite::Error) -> bool {
+        matches!(
+            err,
+            rusqlite::Error::SqliteFailure(failure, _)
+                if matches!(
+                    failure.code,
+                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                )
+        )
+    }
+
     /// The complete, serializable form of the failure.
     pub fn info(&self) -> ErrorInfo {
         ErrorInfo {
@@ -161,16 +174,10 @@ impl AppError {
 
 impl From<rusqlite::Error> for AppError {
     fn from(err: rusqlite::Error) -> Self {
-        match &err {
-            rusqlite::Error::SqliteFailure(failure, _)
-                if matches!(
-                    failure.code,
-                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
-                ) =>
-            {
-                Self::DbBusy
-            }
-            _ => Self::DbError(err),
+        if Self::is_lock(&err) {
+            Self::DbBusy
+        } else {
+            Self::DbError(err)
         }
     }
 }
