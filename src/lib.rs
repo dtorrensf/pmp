@@ -4,7 +4,10 @@ pub mod app;
 pub mod application;
 pub mod config;
 pub mod db;
+pub mod doctor;
 pub mod domain;
+pub mod logging;
+pub mod paths;
 pub mod screens;
 pub mod tui;
 pub mod update;
@@ -18,6 +21,8 @@ mod tests {
     #[test]
     #[allow(unused_imports)]
     fn lib_reexports_public_modules() {
-        use crate::{app, application, db, domain, mcp, repository, screens, tui};
+        use crate::{
+            app, application, db, doctor, domain, logging, mcp, paths, repository, screens, tui,
+        };
     }
 }

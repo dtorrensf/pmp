@@ -26,7 +26,7 @@
 //!
 //! [logging]
 //! level = "warn"       # trace | debug | info | warn | error
-//! file = "pmp.log"
+//! file = "pmp.log"     # relative to the logs directory; empty disables it
 //!
 //! [agents.claude]
 //! command = "claude-code-acp"
@@ -40,7 +40,8 @@
 //! 2. The legacy `~/.config/pmp/theme.toml` (palette and color overrides).
 //! 3. `config.toml`.
 //! 4. The environment (`NO_COLOR`, `PMP_THEME`, `PMP_ASCII`,
-//!    `PMP_REDUCED_MOTION`, `PMP_DB_*`, `PMP_MCP_TIMEOUT_SECS`).
+//!    `PMP_REDUCED_MOTION`, `PMP_DB_*`, `PMP_MCP_TIMEOUT_SECS`, `PMP_LOG`,
+//!    `PMP_LOG_FILE`).
 //!
 //! [`Config::load`] reads the files and the environment once, at startup. The
 //! TUI, the MCP server and the repository receive the resolved values, so no
@@ -71,6 +72,12 @@ pub const MCP_TIMEOUT_ENV: &str = "PMP_MCP_TIMEOUT_SECS";
 
 /// Logging level used when the file does not set a valid one.
 pub const DEFAULT_LOG_LEVEL: &str = "warn";
+
+/// Environment override for `[logging] level`.
+pub const LOG_LEVEL_ENV: &str = "PMP_LOG";
+
+/// Environment override for `[logging] file`.
+pub const LOG_FILE_ENV: &str = "PMP_LOG_FILE";
 
 const LOG_LEVELS: [&str; 5] = ["trace", "debug", "info", "warn", "error"];
 
@@ -119,7 +126,7 @@ impl Config {
             appearance: AppearanceConfig::resolve(raw.appearance, &legacy, &lookup),
             database: DatabaseConfig::resolve(raw.database, &lookup),
             mcp: McpConfig::resolve(raw.mcp, &lookup),
-            logging: LoggingConfig::resolve(raw.logging),
+            logging: LoggingConfig::resolve(raw.logging, &lookup),
             agents: agent_profiles(raw.agents),
         }
     }
@@ -260,7 +267,8 @@ impl McpConfig {
 pub struct LoggingConfig {
     /// One of `trace`, `debug`, `info`, `warn` or `error`.
     pub level: String,
-    /// Log file path, relative to the current directory; `None` logs to stderr.
+    /// Log file name, relative to the logs directory (or absolute). `None`
+    /// uses `pmp.log`; an empty value disables file logging.
     pub file: Option<String>,
 }
 
@@ -274,24 +282,48 @@ impl Default for LoggingConfig {
 }
 
 impl LoggingConfig {
-    fn resolve(raw: RawLogging) -> LoggingConfig {
-        let level = match raw.level {
-            None => DEFAULT_LOG_LEVEL.to_string(),
-            Some(level) => {
-                let level = level.trim().to_ascii_lowercase();
-                if LOG_LEVELS.contains(&level.as_str()) {
-                    level
-                } else {
-                    tracing::warn!(level, "invalid logging.level; using the default");
-                    DEFAULT_LOG_LEVEL.to_string()
-                }
-            }
+    fn resolve(raw: RawLogging, lookup: &impl Fn(&str) -> Option<String>) -> LoggingConfig {
+        let file_level = normalize_level(raw.level, DEFAULT_LOG_LEVEL);
+        let level = match lookup(LOG_LEVEL_ENV).filter(|value| !value.trim().is_empty()) {
+            Some(level) => normalize_level(Some(level), &file_level),
+            None => file_level,
         };
-        let file = raw
-            .file
-            .map(|file| file.trim().to_string())
-            .filter(|file| !file.is_empty());
+        let file = match lookup(LOG_FILE_ENV).filter(|value| !value.trim().is_empty()) {
+            Some(file) => Some(file.trim().to_string()),
+            None => raw.file.map(|file| file.trim().to_string()),
+        };
         LoggingConfig { level, file }
+    }
+
+    /// The configured level, with a conservative fallback.
+    pub fn level(&self) -> tracing::Level {
+        match self.level.as_str() {
+            "trace" => tracing::Level::TRACE,
+            "debug" => tracing::Level::DEBUG,
+            "info" => tracing::Level::INFO,
+            "error" => tracing::Level::ERROR,
+            _ => tracing::Level::WARN,
+        }
+    }
+}
+
+/// A valid level name, lowercased; anything else warns and keeps `fallback`.
+fn normalize_level(value: Option<String>, fallback: &str) -> String {
+    match value {
+        None => fallback.to_string(),
+        Some(level) => {
+            let level = level.trim().to_ascii_lowercase();
+            if LOG_LEVELS.contains(&level.as_str()) {
+                level
+            } else {
+                tracing::warn!(
+                    level,
+                    fallback,
+                    "invalid logging level; keeping the previous one"
+                );
+                fallback.to_string()
+            }
+        }
     }
 }
 
@@ -638,6 +670,28 @@ mod tests {
     }
 
     #[test]
+    fn an_invalid_log_level_environment_keeps_the_file_level() {
+        let file = "[logging]\nlevel = \"debug\"\n";
+        let env = lookup(&[(LOG_LEVEL_ENV, "loud")]);
+
+        let config = Config::from_sources(Some(file), None, env);
+
+        assert_eq!(config.logging.level, "debug");
+    }
+
+    #[test]
+    fn log_level_and_file_follow_the_environment() {
+        let file = "[logging]\nlevel = \"info\"\nfile = \"file.log\"\n";
+        let env = lookup(&[(LOG_LEVEL_ENV, " trace "), (LOG_FILE_ENV, "env.log")]);
+
+        let config = Config::from_sources(Some(file), None, env);
+
+        assert_eq!(config.logging.level, "trace");
+        assert_eq!(config.logging.file.as_deref(), Some("env.log"));
+        assert_eq!(config.logging.level(), tracing::Level::TRACE);
+    }
+
+    #[test]
     fn invalid_values_fall_back_instead_of_aborting() {
         let file = r#"
             [database]
@@ -670,7 +724,11 @@ mod tests {
         assert_eq!(config.database.busy.max_attempts, DEFAULT_ATTEMPTS);
         assert_eq!(config.mcp.timeout, DEFAULT_MCP_TIMEOUT);
         assert_eq!(config.logging.level, DEFAULT_LOG_LEVEL);
-        assert_eq!(config.logging.file, None);
+        assert_eq!(
+            config.logging.file,
+            Some(String::new()),
+            "an empty value disables file logging"
+        );
         assert_eq!(
             config.agents.keys().collect::<Vec<_>>(),
             vec![&"good".to_string()],

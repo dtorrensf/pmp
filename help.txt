@@ -8,11 +8,13 @@ Options:
 
 Commands:
   mcp              Start the MCP server
+  doctor           Print environment and database diagnostics
   (no command)     Start the interactive TUI (default)
 
 Configuration:
   ~/.config/pmp/config.toml   Theme, timeouts, logging and agent profiles
   ~/.config/pmp/theme.toml    Legacy palette file (still honored)
+  ~/.local/share/pmp/logs     Structured JSON logs (pmp.log, rotates at 4 MiB)
 
 Environment (wins over the files):
   NO_COLOR         Disable colors (set to any non-empty value)
@@ -21,3 +23,5 @@ Environment (wins over the files):
   PMP_REDUCED_MOTION  Turn off animations (set to any value other than 0)
   PMP_DB_*            SQLite lock policy (busy timeout, retries)
   PMP_MCP_TIMEOUT_SECS  Deadline for one MCP repository operation
+  PMP_LOG          Log level: trace, debug, info, warn, error
+  PMP_LOG_FILE     Log file name (relative to the logs directory)

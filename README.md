@@ -108,7 +108,7 @@ timeout_secs = 30    # deadline for one MCP repository operation
 
 [logging]
 level = "warn"       # trace | debug | info | warn | error
-file = "pmp.log"     # omit to log to stderr
+file = "pmp.log"     # relative to the logs directory; empty disables it
 
 [agents.claude]      # profiles the ACP client can launch
 command = "claude-code-acp"
@@ -142,6 +142,20 @@ PMP_ASCII=1 pmp        # ASCII glyphs
 PMP_REDUCED_MOTION=1 pmp  # no animations
 ```
 
+#### Logs
+
+The TUI and `pmp mcp` write one JSON object per line to
+`~/.local/share/pmp/logs/pmp.log`. Logs never go to stdout or stderr: those
+streams carry the MCP protocol or the TUI screen, so writing there would corrupt
+them. The file rotates to `pmp.log.1` when it reaches 4 MiB; `pmp doctor`
+reports its path and whether it can be written.
+
+`[logging] level` sets the verbosity and `[logging] file` changes the name
+(relative to the logs directory, or an absolute path). `PMP_LOG` and
+`PMP_LOG_FILE` override both. An invalid level falls back to `warn`; an empty
+file name disables file logging; a log file that cannot be opened never stops
+PMP, it just runs without logs.
+
 #### Legacy theme file
 
 `~/.config/pmp/theme.toml` keeps working: its palette is the base and its
@@ -163,6 +177,52 @@ muted = "dark gray"
 (`#rrggbb`). `PMP_THEME` takes precedence over both files' palettes. A missing or
 malformed file, unknown token names and invalid colors never stop PMP: the
 previous layer's values are kept.
+
+### Diagnostics
+
+`pmp doctor` prints what PMP resolved and what it can reach:
+
+```text
+$ pmp doctor
+pmp doctor 0.6.1
+
+environment
+  ok    version: 0.6.1
+  ok    platform: linux x86_64
+  ok    executable: /usr/bin/pmp
+
+configuration
+  ok    config: /home/you/.config/pmp/config.toml
+  ok    data: /home/you/.local/share/pmp
+  ok    logs: /home/you/.local/share/pmp/logs
+  ok    database: /home/you/.local/share/pmp/pmp.db
+
+database
+  ok    pmp.db: /home/you/.local/share/pmp/pmp.db (48.0 KiB)
+  ok    journal mode: wal (expected wal)
+  ok    schema version: 6
+  ok    busy timeout: 2000 ms (configured), 5 attempts, 10–250 ms backoff
+
+permissions
+  ok    data directory: writable
+  ok    logs directory: writable
+  ok    config directory: writable
+
+agents
+  fail  claude: claude-code-acp not found in PATH
+
+logging
+  ok    level: warn (override with PMP_LOG)
+  ok    file: /home/you/.local/share/pmp/logs/pmp.log
+
+summary: 15 ok, 0 warn, 1 fail
+```
+
+The command only inspects: it does not migrate the database or write logs (the
+permission checks create and remove a probe file, and the directories themselves
+when missing). It exits `1` when a check fails (an unwritable directory, a broken database, a
+missing agent binary) and `0` otherwise, so it can gate scripts. A missing
+database or log file is a warning: PMP creates them on first start.
 
 ### MCP Server
 
