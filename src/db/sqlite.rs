@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
 
+use rusqlite::functions::FunctionFlags;
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, Value, ValueRef};
 use rusqlite::{
     Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params, params_from_iter,
@@ -12,9 +13,9 @@ use rusqlite::{
 use crate::db::busy::{BusyOptions, is_lock_error, retry_busy};
 
 use crate::db::repository::{
-    DependencyRepository, LIST_LIMIT, NoteRepository, ProjectRepository, SummaryRepository,
-    TaskFilter, TaskRepository, VersionRepository, check_dependency_set, check_done_transition,
-    check_list_size, check_task_move, unique_ids,
+    DependencyRepository, LIST_LIMIT, NoteRepository, ProjectRepository, Readiness,
+    SummaryRepository, TaskFilter, TaskRepository, VersionRepository, check_dependency_set,
+    check_done_transition, check_list_size, check_task_move, unique_ids,
 };
 use crate::domain::error::AppError;
 use crate::domain::project::Project;
@@ -50,6 +51,7 @@ impl SqliteRepository {
     /// Opens the store with an explicit locking policy.
     pub fn open_with(path: impl AsRef<Path>, options: BusyOptions) -> Result<Self, AppError> {
         let mut conn = Connection::open(path)?;
+        register_functions(&conn)?;
         conn.busy_timeout(options.busy_timeout)?;
         // `journal_mode` needs a write lock the first time the file switches to
         // WAL, so two processes opening a fresh database at once can collide.
@@ -188,6 +190,116 @@ fn incomplete_dependencies_of(conn: &Connection, task_id: i64) -> Result<Vec<i64
         .query_map(params![task_id, Status::Done.as_str()], |row| row.get(0))?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(blockers)
+}
+
+/// Registers the SQL functions the queries rely on. `pmp_lower` folds letters
+/// beyond ASCII (SQLite's own `lower` only folds ASCII), so text search gives
+/// the same answer as the in-memory stub.
+fn register_functions(conn: &Connection) -> Result<(), AppError> {
+    conn.create_scalar_function(
+        "pmp_lower",
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let value: Option<String> = ctx.get(0)?;
+            Ok(value.map(|v| v.to_lowercase()))
+        },
+    )?;
+    Ok(())
+}
+
+/// FROM clause and bound values of a [`TaskFilter`]. Used by both the page and
+/// the count, so pagination metadata always describes the same rows.
+fn task_filter_sql(filter: &TaskFilter) -> (String, Vec<Value>) {
+    let mut sql = String::from("FROM tasks t WHERE t.project_id = ?");
+    let mut values = vec![Value::Integer(filter.project_id)];
+    if let Some(version_id) = filter.version_id {
+        sql.push_str(" AND t.version_id = ?");
+        values.push(Value::Integer(version_id));
+    }
+    if let Some(status) = filter.status {
+        sql.push_str(" AND t.status = ?");
+        values.push(Value::Text(status.as_str().to_string()));
+    }
+    if let Some(priority) = filter.priority {
+        sql.push_str(" AND t.priority = ?");
+        values.push(Value::Integer(i64::from(priority)));
+    }
+    if let Some(text) = &filter.text {
+        // Both sides go through `pmp_lower`, the same folding the stub uses.
+        let needle = text.to_lowercase();
+        sql.push_str(
+            " AND (instr(pmp_lower(t.name), ?) > 0
+                   OR instr(pmp_lower(t.description), ?) > 0
+                   OR EXISTS (SELECT 1 FROM task_notes n
+                              WHERE n.task_id = t.id AND instr(pmp_lower(n.content), ?) > 0))",
+        );
+        for _ in 0..3 {
+            values.push(Value::Text(needle.clone()));
+        }
+    }
+    if let Some(ids) = &filter.ids {
+        if ids.is_empty() {
+            sql.push_str(" AND 0");
+        } else {
+            let placeholders = vec!["?"; ids.len()].join(", ");
+            sql.push_str(&format!(" AND t.id IN ({placeholders})"));
+            values.extend(ids.iter().map(|&id| Value::Integer(id)));
+        }
+    }
+    match filter.readiness {
+        Some(Readiness::Ready) => {
+            sql.push_str(
+                " AND t.status = ? AND NOT EXISTS (
+                    SELECT 1 FROM task_dependencies d JOIN tasks b ON b.id = d.depends_on_id
+                    WHERE d.task_id = t.id AND b.status != ?)",
+            );
+            values.push(Value::Text(Status::Todo.as_str().to_string()));
+            values.push(Value::Text(Status::Done.as_str().to_string()));
+        }
+        Some(Readiness::Blocked) => {
+            sql.push_str(
+                " AND EXISTS (
+                    SELECT 1 FROM task_dependencies d JOIN tasks b ON b.id = d.depends_on_id
+                    WHERE d.task_id = t.id AND b.status != ?)",
+            );
+            values.push(Value::Text(Status::Done.as_str().to_string()));
+        }
+        None => {}
+    }
+    if let Some(since) = &filter.touched_since {
+        sql.push_str(
+            " AND (t.created_at >= ? OR t.completed_at >= ?
+                   OR EXISTS (SELECT 1 FROM task_notes n
+                              WHERE n.task_id = t.id AND n.created_at >= ?))",
+        );
+        for _ in 0..3 {
+            values.push(Value::Text(since.clone()));
+        }
+    }
+    (sql, values)
+}
+
+/// FROM clause and bound values of the ready tasks of a project: todo tasks
+/// whose dependencies are all done. Shared by the listing and the claim so
+/// both apply the same rule.
+fn ready_filter(project_id: i64, version_id: Option<i64>) -> (String, Vec<Value>) {
+    let mut sql = String::from(
+        "FROM tasks t WHERE t.project_id = ?1 AND t.status = ?2 AND NOT EXISTS (
+            SELECT 1 FROM task_dependencies d
+            JOIN tasks b ON b.id = d.depends_on_id
+            WHERE d.task_id = t.id AND b.status != ?3)",
+    );
+    let mut values = vec![
+        Value::Integer(project_id),
+        Value::Text(Status::Todo.as_str().to_string()),
+        Value::Text(Status::Done.as_str().to_string()),
+    ];
+    if let Some(version_id) = version_id {
+        sql.push_str(" AND t.version_id = ?4");
+        values.push(Value::Integer(version_id));
+    }
+    (sql, values)
 }
 
 /// Direct dependencies of a task, read from any connection.
@@ -418,28 +530,15 @@ impl TaskRepository for SqliteRepository {
         offset: u32,
     ) -> Result<Vec<Task>, AppError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE project_id = ?");
-        let mut values = vec![Value::Integer(filter.project_id)];
-        if let Some(version_id) = filter.version_id {
-            sql.push_str(" AND version_id = ?");
-            values.push(Value::Integer(version_id));
-        }
-        if let Some(status) = filter.status {
-            sql.push_str(" AND status = ?");
-            values.push(Value::Text(status.as_str().to_string()));
-        }
-        if let Some(priority) = filter.priority {
-            sql.push_str(" AND priority = ?");
-            values.push(Value::Integer(i64::from(priority)));
-        }
-        sql.push_str(
-            " ORDER BY CASE WHEN status = ? THEN 1 ELSE 0 END, priority DESC, created_at DESC, id DESC
-              LIMIT ? OFFSET ?",
-        );
+        let (from, mut values) = task_filter_sql(filter);
         values.push(Value::Text(Status::Done.as_str().to_string()));
         values.push(Value::Integer(i64::from(limit)));
         values.push(Value::Integer(i64::from(offset)));
-        let mut stmt = conn.prepare(&sql)?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {TASK_COLUMNS} {from}
+             ORDER BY CASE WHEN status = ? THEN 1 ELSE 0 END, priority DESC, created_at DESC, id DESC
+             LIMIT ? OFFSET ?"
+        ))?;
         let tasks = stmt
             .query_map(params_from_iter(values), task_from_row)?
             .collect::<Result<Vec<_>, _>>()?;
@@ -448,22 +547,64 @@ impl TaskRepository for SqliteRepository {
 
     fn count_tasks(&self, filter: &TaskFilter) -> Result<u64, AppError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut sql = String::from("SELECT COUNT(*) FROM tasks WHERE project_id = ?");
-        let mut values = vec![Value::Integer(filter.project_id)];
-        if let Some(version_id) = filter.version_id {
-            sql.push_str(" AND version_id = ?");
-            values.push(Value::Integer(version_id));
-        }
-        if let Some(status) = filter.status {
-            sql.push_str(" AND status = ?");
-            values.push(Value::Text(status.as_str().to_string()));
-        }
-        if let Some(priority) = filter.priority {
-            sql.push_str(" AND priority = ?");
-            values.push(Value::Integer(i64::from(priority)));
-        }
-        let count: i64 = conn.query_row(&sql, params_from_iter(values), |row| row.get(0))?;
+        let (from, values) = task_filter_sql(filter);
+        let count: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) {from}"),
+            params_from_iter(values),
+            |row| row.get(0),
+        )?;
         Ok(count as u64)
+    }
+
+    fn list_ready_tasks(
+        &self,
+        project_id: i64,
+        version_id: Option<i64>,
+    ) -> Result<Vec<Task>, AppError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let (from, values) = ready_filter(project_id, version_id);
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {TASK_COLUMNS} {from} ORDER BY priority DESC, id ASC LIMIT {LIST_LIMIT}"
+        ))?;
+        let tasks = stmt
+            .query_map(params_from_iter(values), task_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        check_list_size(tasks)
+    }
+
+    fn claim_next_ready_task(
+        &self,
+        project_id: i64,
+        version_id: Option<i64>,
+        note: Option<&str>,
+    ) -> Result<Task, AppError> {
+        // Selection, status change and note share one IMMEDIATE transaction:
+        // another claimant waits for the lock instead of seeing the same task.
+        self.write_transaction(|tx| {
+            let (from, values) = ready_filter(project_id, version_id);
+            let id: Option<i64> = tx
+                .query_row(
+                    &format!("SELECT id {from} ORDER BY priority DESC, id ASC LIMIT 1"),
+                    params_from_iter(values),
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let id = id.ok_or_else(|| {
+                AppError::NoReadyTask("there is no ready task to claim".to_string())
+            })?;
+            tx.execute(
+                "UPDATE tasks SET status = ?1, completed_at = NULL WHERE id = ?2",
+                params![Status::InProgress.as_str(), id],
+            )?;
+            if let Some(content) = note {
+                let note = TaskNote::new(id, content)?;
+                tx.execute(
+                    "INSERT INTO task_notes(task_id, content) VALUES(?1, ?2)",
+                    params![id, note.content],
+                )?;
+            }
+            task_by_id(tx, id)
+        })
     }
 
     fn create_task(

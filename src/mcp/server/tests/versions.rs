@@ -108,6 +108,11 @@ async fn list_tasks_filters_by_version_id() {
             limit: None,
             offset: None,
             include_description: None,
+            query: None,
+            ids: None,
+            only_ready: None,
+            only_blocked: None,
+            updated_or_created_since: None,
         }))
         .await
         .unwrap();
@@ -130,6 +135,11 @@ async fn list_tasks_rejects_version_from_another_project() {
             limit: None,
             offset: None,
             include_description: None,
+            query: None,
+            ids: None,
+            only_ready: None,
+            only_blocked: None,
+            updated_or_created_since: None,
         }))
         .await
         .unwrap();
@@ -386,6 +396,11 @@ async fn project_version_flow_create_version_task_and_filter() {
                 limit: None,
                 offset: None,
                 include_description: None,
+                query: None,
+                ids: None,
+                only_ready: None,
+                only_blocked: None,
+                updated_or_created_since: None,
             }))
             .await
             .unwrap(),

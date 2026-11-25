@@ -1,6 +1,18 @@
 // Copyright (C) 2026 Diego Torréns Farias
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+/// JSON snapshot in which store timestamps are redacted: the stub writes the
+/// real UTC time, which would otherwise make the snapshot change on every run.
+macro_rules! assert_json_snapshot_redacted {
+    ($($arg:tt)*) => {
+        insta::with_settings!({
+            filters => vec![(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", "[timestamp]")]
+        }, {
+            insta::assert_json_snapshot!($($arg)*);
+        })
+    };
+}
+
 use super::*;
 
 #[tokio::test]
@@ -15,7 +27,7 @@ async fn list_resources_includes_projects() {
 async fn list_resource_templates_include_project_and_tasks() {
     let (server, _) = server();
     let result = server.list_resource_templates_page(None).await.unwrap();
-    insta::assert_json_snapshot!(
+    assert_json_snapshot_redacted!(
         result
             .resource_templates
             .iter()
@@ -51,7 +63,7 @@ async fn read_projects_returns_all_projects() {
     repo.create_project("Alpha", "First project", None).unwrap();
     repo.create_project("Beta", "Second project", None).unwrap();
     let result = server.read_resource("pmp://projects").await.unwrap();
-    insta::assert_json_snapshot!(result);
+    assert_json_snapshot_redacted!(result);
 }
 
 #[tokio::test]
@@ -62,7 +74,7 @@ async fn read_project_by_id_returns_project() {
         .read_resource(&format!("pmp://projects/{}", project.id.unwrap()))
         .await
         .unwrap();
-    insta::assert_json_snapshot!(result);
+    assert_json_snapshot_redacted!(result);
 }
 
 #[tokio::test]
@@ -92,7 +104,7 @@ async fn read_project_tasks_returns_ordered_tasks() {
         .read_resource(&format!("pmp://projects/{}/tasks", pid))
         .await
         .unwrap();
-    insta::assert_json_snapshot!(result);
+    assert_json_snapshot_redacted!(result);
 }
 
 #[tokio::test]
@@ -104,7 +116,7 @@ async fn read_unknown_project_returns_resource_not_found() {
         .unwrap_err();
     let ErrorData { code, .. } = err;
     assert_eq!(code, ErrorCode::RESOURCE_NOT_FOUND);
-    insta::assert_json_snapshot!(err);
+    assert_json_snapshot_redacted!(err);
 }
 
 #[tokio::test]

@@ -41,6 +41,16 @@ pub struct ListTasksParams {
     /// Include each task's full description (Context, Requirements, Benefits).
     /// Defaults to false: listings return a light summary; use get_task for one task's detail.
     pub include_description: Option<bool>,
+    /// Case-insensitive text searched in the name, the description and the notes of each task.
+    pub query: Option<String>,
+    /// Only the tasks with these ids (at most 500).
+    pub ids: Option<Vec<i64>>,
+    /// Only tasks ready to implement: todo, with every dependency done.
+    pub only_ready: Option<bool>,
+    /// Only tasks with at least one dependency that is not done yet. Cannot be combined with only_ready.
+    pub only_blocked: Option<bool>,
+    /// Only tasks created, completed or noted at or after this UTC time, as `YYYY-MM-DD` (midnight) or `YYYY-MM-DD HH:MM:SS`.
+    pub updated_or_created_since: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -123,6 +133,28 @@ pub struct TaskDependencyParams {
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct TaskIdParams {
     pub task_id: i64,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ListReadyTasksParams {
+    pub project_id: i64,
+    /// Restrict the list to one version of the project.
+    pub version_id: Option<i64>,
+    /// Maximum tasks to return. Defaults to 100; capped at 500.
+    pub limit: Option<u32>,
+    /// Number of ready tasks to skip. Defaults to 0.
+    pub offset: Option<u32>,
+    /// Include each task's full description. Defaults to false.
+    pub include_description: Option<bool>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ClaimNextTaskParams {
+    pub project_id: i64,
+    /// Claim only from this version of the project.
+    pub version_id: Option<i64>,
+    /// Optional start note recorded on the claimed task in the same step.
+    pub note: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]

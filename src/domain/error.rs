@@ -16,6 +16,7 @@
 //! | `dependency_cycle` | no | no | The dependency edge would close a cycle. |
 //! | `confirmation_required` | no | yes | A destructive change would remove active work or dependents; `blockers` lists them. Retry with explicit confirmation. |
 //! | `invalid_transition` | no | no | The state change is not allowed (a task with edges cannot move version). |
+//! | `no_ready_task` | no | no | No todo task without incomplete dependencies matches the request (M3 `claim_next_task`). |
 //! | `db_busy` | yes | no | The store is locked; retrying later may succeed. |
 //! | `agent_unavailable` | yes | no | The configured agent binary could not be started. |
 //! | `agent_failed` | no | no | The agent started but the session failed. |
@@ -39,6 +40,7 @@ pub enum ErrorCode {
     DependencyCycle,
     ConfirmationRequired,
     InvalidTransition,
+    NoReadyTask,
     DbBusy,
     AgentUnavailable,
     AgentFailed,
@@ -56,6 +58,7 @@ impl ErrorCode {
             Self::DependencyCycle => "dependency_cycle",
             Self::ConfirmationRequired => "confirmation_required",
             Self::InvalidTransition => "invalid_transition",
+            Self::NoReadyTask => "no_ready_task",
             Self::DbBusy => "db_busy",
             Self::AgentUnavailable => "agent_unavailable",
             Self::AgentFailed => "agent_failed",
@@ -85,6 +88,8 @@ pub enum AppError {
     ConfirmationRequired { message: String, blockers: Vec<i64> },
     #[error("{0}")]
     InvalidTransition(String),
+    #[error("{0}")]
+    NoReadyTask(String),
     #[error("database is busy; retry the operation")]
     DbBusy,
     #[error("{0}")]
@@ -118,6 +123,7 @@ impl AppError {
             Self::DependencyCycle => ErrorCode::DependencyCycle,
             Self::ConfirmationRequired { .. } => ErrorCode::ConfirmationRequired,
             Self::InvalidTransition(_) => ErrorCode::InvalidTransition,
+            Self::NoReadyTask(_) => ErrorCode::NoReadyTask,
             Self::DbBusy => ErrorCode::DbBusy,
             Self::AgentUnavailable(_) => ErrorCode::AgentUnavailable,
             Self::AgentFailed(_) => ErrorCode::AgentFailed,
@@ -228,6 +234,7 @@ mod tests {
                 ErrorCode::AgentUnavailable,
             ),
             (AppError::AgentFailed("x".into()), ErrorCode::AgentFailed),
+            (AppError::NoReadyTask("x".into()), ErrorCode::NoReadyTask),
             (AppError::Internal, ErrorCode::Internal),
             (
                 AppError::DbError(rusqlite::Error::InvalidQuery),
@@ -254,6 +261,7 @@ mod tests {
             blocked(),
             AppError::DependencyCycle,
             AppError::InvalidTransition("x".into()),
+            AppError::NoReadyTask("x".into()),
             AppError::AgentFailed("x".into()),
             AppError::Internal,
         ] {

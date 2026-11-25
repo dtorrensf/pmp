@@ -6,6 +6,7 @@ pub mod project;
 pub mod snapshot;
 pub mod task;
 pub mod task_description;
+pub mod timestamp;
 pub mod validation;
 pub mod version;
 pub mod version_summary;

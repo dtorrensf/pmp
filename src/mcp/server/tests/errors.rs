@@ -15,6 +15,11 @@ async fn db_error_details_are_not_sent_to_client() {
             limit: None,
             offset: None,
             include_description: None,
+            query: None,
+            ids: None,
+            only_ready: None,
+            only_blocked: None,
+            updated_or_created_since: None,
         }))
         .await
         .unwrap_err();
@@ -71,6 +76,11 @@ async fn list_tasks_db_error_returns_internal_error() {
             limit: None,
             offset: None,
             include_description: None,
+            query: None,
+            ids: None,
+            only_ready: None,
+            only_blocked: None,
+            updated_or_created_since: None,
         }))
         .await
         .unwrap_err();

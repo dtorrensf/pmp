@@ -47,6 +47,38 @@ expression: tools
     }
   },
   {
+    "name": "claim_next_task",
+    "description": "Claim the next ready task in one atomic step: the highest-priority todo task whose dependencies are all done is moved to in_progress, and the optional note is recorded as its start note. Returns the claimed task. Fails with no_ready_task when nothing is ready; nothing changes in that case. Prefer this over list_ready_tasks followed by update_task_status when you are about to start work.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "note": {
+          "description": "Optional start note recorded on the claimed task in the same step.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project_id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "version_id": {
+          "description": "Claim only from this version of the project.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
     "name": "compact_version",
     "description": "Compact a version into a frozen summary. Freezes only its done tasks (with their notes/dependencies) and deletes them; todo tasks stay in the version. Fails if any task is in_progress, or if there is nothing to freeze (no done tasks and no previous summary). If todo tasks remain, the version stays open; otherwise it is marked released by default. When recompacting, the new summary must preserve the relevant knowledge from the previous summary (available in the preview as previous_summary) while incorporating the new tasks, notes and dependencies with their completed_at.",
     "inputSchema": {
@@ -361,7 +393,7 @@ expression: tools
   },
   {
     "name": "get_task_dependencies",
-    "description": "List the task ids that a task depends on (its blockers). Check before starting a task: incomplete dependencies block marking it done.",
+    "description": "Get the dependency neighbourhood of a task: blocked_by (the tasks it waits for) and blocks (the tasks waiting for it), each resolved to id, name, status and priority, plus ready: true when the task is todo and every blocker is done. Check before starting a task: incomplete blockers block marking it done.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -378,7 +410,7 @@ expression: tools
   },
   {
     "name": "get_task_dependents",
-    "description": "List the task ids that depend on a task (tasks it blocks). Use to understand the impact of changing or deleting a task.",
+    "description": "Get the tasks that depend on a task (the ones it blocks), resolved to id, name, status and priority. The same view as get_task_dependencies is returned. Use to understand the impact of changing or deleting a task.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -419,6 +451,56 @@ expression: tools
     }
   },
   {
+    "name": "list_ready_tasks",
+    "description": "List the tasks ready to implement: todo tasks whose dependencies are all done, highest priority first, then lowest id. Same summary shape and pagination as list_tasks (limit, offset, total, has_more). Use to see what can be worked on now; use claim_next_task to take one.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "include_description": {
+          "description": "Include each task's full description. Defaults to false.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Maximum tasks to return. Defaults to 100; capped at 500.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "offset": {
+          "description": "Number of ready tasks to skip. Defaults to 0.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "project_id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "version_id": {
+          "description": "Restrict the list to one version of the project.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
     "name": "list_task_notes",
     "description": "List the notes of a task, newest first. Results are paginated: use limit (default 100, max 500) and offset, and check has_more/total to fetch older notes. Use to read progress updates, decisions, context and reminders before continuing work on it.",
     "inputSchema": {
@@ -455,7 +537,7 @@ expression: tools
   },
   {
     "name": "list_tasks",
-    "description": "List tasks for a project, optionally filtered by version_id (see list_versions), status (todo, in_progress, done) and priority (Low, Medium, High). Each task comes as a light summary (id, names, status, priority, timestamps, depends_on_count and blocks_count); set include_description to true to add the full description, or call get_task for one task. Results are paginated: use limit (default 100, max 500) and offset, and check has_more/total to fetch the next page. Use when the user asks about their tasks, to-dos, pending work or progress, or to pick the next task to work on.",
+    "description": "List tasks for a project. Filters, all optional and combinable: version_id (see list_versions), status (todo, in_progress, done), priority (Low, Medium, High), query (case-insensitive text found in the name, description or notes), ids (up to 500 task ids), only_ready (todo with every dependency done) or only_blocked (waiting for an unfinished dependency), and updated_or_created_since (tasks created, completed or noted at or after a UTC time, YYYY-MM-DD or YYYY-MM-DD HH:MM:SS). Each task comes as a light summary (id, names, status, priority, timestamps, depends_on_count and blocks_count); set include_description to true to add the full description, or call get_task for one task. Results are paginated: use limit (default 100, max 500) and offset, and check has_more/total to fetch the next page. Use when the user asks about their tasks, to-dos, pending work or progress, to search for a topic, or to pick the next task to work on.",
     "inputSchema": {
       "$defs": {
         "PriorityParam": {
@@ -478,6 +560,17 @@ expression: tools
       },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
+        "ids": {
+          "description": "Only the tasks with these ids (at most 500).",
+          "items": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "include_description": {
           "description": "Include each task's full description (Context, Requirements, Benefits).\nDefaults to false: listings return a light summary; use get_task for one task's detail.",
           "type": [
@@ -503,6 +596,20 @@ expression: tools
             "null"
           ]
         },
+        "only_blocked": {
+          "description": "Only tasks with at least one dependency that is not done yet. Cannot be combined with only_ready.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "only_ready": {
+          "description": "Only tasks ready to implement: todo, with every dependency done.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "priority": {
           "anyOf": [
             {
@@ -517,6 +624,13 @@ expression: tools
           "format": "int64",
           "type": "integer"
         },
+        "query": {
+          "description": "Case-insensitive text searched in the name, the description and the notes of each task.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "status": {
           "anyOf": [
             {
@@ -525,6 +639,13 @@ expression: tools
             {
               "type": "null"
             }
+          ]
+        },
+        "updated_or_created_since": {
+          "description": "Only tasks created, completed or noted at or after this UTC time, as `YYYY-MM-DD` (midnight) or `YYYY-MM-DD HH:MM:SS`.",
+          "type": [
+            "string",
+            "null"
           ]
         },
         "version_id": {

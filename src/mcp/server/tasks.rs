@@ -21,7 +21,7 @@ use super::*;
 impl PmpServer {
     #[tool(
         name = "list_tasks",
-        description = "List tasks for a project, optionally filtered by version_id (see list_versions), status (todo, in_progress, done) and priority (Low, Medium, High). Each task comes as a light summary (id, names, status, priority, timestamps, depends_on_count and blocks_count); set include_description to true to add the full description, or call get_task for one task. Results are paginated: use limit (default 100, max 500) and offset, and check has_more/total to fetch the next page. Use when the user asks about their tasks, to-dos, pending work or progress, or to pick the next task to work on."
+        description = "List tasks for a project. Filters, all optional and combinable: version_id (see list_versions), status (todo, in_progress, done), priority (Low, Medium, High), query (case-insensitive text found in the name, description or notes), ids (up to 500 task ids), only_ready (todo with every dependency done) or only_blocked (waiting for an unfinished dependency), and updated_or_created_since (tasks created, completed or noted at or after a UTC time, YYYY-MM-DD or YYYY-MM-DD HH:MM:SS). Each task comes as a light summary (id, names, status, priority, timestamps, depends_on_count and blocks_count); set include_description to true to add the full description, or call get_task for one task. Results are paginated: use limit (default 100, max 500) and offset, and check has_more/total to fetch the next page. Use when the user asks about their tasks, to-dos, pending work or progress, to search for a topic, or to pick the next task to work on."
     )]
     pub(super) async fn list_tasks(
         &self,
@@ -34,17 +34,79 @@ impl PmpServer {
         let limit = clamp_limit(params.limit);
         let offset = params.offset.unwrap_or(0);
         let include_description = params.include_description.unwrap_or(false);
-        let filter = TaskFilter {
-            project_id,
-            version_id,
-            status,
-            priority,
-        };
+        let text = params.query;
+        let ids = params.ids;
+        let touched_since = params.updated_or_created_since;
+        let (only_ready, only_blocked) = (
+            params.only_ready.unwrap_or(false),
+            params.only_blocked.unwrap_or(false),
+        );
         let result = execute_repository(self.repo.clone(), self.timeout, move |repo| {
+            let filter = TaskFilter {
+                project_id,
+                version_id,
+                status,
+                priority,
+                text,
+                ids,
+                readiness: application::tasks::readiness_from_flags(only_ready, only_blocked)?,
+                touched_since,
+            };
             application::tasks::page(repo.as_ref(), &filter, limit, offset, include_description)
         })
         .await?;
         tool_result(result, PROJECT_NOT_FOUND)
+    }
+
+    #[tool(
+        name = "list_ready_tasks",
+        description = "List the tasks ready to implement: todo tasks whose dependencies are all done, highest priority first, then lowest id. Same summary shape and pagination as list_tasks (limit, offset, total, has_more). Use to see what can be worked on now; use claim_next_task to take one."
+    )]
+    pub(super) async fn list_ready_tasks(
+        &self,
+        Parameters(params): Parameters<ListReadyTasksParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let project_id = params.project_id;
+        let version_id = params.version_id;
+        let limit = clamp_limit(params.limit);
+        let offset = params.offset.unwrap_or(0);
+        let include_description = params.include_description.unwrap_or(false);
+        let result = execute_repository(self.repo.clone(), self.timeout, move |repo| {
+            application::tasks::ready_page(
+                repo.as_ref(),
+                project_id,
+                version_id,
+                limit,
+                offset,
+                include_description,
+            )
+        })
+        .await?;
+        tool_result(result, PROJECT_NOT_FOUND)
+    }
+
+    #[tool(
+        name = "claim_next_task",
+        description = "Claim the next ready task in one atomic step: the highest-priority todo task whose dependencies are all done is moved to in_progress, and the optional note is recorded as its start note. Returns the claimed task. Fails with no_ready_task when nothing is ready; nothing changes in that case. Prefer this over list_ready_tasks followed by update_task_status when you are about to start work."
+    )]
+    pub(super) async fn claim_next_task(
+        &self,
+        Parameters(params): Parameters<ClaimNextTaskParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        run_tool(
+            self.repo.clone(),
+            self.timeout,
+            PROJECT_NOT_FOUND,
+            move |repo| {
+                application::tasks::claim_next(
+                    repo.as_ref(),
+                    params.project_id,
+                    params.version_id,
+                    params.note.as_deref(),
+                )
+            },
+        )
+        .await
     }
 
     #[tool(
