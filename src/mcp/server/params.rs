@@ -196,3 +196,31 @@ pub struct DeleteVersionSummaryParams {
 pub struct ExportVersionSummaryParams {
     pub summary_id: i64,
 }
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ProjectIdParams {
+    pub project_id: i64,
+}
+
+/// `confirm` must be true to delete a record that still holds active work or
+/// dependents. Without it the call is refused and reports what blocks it.
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct DeleteProjectParams {
+    pub project_id: i64,
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct DeleteVersionParams {
+    pub version_id: i64,
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct DeleteTaskParams {
+    pub task_id: i64,
+    #[serde(default)]
+    pub confirm: bool,
+}

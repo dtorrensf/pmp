@@ -85,4 +85,39 @@ impl PmpServer {
         )
         .await
     }
+
+    #[tool(
+        name = "get_version",
+        description = "Get one version by id: its details, task counts by status and number of compaction summaries. Use when the user asks about a specific release line or before deleting it."
+    )]
+    pub(super) async fn get_version(
+        &self,
+        Parameters(params): Parameters<VersionIdParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let version_id = params.version_id;
+        run_tool(
+            self.repo.clone(),
+            self.timeout,
+            VERSION_NOT_FOUND,
+            move |repo| application::records::version_detail(repo.as_ref(), version_id),
+        )
+        .await
+    }
+
+    #[tool(
+        name = "delete_version",
+        description = "Delete a version with its tasks, notes and summaries. Irreversible. Refused with error code confirmation_required while it has active (todo or in_progress) tasks, unless confirm is true; the refusal lists the blocking task ids. Done tasks are removed without confirmation, so prefer compact_version to keep history. Only delete when the user explicitly asks."
+    )]
+    pub(super) async fn delete_version(
+        &self,
+        Parameters(params): Parameters<DeleteVersionParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let version_id = params.version_id;
+        let confirm = params.confirm;
+        let result = execute_repository(self.repo.clone(), self.timeout, move |repo| {
+            application::records::delete_version(repo.as_ref(), version_id, confirm)
+        })
+        .await?;
+        tool_result(result, VERSION_NOT_FOUND)
+    }
 }

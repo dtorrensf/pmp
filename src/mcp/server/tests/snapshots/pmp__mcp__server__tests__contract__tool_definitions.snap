@@ -206,6 +206,48 @@ expression: tools
     }
   },
   {
+    "name": "delete_project",
+    "description": "Delete a project with all its versions, tasks, notes and summaries. Irreversible. Refused with error code confirmation_required while it has active (todo or in_progress) tasks, unless confirm is true; the refusal lists the blocking task ids. Only delete when the user explicitly asks; the response reports everything removed.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "confirm": {
+          "default": false,
+          "type": "boolean"
+        },
+        "project_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "delete_task",
+    "description": "Delete a task with its notes and dependency links. Irreversible. Refused with error code confirmation_required while the task is in_progress or other tasks depend on it, unless confirm is true; the refusal lists the dependent task ids. Only delete when the user explicitly asks, for example a task created by mistake. To retire finished work, use the done status instead.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "confirm": {
+          "default": false,
+          "type": "boolean"
+        },
+        "task_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "task_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
     "name": "delete_task_note",
     "description": "Delete a task note by its note id.",
     "inputSchema": {
@@ -218,6 +260,27 @@ expression: tools
       },
       "required": [
         "note_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "delete_version",
+    "description": "Delete a version with its tasks, notes and summaries. Irreversible. Refused with error code confirmation_required while it has active (todo or in_progress) tasks, unless confirm is true; the refusal lists the blocking task ids. Done tasks are removed without confirmation, so prefer compact_version to keep history. Only delete when the user explicitly asks.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "confirm": {
+          "default": false,
+          "type": "boolean"
+        },
+        "version_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version_id"
       ],
       "type": "object"
     }
@@ -263,6 +326,40 @@ expression: tools
     }
   },
   {
+    "name": "get_project",
+    "description": "Get one project by id: its details (including working_dir), number of versions and task counts by status. Use when the user asks about a specific project or before deleting it.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "project_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "get_task",
+    "description": "Get one task by id: its name, status, priority, the Context, Requirements and Benefits sections, the 5 most recent notes, and the ids of the tasks it depends on and the tasks it blocks. Use instead of list_tasks when you need the full detail of a single task.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "task_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "task_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
     "name": "get_task_dependencies",
     "description": "List the task ids that a task depends on (its blockers). Check before starting a task: incomplete dependencies block marking it done.",
     "inputSchema": {
@@ -292,6 +389,23 @@ expression: tools
       },
       "required": [
         "task_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "get_version",
+    "description": "Get one version by id: its details, task counts by status and number of compaction summaries. Use when the user asks about a specific release line or before deleting it.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "version_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version_id"
       ],
       "type": "object"
     }

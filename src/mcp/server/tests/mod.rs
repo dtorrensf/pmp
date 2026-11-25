@@ -7,6 +7,7 @@ mod errors;
 mod notes;
 mod projects;
 mod protocol;
+mod records;
 mod resources;
 mod schema;
 mod summaries;

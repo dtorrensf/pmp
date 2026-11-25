@@ -77,4 +77,39 @@ impl PmpServer {
         )
         .await
     }
+
+    #[tool(
+        name = "get_project",
+        description = "Get one project by id: its details (including working_dir), number of versions and task counts by status. Use when the user asks about a specific project or before deleting it."
+    )]
+    pub(super) async fn get_project(
+        &self,
+        Parameters(params): Parameters<ProjectIdParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let project_id = params.project_id;
+        run_tool(
+            self.repo.clone(),
+            self.timeout,
+            PROJECT_NOT_FOUND,
+            move |repo| application::records::project_detail(repo.as_ref(), project_id),
+        )
+        .await
+    }
+
+    #[tool(
+        name = "delete_project",
+        description = "Delete a project with all its versions, tasks, notes and summaries. Irreversible. Refused with error code confirmation_required while it has active (todo or in_progress) tasks, unless confirm is true; the refusal lists the blocking task ids. Only delete when the user explicitly asks; the response reports everything removed."
+    )]
+    pub(super) async fn delete_project(
+        &self,
+        Parameters(params): Parameters<DeleteProjectParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let project_id = params.project_id;
+        let confirm = params.confirm;
+        let result = execute_repository(self.repo.clone(), self.timeout, move |repo| {
+            application::records::delete_project(repo.as_ref(), project_id, confirm)
+        })
+        .await?;
+        tool_result(result, PROJECT_NOT_FOUND)
+    }
 }

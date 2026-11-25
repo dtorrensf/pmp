@@ -37,6 +37,12 @@ const TOOL_CONTRACT: &[&str] = &[
     "read_version_summary",
     "delete_version_summary",
     "export_version_summary",
+    "get_project",
+    "get_version",
+    "get_task",
+    "delete_project",
+    "delete_version",
+    "delete_task",
 ];
 
 #[test]

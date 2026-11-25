@@ -173,4 +173,39 @@ impl PmpServer {
         )
         .await
     }
+
+    #[tool(
+        name = "get_task",
+        description = "Get one task by id: its name, status, priority, the Context, Requirements and Benefits sections, the 5 most recent notes, and the ids of the tasks it depends on and the tasks it blocks. Use instead of list_tasks when you need the full detail of a single task."
+    )]
+    pub(super) async fn get_task(
+        &self,
+        Parameters(params): Parameters<TaskIdParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let task_id = params.task_id;
+        run_tool(
+            self.repo.clone(),
+            self.timeout,
+            TASK_NOT_FOUND,
+            move |repo| application::records::task_detail(repo.as_ref(), task_id),
+        )
+        .await
+    }
+
+    #[tool(
+        name = "delete_task",
+        description = "Delete a task with its notes and dependency links. Irreversible. Refused with error code confirmation_required while the task is in_progress or other tasks depend on it, unless confirm is true; the refusal lists the dependent task ids. Only delete when the user explicitly asks, for example a task created by mistake. To retire finished work, use the done status instead."
+    )]
+    pub(super) async fn delete_task(
+        &self,
+        Parameters(params): Parameters<DeleteTaskParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let task_id = params.task_id;
+        let confirm = params.confirm;
+        let result = execute_repository(self.repo.clone(), self.timeout, move |repo| {
+            application::records::delete_task(repo.as_ref(), task_id, confirm)
+        })
+        .await?;
+        tool_result(result, TASK_NOT_FOUND)
+    }
 }

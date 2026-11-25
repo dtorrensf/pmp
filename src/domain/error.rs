@@ -14,6 +14,7 @@
 //! | `duplicate_name` | no | no | A record with that name already exists here. |
 //! | `dependency_blocked` | no | yes | The task has incomplete dependencies; `blockers` lists them. |
 //! | `dependency_cycle` | no | no | The dependency edge would close a cycle. |
+//! | `confirmation_required` | no | yes | A destructive change would remove active work or dependents; `blockers` lists them. Retry with explicit confirmation. |
 //! | `invalid_transition` | no | no | The state change is not allowed (a task with edges cannot move version). |
 //! | `db_busy` | yes | no | The store is locked; retrying later may succeed. |
 //! | `agent_unavailable` | yes | no | The configured agent binary could not be started. |
@@ -36,6 +37,7 @@ pub enum ErrorCode {
     DuplicateName,
     DependencyBlocked,
     DependencyCycle,
+    ConfirmationRequired,
     InvalidTransition,
     DbBusy,
     AgentUnavailable,
@@ -52,6 +54,7 @@ impl ErrorCode {
             Self::DuplicateName => "duplicate_name",
             Self::DependencyBlocked => "dependency_blocked",
             Self::DependencyCycle => "dependency_cycle",
+            Self::ConfirmationRequired => "confirmation_required",
             Self::InvalidTransition => "invalid_transition",
             Self::DbBusy => "db_busy",
             Self::AgentUnavailable => "agent_unavailable",
@@ -78,6 +81,8 @@ pub enum AppError {
     DependencyBlocked { message: String, blockers: Vec<i64> },
     #[error("dependency cycle")]
     DependencyCycle,
+    #[error("{message}")]
+    ConfirmationRequired { message: String, blockers: Vec<i64> },
     #[error("{0}")]
     InvalidTransition(String),
     #[error("database is busy; retry the operation")]
@@ -111,6 +116,7 @@ impl AppError {
             Self::DuplicateName(_) => ErrorCode::DuplicateName,
             Self::DependencyBlocked { .. } => ErrorCode::DependencyBlocked,
             Self::DependencyCycle => ErrorCode::DependencyCycle,
+            Self::ConfirmationRequired { .. } => ErrorCode::ConfirmationRequired,
             Self::InvalidTransition(_) => ErrorCode::InvalidTransition,
             Self::DbBusy => ErrorCode::DbBusy,
             Self::AgentUnavailable(_) => ErrorCode::AgentUnavailable,
@@ -127,7 +133,8 @@ impl AppError {
     /// Ids of the tasks that block this one. Empty for every other error.
     pub fn blockers(&self) -> &[i64] {
         match self {
-            Self::DependencyBlocked { blockers, .. } => blockers,
+            Self::DependencyBlocked { blockers, .. }
+            | Self::ConfirmationRequired { blockers, .. } => blockers,
             _ => &[],
         }
     }
@@ -207,6 +214,13 @@ mod tests {
             (
                 AppError::InvalidTransition("x".into()),
                 ErrorCode::InvalidTransition,
+            ),
+            (
+                AppError::ConfirmationRequired {
+                    message: "x".into(),
+                    blockers: vec![],
+                },
+                ErrorCode::ConfirmationRequired,
             ),
             (AppError::DbBusy, ErrorCode::DbBusy),
             (
