@@ -47,6 +47,38 @@ expression: tools
     }
   },
   {
+    "name": "claim_next_task",
+    "description": "Claim the next ready task in one atomic step: the highest-priority todo task whose dependencies are all done is moved to in_progress, and the optional note is recorded as its start note. Returns the claimed task. Fails with no_ready_task when nothing is ready; nothing changes in that case. Prefer this over list_ready_tasks followed by update_task_status when you are about to start work.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "note": {
+          "description": "Optional start note recorded on the claimed task in the same step.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project_id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "version_id": {
+          "description": "Claim only from this version of the project.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
     "name": "compact_version",
     "description": "Compact a version into a frozen summary. Freezes only its done tasks (with their notes/dependencies) and deletes them; todo tasks stay in the version. Fails if any task is in_progress, or if there is nothing to freeze (no done tasks and no previous summary). If todo tasks remain, the version stays open; otherwise it is marked released by default. When recompacting, the new summary must preserve the relevant knowledge from the previous summary (available in the preview as previous_summary) while incorporating the new tasks, notes and dependencies with their completed_at.",
     "inputSchema": {
@@ -361,7 +393,7 @@ expression: tools
   },
   {
     "name": "get_task_dependencies",
-    "description": "List the task ids that a task depends on (its blockers). Check before starting a task: incomplete dependencies block marking it done.",
+    "description": "Get the dependency neighbourhood of a task: blocked_by (the tasks it waits for) and blocks (the tasks waiting for it), each resolved to id, name, status and priority, plus ready: true when the task is todo and every blocker is done. Check before starting a task: incomplete blockers block marking it done.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -378,7 +410,7 @@ expression: tools
   },
   {
     "name": "get_task_dependents",
-    "description": "List the task ids that depend on a task (tasks it blocks). Use to understand the impact of changing or deleting a task.",
+    "description": "Get the tasks that depend on a task (the ones it blocks), resolved to id, name, status and priority. The same view as get_task_dependencies is returned. Use to understand the impact of changing or deleting a task.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -415,6 +447,56 @@ expression: tools
     "description": "List all projects of the user. Use to discover project ids before listing versions or tasks, or when the user asks what projects they have.",
     "inputSchema": {
       "properties": {},
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_ready_tasks",
+    "description": "List the tasks ready to implement: todo tasks whose dependencies are all done, highest priority first, then lowest id. Same summary shape and pagination as list_tasks (limit, offset, total, has_more). Use to see what can be worked on now; use claim_next_task to take one.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "include_description": {
+          "description": "Include each task's full description. Defaults to false.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Maximum tasks to return. Defaults to 100; capped at 500.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "offset": {
+          "description": "Number of ready tasks to skip. Defaults to 0.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "project_id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "version_id": {
+          "description": "Restrict the list to one version of the project.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "project_id"
+      ],
       "type": "object"
     }
   },

@@ -190,6 +190,28 @@ fn incomplete_dependencies_of(conn: &Connection, task_id: i64) -> Result<Vec<i64
     Ok(blockers)
 }
 
+/// FROM clause and bound values of the ready tasks of a project: todo tasks
+/// whose dependencies are all done. Shared by the listing and the claim so
+/// both apply the same rule.
+fn ready_filter(project_id: i64, version_id: Option<i64>) -> (String, Vec<Value>) {
+    let mut sql = String::from(
+        "FROM tasks t WHERE t.project_id = ?1 AND t.status = ?2 AND NOT EXISTS (
+            SELECT 1 FROM task_dependencies d
+            JOIN tasks b ON b.id = d.depends_on_id
+            WHERE d.task_id = t.id AND b.status != ?3)",
+    );
+    let mut values = vec![
+        Value::Integer(project_id),
+        Value::Text(Status::Todo.as_str().to_string()),
+        Value::Text(Status::Done.as_str().to_string()),
+    ];
+    if let Some(version_id) = version_id {
+        sql.push_str(" AND t.version_id = ?4");
+        values.push(Value::Integer(version_id));
+    }
+    (sql, values)
+}
+
 /// Direct dependencies of a task, read from any connection.
 fn dependencies_of(conn: &Connection, task_id: i64) -> Result<Vec<i64>, AppError> {
     let mut stmt = conn.prepare(
@@ -464,6 +486,57 @@ impl TaskRepository for SqliteRepository {
         }
         let count: i64 = conn.query_row(&sql, params_from_iter(values), |row| row.get(0))?;
         Ok(count as u64)
+    }
+
+    fn list_ready_tasks(
+        &self,
+        project_id: i64,
+        version_id: Option<i64>,
+    ) -> Result<Vec<Task>, AppError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let (from, values) = ready_filter(project_id, version_id);
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {TASK_COLUMNS} {from} ORDER BY priority DESC, id ASC LIMIT {LIST_LIMIT}"
+        ))?;
+        let tasks = stmt
+            .query_map(params_from_iter(values), task_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        check_list_size(tasks)
+    }
+
+    fn claim_next_ready_task(
+        &self,
+        project_id: i64,
+        version_id: Option<i64>,
+        note: Option<&str>,
+    ) -> Result<Task, AppError> {
+        // Selection, status change and note share one IMMEDIATE transaction:
+        // another claimant waits for the lock instead of seeing the same task.
+        self.write_transaction(|tx| {
+            let (from, values) = ready_filter(project_id, version_id);
+            let id: Option<i64> = tx
+                .query_row(
+                    &format!("SELECT id {from} ORDER BY priority DESC, id ASC LIMIT 1"),
+                    params_from_iter(values),
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let id = id.ok_or_else(|| {
+                AppError::NoReadyTask("there is no ready task to claim".to_string())
+            })?;
+            tx.execute(
+                "UPDATE tasks SET status = ?1, completed_at = NULL WHERE id = ?2",
+                params![Status::InProgress.as_str(), id],
+            )?;
+            if let Some(content) = note {
+                let note = TaskNote::new(id, content)?;
+                tx.execute(
+                    "INSERT INTO task_notes(task_id, content) VALUES(?1, ?2)",
+                    params![id, note.content],
+                )?;
+            }
+            task_by_id(tx, id)
+        })
     }
 
     fn create_task(

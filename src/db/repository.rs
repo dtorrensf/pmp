@@ -150,6 +150,26 @@ pub trait TaskRepository {
         Ok(tasks.len() as u64)
     }
 
+    /// Todo tasks of a project, optionally restricted to one version, whose
+    /// dependencies are all Done. Highest priority first, then lowest id.
+    fn list_ready_tasks(
+        &self,
+        project_id: i64,
+        version_id: Option<i64>,
+    ) -> Result<Vec<Task>, AppError>;
+
+    /// Atomically picks the first ready task (same order as
+    /// [`list_ready_tasks`](Self::list_ready_tasks)), moves it to `InProgress`
+    /// and, when given, records `note` as its start note. Selection and writes
+    /// happen under one write lock, so two callers never claim the same task.
+    /// Returns [`AppError::NoReadyTask`] when nothing is ready; nothing changes.
+    fn claim_next_ready_task(
+        &self,
+        project_id: i64,
+        version_id: Option<i64>,
+        note: Option<&str>,
+    ) -> Result<Task, AppError>;
+
     fn create_task(
         &self,
         project_id: i64,

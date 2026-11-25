@@ -119,17 +119,38 @@ pub fn page(
     offset: u32,
     include_description: bool,
 ) -> Result<TaskPage, AppError> {
-    repo.get_project(filter.project_id)?;
-    if let Some(version_id) = filter.version_id {
+    ensure_scope(repo, filter.project_id, filter.version_id)?;
+    let tasks = repo.list_tasks_page(filter, limit, offset)?;
+    let total = repo.count_tasks(filter)?;
+    to_page(repo, tasks, total, limit, offset, include_description)
+}
+
+/// Checks that a project exists and, when given, that the version belongs to it.
+fn ensure_scope(
+    repo: &dyn Repository,
+    project_id: i64,
+    version_id: Option<i64>,
+) -> Result<(), AppError> {
+    repo.get_project(project_id)?;
+    if let Some(version_id) = version_id {
         let mismatch =
             || AppError::Validation("version does not belong to the project".to_string());
         let version = repo.get_version(version_id).map_err(|_| mismatch())?;
-        if version.project_id != filter.project_id {
+        if version.project_id != project_id {
             return Err(mismatch());
         }
     }
-    let tasks = repo.list_tasks_page(filter, limit, offset)?;
-    let total = repo.count_tasks(filter)?;
+    Ok(())
+}
+
+fn to_page(
+    repo: &dyn Repository,
+    tasks: Vec<Task>,
+    total: u64,
+    limit: u32,
+    offset: u32,
+    include_description: bool,
+) -> Result<TaskPage, AppError> {
     let returned = tasks.len();
     let tasks = tasks
         .into_iter()
@@ -139,6 +160,38 @@ pub fn page(
         tasks,
         meta: super::pagination::meta(total, returned, limit, offset),
     })
+}
+
+/// Tasks ready to be implemented (todo, every dependency done), highest
+/// priority first, paginated like [`page`].
+pub fn ready_page(
+    repo: &dyn Repository,
+    project_id: i64,
+    version_id: Option<i64>,
+    limit: u32,
+    offset: u32,
+    include_description: bool,
+) -> Result<TaskPage, AppError> {
+    ensure_scope(repo, project_id, version_id)?;
+    let ready = repo.list_ready_tasks(project_id, version_id)?;
+    let total = ready.len() as u64;
+    let (window, _) = super::pagination::window(ready, limit, offset);
+    to_page(repo, window, total, limit, offset, include_description)
+}
+
+/// Claims the next ready task: moves it to `InProgress` and, when given,
+/// records `note` as its start note, in one atomic step.
+pub fn claim_next(
+    repo: &dyn Repository,
+    project_id: i64,
+    version_id: Option<i64>,
+    note: Option<&str>,
+) -> Result<Task, AppError> {
+    ensure_scope(repo, project_id, version_id)?;
+    if let Some(note) = note {
+        validate_text("note", "content", note)?;
+    }
+    repo.claim_next_ready_task(project_id, version_id, note)
 }
 
 pub fn get(repo: &dyn Repository, task_id: i64) -> Result<Task, AppError> {

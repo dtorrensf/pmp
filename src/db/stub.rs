@@ -109,6 +109,26 @@ impl StubRepository {
 }
 
 /// Orders tasks: not-done first, then priority descending, then newest first.
+/// Ready rule shared with the SQLite store: todo, and every dependency is Done.
+/// A dependency that is missing from the snapshot blocks the task.
+fn is_ready(task: &Task, tasks: &[Task], deps: &[TaskDependency]) -> bool {
+    task.status == Status::Todo
+        && deps.iter().filter(|d| Some(d.task_id) == task.id).all(|d| {
+            tasks
+                .iter()
+                .any(|t| t.id == Some(d.depends_on_id) && t.status == Status::Done)
+        })
+}
+
+/// Priority first (highest), then lowest id, matching the SQLite ordering.
+fn sort_ready(tasks: &mut [Task]) {
+    tasks.sort_by(|a, b| {
+        i64::from(b.priority)
+            .cmp(&i64::from(a.priority))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+}
+
 fn sort_tasks(tasks: &mut [Task]) {
     tasks.sort_by(|a, b| {
         let done_order = (a.status == Status::Done).cmp(&(b.status == Status::Done));
@@ -383,6 +403,65 @@ impl TaskRepository for StubRepository {
             .collect();
         sort_tasks(&mut tasks);
         Ok(tasks)
+    }
+
+    fn list_ready_tasks(
+        &self,
+        project_id: i64,
+        version_id: Option<i64>,
+    ) -> Result<Vec<Task>, AppError> {
+        let tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
+        let deps = self.dependencies.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ready: Vec<Task> = tasks
+            .iter()
+            .filter(|t| t.project_id == project_id)
+            .filter(|t| version_id.is_none_or(|v| t.version_id == v))
+            .filter(|t| is_ready(t, &tasks, &deps))
+            .cloned()
+            .collect();
+        sort_ready(&mut ready);
+        Ok(ready)
+    }
+
+    fn claim_next_ready_task(
+        &self,
+        project_id: i64,
+        version_id: Option<i64>,
+        note: Option<&str>,
+    ) -> Result<Task, AppError> {
+        // Lock order: tasks, then dependencies, then notes. The whole claim
+        // runs under the tasks lock, so it is atomic like the SQLite version.
+        let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
+        let deps = self.dependencies.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ready: Vec<Task> = tasks
+            .iter()
+            .filter(|t| t.project_id == project_id)
+            .filter(|t| version_id.is_none_or(|v| t.version_id == v))
+            .filter(|t| is_ready(t, &tasks, &deps))
+            .cloned()
+            .collect();
+        sort_ready(&mut ready);
+        let id = ready
+            .first()
+            .and_then(|t| t.id)
+            .ok_or_else(|| AppError::NoReadyTask("there is no ready task to claim".to_string()))?;
+        let note = note.map(|content| TaskNote::new(id, content)).transpose()?;
+        let task = tasks
+            .iter_mut()
+            .find(|t| t.id == Some(id))
+            .ok_or(AppError::NotFound)?;
+        task.status = Status::InProgress;
+        task.completed_at = None;
+        let claimed = task.clone();
+        if let Some(mut note) = note {
+            note.id = Some(self.next_id(IdKind::Note));
+            note.created_at = "now".to_string();
+            self.task_notes
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(note);
+        }
+        Ok(claimed)
     }
 
     fn create_task(

@@ -5,13 +5,66 @@
 //! Every operation that receives two ids verifies both tasks exist first, so a
 //! caller gets "not found" instead of a foreign-key failure from the store.
 
+use serde::{Deserialize, Serialize};
+
 use crate::db::repository::Repository;
 use crate::domain::error::AppError;
+use crate::domain::task::{Priority, Status};
 
 /// Dependencies of a task (its blockers).
 pub fn list(repo: &dyn Repository, task_id: i64) -> Result<Vec<i64>, AppError> {
     repo.get_task(task_id)?;
     repo.get_dependencies(task_id)
+}
+
+/// A task named from a dependency edge: enough to identify it and judge whether
+/// it is finished.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskRef {
+    pub id: i64,
+    pub name: String,
+    pub status: Status,
+    pub priority: Priority,
+}
+
+/// A task's dependency neighbourhood, resolved to names and states.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DependencyView {
+    pub task_id: i64,
+    /// Todo and every blocker is done: the task can be claimed now.
+    pub ready: bool,
+    /// Tasks this one waits for.
+    pub blocked_by: Vec<TaskRef>,
+    /// Tasks waiting for this one.
+    pub blocks: Vec<TaskRef>,
+}
+
+/// Resolves the dependency neighbourhood of `task_id`.
+pub fn view(repo: &dyn Repository, task_id: i64) -> Result<DependencyView, AppError> {
+    let task = repo.get_task(task_id)?;
+    let blocked_by = resolve(repo, repo.get_dependencies(task_id)?)?;
+    let blocks = resolve(repo, repo.get_dependents(task_id)?)?;
+    let ready = task.status == Status::Todo && blocked_by.iter().all(|t| t.status == Status::Done);
+    Ok(DependencyView {
+        task_id,
+        ready,
+        blocked_by,
+        blocks,
+    })
+}
+
+fn resolve(repo: &dyn Repository, ids: Vec<i64>) -> Result<Vec<TaskRef>, AppError> {
+    ids.into_iter()
+        .map(|id| {
+            let task = repo.get_task(id)?;
+            Ok(TaskRef {
+                id,
+                name: task.name,
+                status: task.status,
+                priority: task.priority,
+            })
+        })
+        .collect()
 }
 
 /// Tasks that depend on `task_id` (what it blocks).

@@ -126,6 +126,28 @@ pub struct TaskIdParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+pub struct ListReadyTasksParams {
+    pub project_id: i64,
+    /// Restrict the list to one version of the project.
+    pub version_id: Option<i64>,
+    /// Maximum tasks to return. Defaults to 100; capped at 500.
+    pub limit: Option<u32>,
+    /// Number of ready tasks to skip. Defaults to 0.
+    pub offset: Option<u32>,
+    /// Include each task's full description. Defaults to false.
+    pub include_description: Option<bool>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ClaimNextTaskParams {
+    pub project_id: i64,
+    /// Claim only from this version of the project.
+    pub version_id: Option<i64>,
+    /// Optional start note recorded on the claimed task in the same step.
+    pub note: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct ListTaskNotesParams {
     pub task_id: i64,
     /// Maximum notes to return. Defaults to 100; capped at 500.

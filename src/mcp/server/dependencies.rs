@@ -15,50 +15,36 @@ use super::*;
 impl PmpServer {
     #[tool(
         name = "get_task_dependencies",
-        description = "List the task ids that a task depends on (its blockers). Check before starting a task: incomplete dependencies block marking it done."
+        description = "Get the dependency neighbourhood of a task: blocked_by (the tasks it waits for) and blocks (the tasks waiting for it), each resolved to id, name, status and priority, plus ready: true when the task is todo and every blocker is done. Check before starting a task: incomplete blockers block marking it done."
     )]
     pub(super) async fn get_task_dependencies(
         &self,
         Parameters(params): Parameters<TaskIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let task_id = params.task_id;
-        let result = execute_repository(self.repo.clone(), self.timeout, move |repo| {
-            application::dependencies::list(repo.as_ref(), task_id)
-        })
-        .await?;
-        tool_result(
-            result.map(|depends_on_ids| {
-                serde_json::json!({
-                    "task_id": task_id,
-                    "depends_on_ids": depends_on_ids,
-                })
-            }),
+        run_tool(
+            self.repo.clone(),
+            self.timeout,
             TASK_NOT_FOUND,
+            move |repo| application::dependencies::view(repo.as_ref(), params.task_id),
         )
+        .await
     }
 
     #[tool(
         name = "get_task_dependents",
-        description = "List the task ids that depend on a task (tasks it blocks). Use to understand the impact of changing or deleting a task."
+        description = "Get the tasks that depend on a task (the ones it blocks), resolved to id, name, status and priority. The same view as get_task_dependencies is returned. Use to understand the impact of changing or deleting a task."
     )]
     pub(super) async fn get_task_dependents(
         &self,
         Parameters(params): Parameters<TaskIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let task_id = params.task_id;
-        let result = execute_repository(self.repo.clone(), self.timeout, move |repo| {
-            application::dependencies::dependents(repo.as_ref(), task_id)
-        })
-        .await?;
-        tool_result(
-            result.map(|task_ids| {
-                serde_json::json!({
-                    "task_id": task_id,
-                    "task_ids": task_ids,
-                })
-            }),
+        run_tool(
+            self.repo.clone(),
+            self.timeout,
             TASK_NOT_FOUND,
+            move |repo| application::dependencies::view(repo.as_ref(), params.task_id),
         )
+        .await
     }
 
     #[tool(

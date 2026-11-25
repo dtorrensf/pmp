@@ -13,7 +13,7 @@ use crate::db::repository::{
     DependencyRepository, ProjectRepository, SummaryRepository, TaskRepository, VersionRepository,
 };
 use crate::db::sqlite::SqliteRepository;
-use crate::domain::error::ErrorCode;
+use crate::domain::error::{AppError, ErrorCode};
 use crate::domain::task::{Priority, Status};
 
 /// Policy for tests that want to contend: no waiting inside SQLite (so the lock
@@ -240,4 +240,66 @@ fn a_lock_that_outlasts_the_budget_reports_db_busy() {
 
     holder.execute_batch("ROLLBACK").unwrap();
     drop(repo.create_project("P", "", None).unwrap());
+}
+
+#[test]
+fn concurrent_claims_never_hand_out_the_same_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("claims.db");
+    let setup = open(&path);
+    let project_id = setup
+        .create_project("claims", "", None)
+        .unwrap()
+        .id
+        .unwrap();
+    let version_id = default_version(&setup, project_id);
+    let total = 20;
+    for index in 0..total {
+        setup
+            .create_task(
+                project_id,
+                version_id,
+                &format!("task {index}"),
+                "",
+                Status::Todo,
+                Priority::Medium,
+            )
+            .unwrap();
+    }
+    drop(setup);
+
+    let workers = 6;
+    let barrier = Arc::new(Barrier::new(workers));
+    let handles: Vec<_> = (0..workers)
+        .map(|_| {
+            let path = path.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let repo = open(&path);
+                barrier.wait();
+                let mut claimed = Vec::new();
+                loop {
+                    match repo.claim_next_ready_task(project_id, None, Some("start")) {
+                        Ok(task) => claimed.push(task.id.unwrap()),
+                        Err(AppError::NoReadyTask(_)) => break,
+                        Err(other) => panic!("unexpected claim failure: {other:?}"),
+                    }
+                }
+                claimed
+            })
+        })
+        .collect();
+
+    let mut all: Vec<i64> = handles
+        .into_iter()
+        .flat_map(|handle| handle.join().unwrap())
+        .collect();
+    all.sort_unstable();
+    let unique = {
+        let mut ids = all.clone();
+        ids.dedup();
+        ids
+    };
+    assert_eq!(all.len(), total, "every ready task is claimed exactly once");
+    assert_eq!(unique.len(), total, "no task is claimed twice");
 }

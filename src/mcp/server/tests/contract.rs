@@ -43,6 +43,8 @@ const TOOL_CONTRACT: &[&str] = &[
     "delete_project",
     "delete_version",
     "delete_task",
+    "list_ready_tasks",
+    "claim_next_task",
 ];
 
 #[test]

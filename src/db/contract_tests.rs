@@ -1208,3 +1208,117 @@ fn done_to_done_is_a_noop_even_with_incomplete_dependencies() {
         assert!(edit.is_ok(), "{name}: {edit:?}");
     });
 }
+
+#[test]
+fn list_ready_tasks_excludes_blocked_and_non_todo_tasks() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
+        let vid = repo.default_version_id(pid).unwrap();
+        let add = |task_name: &str, status: Status, priority: Priority| {
+            repo.create_task(pid, vid, task_name, "", status, priority)
+                .unwrap()
+                .id
+                .unwrap()
+        };
+        add("low", Status::Todo, Priority::Low);
+        add("high", Status::Todo, Priority::High);
+        add("progress", Status::InProgress, Priority::High);
+        let blocked = add("blocked", Status::Todo, Priority::High);
+        let blocker = add("blocker", Status::Todo, Priority::Low);
+        repo.add_dependency(blocked, blocker).unwrap();
+
+        let names = |repo: &dyn Repository| -> Vec<String> {
+            repo.list_ready_tasks(pid, Some(vid))
+                .unwrap()
+                .into_iter()
+                .map(|t| t.name)
+                .collect()
+        };
+        // Highest priority first, then lowest id; blocked and in-progress tasks are out.
+        assert_eq!(names(repo), vec!["high", "low", "blocker"], "{name}");
+
+        repo.update_task_status(blocker, Status::Done).unwrap();
+        assert_eq!(names(repo), vec!["high", "blocked", "low"], "{name}");
+    });
+}
+
+#[test]
+fn list_ready_tasks_is_scoped_to_the_project() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
+        let other = repo.create_project("Q", "", None).unwrap().id.unwrap();
+        repo.create_task(
+            other,
+            repo.default_version_id(other).unwrap(),
+            "elsewhere",
+            "",
+            Status::Todo,
+            Priority::High,
+        )
+        .unwrap();
+        assert!(
+            repo.list_ready_tasks(pid, None).unwrap().is_empty(),
+            "{name}"
+        );
+    });
+}
+
+#[test]
+fn claim_next_ready_task_takes_the_top_task_and_records_the_note() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
+        let vid = repo.default_version_id(pid).unwrap();
+        repo.create_task(pid, vid, "low", "", Status::Todo, Priority::Low)
+            .unwrap();
+        repo.create_task(pid, vid, "high", "", Status::Todo, Priority::High)
+            .unwrap();
+
+        let claimed = repo
+            .claim_next_ready_task(pid, Some(vid), Some("starting"))
+            .unwrap();
+        assert_eq!(claimed.name, "high", "{name}");
+        assert_eq!(claimed.status, Status::InProgress, "{name}");
+        assert_eq!(claimed.completed_at, None, "{name}");
+        let notes = repo.list_task_notes(claimed.id.unwrap()).unwrap();
+        assert_eq!(notes.len(), 1, "{name}");
+        assert_eq!(notes[0].content, "starting", "{name}");
+
+        let second = repo.claim_next_ready_task(pid, Some(vid), None).unwrap();
+        assert_eq!(second.name, "low", "{name}");
+        assert_ne!(second.id, claimed.id, "{name}");
+    });
+}
+
+#[test]
+fn claim_next_ready_task_without_ready_tasks_changes_nothing() {
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
+        let vid = repo.default_version_id(pid).unwrap();
+        let blocked = repo
+            .create_task(pid, vid, "blocked", "", Status::Todo, Priority::High)
+            .unwrap()
+            .id
+            .unwrap();
+        let blocker = repo
+            .create_task(pid, vid, "blocker", "", Status::Todo, Priority::Low)
+            .unwrap()
+            .id
+            .unwrap();
+        repo.add_dependency(blocked, blocker).unwrap();
+        repo.update_task_status(blocker, Status::InProgress)
+            .unwrap();
+
+        // The only todo task is blocked: nothing may be claimed.
+        let result = repo.claim_next_ready_task(pid, None, Some("note"));
+        assert!(
+            matches!(result, Err(AppError::NoReadyTask(_))),
+            "{name}: {result:?}"
+        );
+        assert_eq!(
+            repo.get_task(blocked).unwrap().status,
+            Status::Todo,
+            "{name}"
+        );
+        assert!(repo.list_task_notes(blocked).unwrap().is_empty(), "{name}");
+    });
+}

@@ -135,7 +135,10 @@ async fn task_dependencies_can_be_added_read_and_removed() {
         .unwrap();
     let value: serde_json::Value = serde_json::from_str(&tool_text(result)).unwrap();
     assert_eq!(value["task_id"], task_id);
-    assert_eq!(value["depends_on_ids"], serde_json::json!([dependency_id]));
+    assert_eq!(value["blocked_by"][0]["id"], dependency_id);
+    assert_eq!(value["blocked_by"][0]["name"], "Dependency");
+    assert_eq!(value["blocked_by"][0]["status"], "done");
+    assert_eq!(value["ready"], true);
 
     let result = server
         .get_task_dependents(Parameters(TaskIdParams {
@@ -144,7 +147,8 @@ async fn task_dependencies_can_be_added_read_and_removed() {
         .await
         .unwrap();
     let value: serde_json::Value = serde_json::from_str(&tool_text(result)).unwrap();
-    assert_eq!(value["task_ids"], serde_json::json!([task_id]));
+    assert_eq!(value["blocks"][0]["id"], task_id);
+    assert_eq!(value["blocks"][0]["name"], "Task");
 
     server
         .remove_task_dependency(Parameters(TaskDependencyParams {

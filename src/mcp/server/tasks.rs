@@ -48,6 +48,57 @@ impl PmpServer {
     }
 
     #[tool(
+        name = "list_ready_tasks",
+        description = "List the tasks ready to implement: todo tasks whose dependencies are all done, highest priority first, then lowest id. Same summary shape and pagination as list_tasks (limit, offset, total, has_more). Use to see what can be worked on now; use claim_next_task to take one."
+    )]
+    pub(super) async fn list_ready_tasks(
+        &self,
+        Parameters(params): Parameters<ListReadyTasksParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let project_id = params.project_id;
+        let version_id = params.version_id;
+        let limit = clamp_limit(params.limit);
+        let offset = params.offset.unwrap_or(0);
+        let include_description = params.include_description.unwrap_or(false);
+        let result = execute_repository(self.repo.clone(), self.timeout, move |repo| {
+            application::tasks::ready_page(
+                repo.as_ref(),
+                project_id,
+                version_id,
+                limit,
+                offset,
+                include_description,
+            )
+        })
+        .await?;
+        tool_result(result, PROJECT_NOT_FOUND)
+    }
+
+    #[tool(
+        name = "claim_next_task",
+        description = "Claim the next ready task in one atomic step: the highest-priority todo task whose dependencies are all done is moved to in_progress, and the optional note is recorded as its start note. Returns the claimed task. Fails with no_ready_task when nothing is ready; nothing changes in that case. Prefer this over list_ready_tasks followed by update_task_status when you are about to start work."
+    )]
+    pub(super) async fn claim_next_task(
+        &self,
+        Parameters(params): Parameters<ClaimNextTaskParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        run_tool(
+            self.repo.clone(),
+            self.timeout,
+            PROJECT_NOT_FOUND,
+            move |repo| {
+                application::tasks::claim_next(
+                    repo.as_ref(),
+                    params.project_id,
+                    params.version_id,
+                    params.note.as_deref(),
+                )
+            },
+        )
+        .await
+    }
+
+    #[tool(
         name = "move_task",
         description = "Move a task to another version of its own project. Only the version changes: notes, status, priority and dates stay. Moving to the current version is a no-op. Fails if the target version belongs to another project, or if the task has dependencies or dependents: they must stay within one version, so clear them first with set_task_dependencies. Returns the updated task."
     )]

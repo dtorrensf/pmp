@@ -259,6 +259,17 @@ impl crate::db::repository::TaskRepository for FaultyRepository {
     fn list_tasks_by_project(&self, _: i64) -> Result<Vec<Task>, AppError> {
         unexpected!("list_tasks_by_project")
     }
+    fn list_ready_tasks(&self, _: i64, _: Option<i64>) -> Result<Vec<Task>, AppError> {
+        unexpected!("list_ready_tasks")
+    }
+    fn claim_next_ready_task(
+        &self,
+        _: i64,
+        _: Option<i64>,
+        _: Option<&str>,
+    ) -> Result<Task, AppError> {
+        unexpected!("claim_next_ready_task")
+    }
     fn list_tasks_by_version(&self, version_id: i64) -> Result<Vec<Task>, AppError> {
         self.inner.list_tasks_by_version(version_id)
     }

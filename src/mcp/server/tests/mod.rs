@@ -7,6 +7,7 @@ mod errors;
 mod notes;
 mod projects;
 mod protocol;
+mod ready;
 mod records;
 mod resources;
 mod schema;
@@ -180,6 +181,19 @@ impl VersionRepository for FailingRepository {
 
 impl TaskRepository for FailingRepository {
     fn list_tasks_by_project(&self, _: i64) -> Result<Vec<Task>, AppError> {
+        Err(AppError::DbError(rusqlite::Error::InvalidQuery))
+    }
+
+    fn list_ready_tasks(&self, _: i64, _: Option<i64>) -> Result<Vec<Task>, AppError> {
+        Err(AppError::DbError(rusqlite::Error::InvalidQuery))
+    }
+
+    fn claim_next_ready_task(
+        &self,
+        _: i64,
+        _: Option<i64>,
+        _: Option<&str>,
+    ) -> Result<Task, AppError> {
         Err(AppError::DbError(rusqlite::Error::InvalidQuery))
     }
 
