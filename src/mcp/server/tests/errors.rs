@@ -14,6 +14,7 @@ async fn db_error_details_are_not_sent_to_client() {
             priority: None,
             limit: None,
             offset: None,
+            include_description: None,
         }))
         .await
         .unwrap_err();
@@ -69,6 +70,7 @@ async fn list_tasks_db_error_returns_internal_error() {
             priority: None,
             limit: None,
             offset: None,
+            include_description: None,
         }))
         .await
         .unwrap_err();

@@ -12,6 +12,7 @@ use crate::db::repository::TaskFilter;
 use crate::domain::task::{Priority, Status};
 use crate::domain::task_description::compose_description;
 use crate::domain::validation::validate_text;
+use application::pagination::clamp_limit;
 use application::tasks::{NewTask, TaskEdit};
 
 use super::*;
@@ -20,7 +21,7 @@ use super::*;
 impl PmpServer {
     #[tool(
         name = "list_tasks",
-        description = "List tasks for a project, optionally filtered by version_id (see list_versions), status (todo, in_progress, done) and priority (Low, Medium, High). Results are paginated: use limit (default 100, max 500) and offset, and check has_more/total to fetch the next page. Use when the user asks about their tasks, to-dos, pending work or progress, or to pick the next task to work on."
+        description = "List tasks for a project, optionally filtered by version_id (see list_versions), status (todo, in_progress, done) and priority (Low, Medium, High). Each task comes as a light summary (id, names, status, priority, timestamps, depends_on_count and blocks_count); set include_description to true to add the full description, or call get_task for one task. Results are paginated: use limit (default 100, max 500) and offset, and check has_more/total to fetch the next page. Use when the user asks about their tasks, to-dos, pending work or progress, or to pick the next task to work on."
     )]
     pub(super) async fn list_tasks(
         &self,
@@ -30,11 +31,9 @@ impl PmpServer {
         let version_id = params.version_id;
         let status = params.status;
         let priority = params.priority.map(Priority::from);
-        let limit = params
-            .limit
-            .unwrap_or(DEFAULT_TASK_PAGE_SIZE)
-            .clamp(1, MAX_TASK_PAGE_SIZE);
+        let limit = clamp_limit(params.limit);
         let offset = params.offset.unwrap_or(0);
+        let include_description = params.include_description.unwrap_or(false);
         let filter = TaskFilter {
             project_id,
             version_id,
@@ -42,7 +41,7 @@ impl PmpServer {
             priority,
         };
         let result = execute_repository(self.repo.clone(), self.timeout, move |repo| {
-            application::tasks::page(repo.as_ref(), &filter, limit, offset)
+            application::tasks::page(repo.as_ref(), &filter, limit, offset, include_description)
         })
         .await?;
         tool_result(result, PROJECT_NOT_FOUND)

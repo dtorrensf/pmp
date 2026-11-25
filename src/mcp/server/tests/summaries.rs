@@ -147,10 +147,15 @@ async fn list_read_and_delete_version_summaries() {
         .unwrap();
 
     let listed = server
-        .list_version_summaries(Parameters(VersionIdParams { version_id: vid }))
+        .list_version_summaries(Parameters(ListVersionSummariesParams {
+            version_id: vid,
+            limit: None,
+            offset: None,
+        }))
         .await
         .unwrap();
-    let summaries: Vec<VersionSummary> = serde_json::from_str(&tool_text(listed)).unwrap();
+    let page: serde_json::Value = serde_json::from_str(&tool_text(listed)).unwrap();
+    let summaries: Vec<VersionSummary> = serde_json::from_value(page["summaries"].clone()).unwrap();
     assert_eq!(summaries.len(), 1);
     let id = summaries[0].id.unwrap();
 
@@ -417,4 +422,48 @@ async fn export_version_summary_writes_markdown_with_mermaid() {
     assert!(markdown.contains("flowchart LR"));
     assert!(markdown.contains("done note"));
     std::fs::remove_file(written).unwrap();
+}
+
+#[tokio::test]
+async fn list_version_summaries_reports_paging_metadata() {
+    let (server, repo) = server();
+    let project = repo.create_project("Alpha", "", None).unwrap();
+    let pid = project.id.unwrap();
+    let vid = repo.default_version_id(pid).unwrap();
+    repo.create_task(pid, vid, "Done", "", Status::Done, Priority::Low)
+        .unwrap();
+    server
+        .compact_version(Parameters(CompactVersionParams {
+            version_id: vid,
+            summary: "Summary".to_string(),
+            mark_released: None,
+        }))
+        .await
+        .unwrap();
+
+    let listed = server
+        .list_version_summaries(Parameters(ListVersionSummariesParams {
+            version_id: vid,
+            limit: Some(1),
+            offset: None,
+        }))
+        .await
+        .unwrap();
+    let page: serde_json::Value = serde_json::from_str(&tool_text(listed)).unwrap();
+    assert_eq!(page["summaries"].as_array().unwrap().len(), 1);
+    assert_eq!(page["total"], 1);
+    assert_eq!(page["limit"], 1);
+    assert_eq!(page["has_more"], false);
+
+    let beyond = server
+        .list_version_summaries(Parameters(ListVersionSummariesParams {
+            version_id: vid,
+            limit: None,
+            offset: Some(1),
+        }))
+        .await
+        .unwrap();
+    let page: serde_json::Value = serde_json::from_str(&tool_text(beyond)).unwrap();
+    assert!(page["summaries"].as_array().unwrap().is_empty());
+    assert_eq!(page["total"], 1);
 }

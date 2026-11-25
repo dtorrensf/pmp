@@ -21,6 +21,7 @@ use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ErrorCode, ReadResourceResult, ResourceContents};
 
+use crate::application::tasks::TaskSummary;
 use crate::db::repository::{
     DependencyRepository, NoteRepository, ProjectRepository, SummaryRepository, TaskRepository,
     VersionRepository,
@@ -37,11 +38,12 @@ use crate::mcp::server::PriorityParam;
 use crate::domain::task_description::compose_description;
 use crate::mcp::server::{
     AddTaskNoteParams, CompactVersionParams, CreateProjectParams, CreateTaskParams,
-    CreateVersionParams, DeleteVersionSummaryParams, ExportVersionSummaryParams, ListTasksParams,
-    ListVersionsParams, MAX_RESPONSE_BYTES, MoveTaskParams, NoteIdParams, PmpServer,
-    ReadVersionSummaryParams, SetTaskDependenciesParams, TaskDependencyParams, TaskIdParams,
-    UpdateProjectParams, UpdateTaskParams, UpdateTaskPriorityParams, UpdateTaskStatusParams,
-    UpdateVersionParams, VersionIdParams, app_error_to_mcp, json_content, paginate_page,
+    CreateVersionParams, DeleteVersionSummaryParams, ExportVersionSummaryParams,
+    ListTaskNotesParams, ListTasksParams, ListVersionSummariesParams, ListVersionsParams,
+    MAX_RESPONSE_BYTES, MoveTaskParams, NoteIdParams, PmpServer, ReadVersionSummaryParams,
+    SetTaskDependenciesParams, TaskDependencyParams, TaskIdParams, UpdateProjectParams,
+    UpdateTaskParams, UpdateTaskPriorityParams, UpdateTaskStatusParams, UpdateVersionParams,
+    VersionIdParams, app_error_to_mcp, json_content, paginate_page,
 };
 
 use crate::mcp::server::*;
@@ -105,8 +107,9 @@ fn tool_text(result: CallToolResult) -> String {
         .expect("tool result should have text content")
 }
 
-/// Extracts the `tasks` array from a `list_tasks` page response.
-fn page_tasks(text: &str) -> Vec<Task> {
+/// Extracts the `tasks` array from a `list_tasks` page response. Items are
+/// light summaries, so the description is not part of them.
+fn page_tasks(text: &str) -> Vec<TaskSummary> {
     let page: serde_json::Value = serde_json::from_str(text).unwrap();
     serde_json::from_value(page["tasks"].clone()).unwrap()
 }

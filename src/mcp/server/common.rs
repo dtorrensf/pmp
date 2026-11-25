@@ -34,10 +34,6 @@ pub(super) const VERSION_TASKS_TEMPLATE: &str = "pmp://versions/{id}/tasks";
 pub(super) const VERSION_SUMMARIES_TEMPLATE: &str = "pmp://versions/{id}/summaries";
 pub(super) const SUMMARY_TEMPLATE: &str = "pmp://summaries/{id}";
 
-/// Default and maximum page size for `list_tasks`.
-pub(super) const DEFAULT_TASK_PAGE_SIZE: u32 = 100;
-pub(super) const MAX_TASK_PAGE_SIZE: u32 = 500;
-
 /// Upper bound for one serialized tool or resource response. Pagination keeps
 /// normal pages below this; the cap protects the client context window when a
 /// single record (a summary snapshot, a note) is still large.

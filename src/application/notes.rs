@@ -2,14 +2,37 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Task note use cases.
 
+use serde::{Deserialize, Serialize};
+
 use crate::db::repository::Repository;
 use crate::domain::error::AppError;
 use crate::domain::task::TaskNote;
 use crate::domain::validation::validate_text;
 
+use super::pagination::{PageMeta, clamp_limit, window};
+
 pub fn list(repo: &dyn Repository, task_id: i64) -> Result<Vec<TaskNote>, AppError> {
     repo.get_task(task_id)?;
     repo.list_task_notes(task_id)
+}
+
+/// One page of a task's notes, newest first.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NotePage {
+    pub notes: Vec<TaskNote>,
+    #[serde(flatten)]
+    pub meta: PageMeta,
+}
+
+pub fn page(
+    repo: &dyn Repository,
+    task_id: i64,
+    limit: Option<u32>,
+    offset: u32,
+) -> Result<NotePage, AppError> {
+    let notes = list(repo, task_id)?;
+    let (notes, meta) = window(notes, clamp_limit(limit), offset);
+    Ok(NotePage { notes, meta })
 }
 
 pub fn add(repo: &dyn Repository, task_id: i64, content: &str) -> Result<TaskNote, AppError> {

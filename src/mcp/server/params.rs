@@ -38,6 +38,9 @@ pub struct ListTasksParams {
     pub limit: Option<u32>,
     /// Number of matching tasks to skip. Defaults to 0.
     pub offset: Option<u32>,
+    /// Include each task's full description (Context, Requirements, Benefits).
+    /// Defaults to false: listings return a light summary; use get_task for one task's detail.
+    pub include_description: Option<bool>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -123,6 +126,15 @@ pub struct TaskIdParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+pub struct ListTaskNotesParams {
+    pub task_id: i64,
+    /// Maximum notes to return. Defaults to 100; capped at 500.
+    pub limit: Option<u32>,
+    /// Number of notes to skip, newest first. Defaults to 0.
+    pub offset: Option<u32>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct CreateTaskParams {
     pub project_id: i64,
     /// Version the task is added to; must belong to `project_id`.
@@ -163,6 +175,15 @@ pub struct NoteIdParams {
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct VersionIdParams {
     pub version_id: i64,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ListVersionSummariesParams {
+    pub version_id: i64,
+    /// Maximum summaries to return. Defaults to 100; capped at 500.
+    pub limit: Option<u32>,
+    /// Number of summaries to skip, newest first. Defaults to 0.
+    pub offset: Option<u32>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]

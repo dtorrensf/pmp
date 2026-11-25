@@ -420,10 +420,28 @@ expression: tools
   },
   {
     "name": "list_task_notes",
-    "description": "List the notes of a task, newest first. Use to read progress updates, decisions, context and reminders before continuing work on it.",
+    "description": "List the notes of a task, newest first. Results are paginated: use limit (default 100, max 500) and offset, and check has_more/total to fetch older notes. Use to read progress updates, decisions, context and reminders before continuing work on it.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
+        "limit": {
+          "description": "Maximum notes to return. Defaults to 100; capped at 500.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "offset": {
+          "description": "Number of notes to skip, newest first. Defaults to 0.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "task_id": {
           "format": "int64",
           "type": "integer"
@@ -437,7 +455,7 @@ expression: tools
   },
   {
     "name": "list_tasks",
-    "description": "List tasks for a project, optionally filtered by version_id (see list_versions), status (todo, in_progress, done) and priority (Low, Medium, High). Results are paginated: use limit (default 100, max 500) and offset, and check has_more/total to fetch the next page. Use when the user asks about their tasks, to-dos, pending work or progress, or to pick the next task to work on.",
+    "description": "List tasks for a project, optionally filtered by version_id (see list_versions), status (todo, in_progress, done) and priority (Low, Medium, High). Each task comes as a light summary (id, names, status, priority, timestamps, depends_on_count and blocks_count); set include_description to true to add the full description, or call get_task for one task. Results are paginated: use limit (default 100, max 500) and offset, and check has_more/total to fetch the next page. Use when the user asks about their tasks, to-dos, pending work or progress, or to pick the next task to work on.",
     "inputSchema": {
       "$defs": {
         "PriorityParam": {
@@ -460,6 +478,13 @@ expression: tools
       },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
+        "include_description": {
+          "description": "Include each task's full description (Context, Requirements, Benefits).\nDefaults to false: listings return a light summary; use get_task for one task's detail.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "limit": {
           "description": "Maximum tasks to return. Defaults to 100; capped at 500.",
           "format": "uint32",
@@ -519,10 +544,28 @@ expression: tools
   },
   {
     "name": "list_version_summaries",
-    "description": "List the summaries of a version, newest first. A version holds at most one summary; after compaction its tasks live only in the summary snapshot. Use to review what was frozen.",
+    "description": "List the summaries of a version, newest first. Results are paginated: use limit (default 100, max 500) and offset, and check has_more/total to fetch the next page. A version holds at most one summary; after compaction its tasks live only in the summary snapshot. Use to review what was frozen.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
+        "limit": {
+          "description": "Maximum summaries to return. Defaults to 100; capped at 500.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "offset": {
+          "description": "Number of summaries to skip, newest first. Defaults to 0.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "version_id": {
           "format": "int64",
           "type": "integer"
