@@ -18,14 +18,31 @@ pub const MAX_LIST_ROWS: usize = 10_000;
 /// [`MAX_LIST_ROWS`], which is enough to report the overflow.
 pub(crate) const LIST_LIMIT: usize = MAX_LIST_ROWS + 1;
 
-/// Filter for a paginated task listing. All fields except `project_id` are
-/// optional, and every provided field is applied in SQL by the SQLite backend.
-#[derive(Debug, Clone, Copy, Default)]
+/// Filter for a paginated task listing. Every field except `project_id` is
+/// optional and narrows the result; each backend applies all of them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TaskFilter {
     pub project_id: i64,
     pub version_id: Option<i64>,
     pub status: Option<Status>,
     pub priority: Option<Priority>,
+    /// Case-insensitive substring searched in the name, the description and
+    /// the notes of each task. Letters fold beyond ASCII (`É` matches `é`).
+    pub text: Option<String>,
+    /// Only the tasks with these ids.
+    pub ids: Option<Vec<i64>>,
+    /// Ready (todo, every dependency done) or blocked (some dependency not done).
+    pub readiness: Option<Readiness>,
+    /// Tasks created, completed or noted at or after this UTC timestamp
+    /// (`YYYY-MM-DD HH:MM:SS`; the application layer normalizes client input).
+    pub touched_since: Option<String>,
+}
+
+/// Dependency state of a task, as seen by [`TaskFilter::readiness`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Readiness {
+    Ready,
+    Blocked,
 }
 
 /// Rejects a list that exceeded [`MAX_LIST_ROWS`] instead of returning a
@@ -109,46 +126,17 @@ pub trait TaskRepository {
 
     fn list_tasks_by_version(&self, version_id: i64) -> Result<Vec<Task>, AppError>;
 
-    /// Paginated, SQL-filtered task listing used by the MCP server. The default
-    /// implementation filters in memory so every backend gets the same
-    /// behaviour; SQLite overrides it with `WHERE` and `LIMIT/OFFSET`.
+    /// Paginated, filtered task listing used by the MCP server. Every backend
+    /// must apply `filter` identically (the contract tests check it).
     fn list_tasks_page(
         &self,
         filter: &TaskFilter,
         limit: u32,
         offset: u32,
-    ) -> Result<Vec<Task>, AppError> {
-        let mut tasks = match filter.version_id {
-            Some(version_id) => self.list_tasks_by_version(version_id)?,
-            None => self.list_tasks_by_project(filter.project_id)?,
-        };
-        tasks.retain(|task| {
-            filter.status.is_none_or(|status| task.status == status)
-                && filter
-                    .priority
-                    .is_none_or(|priority| task.priority == priority)
-        });
-        Ok(tasks
-            .into_iter()
-            .skip(offset as usize)
-            .take(limit as usize)
-            .collect())
-    }
+    ) -> Result<Vec<Task>, AppError>;
 
     /// Total number of tasks matching `filter`, for pagination metadata.
-    fn count_tasks(&self, filter: &TaskFilter) -> Result<u64, AppError> {
-        let mut tasks = match filter.version_id {
-            Some(version_id) => self.list_tasks_by_version(version_id)?,
-            None => self.list_tasks_by_project(filter.project_id)?,
-        };
-        tasks.retain(|task| {
-            filter.status.is_none_or(|status| task.status == status)
-                && filter
-                    .priority
-                    .is_none_or(|priority| task.priority == priority)
-        });
-        Ok(tasks.len() as u64)
-    }
+    fn count_tasks(&self, filter: &TaskFilter) -> Result<u64, AppError>;
 
     /// Todo tasks of a project, optionally restricted to one version, whose
     /// dependencies are all Done. Highest priority first, then lowest id.

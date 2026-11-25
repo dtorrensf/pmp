@@ -15,6 +15,11 @@ async fn list_tasks_returns_all_tasks_for_project() {
             limit: None,
             offset: None,
             include_description: None,
+            query: None,
+            ids: None,
+            only_ready: None,
+            only_blocked: None,
+            updated_or_created_since: None,
         }))
         .await
         .unwrap();
@@ -35,6 +40,11 @@ async fn list_tasks_paginates_with_limit_and_offset() {
             limit: Some(2),
             offset: None,
             include_description: None,
+            query: None,
+            ids: None,
+            only_ready: None,
+            only_blocked: None,
+            updated_or_created_since: None,
         }))
         .await
         .unwrap();
@@ -52,6 +62,11 @@ async fn list_tasks_paginates_with_limit_and_offset() {
             limit: Some(2),
             offset: Some(2),
             include_description: None,
+            query: None,
+            ids: None,
+            only_ready: None,
+            only_blocked: None,
+            updated_or_created_since: None,
         }))
         .await
         .unwrap();
@@ -73,6 +88,11 @@ async fn list_tasks_filters_by_status() {
             limit: None,
             offset: None,
             include_description: None,
+            query: None,
+            ids: None,
+            only_ready: None,
+            only_blocked: None,
+            updated_or_created_since: None,
         }))
         .await
         .unwrap();
@@ -94,6 +114,11 @@ async fn list_tasks_filters_by_priority() {
             limit: None,
             offset: None,
             include_description: None,
+            query: None,
+            ids: None,
+            only_ready: None,
+            only_blocked: None,
+            updated_or_created_since: None,
         }))
         .await
         .unwrap();
@@ -115,6 +140,11 @@ async fn list_tasks_filters_by_status_and_priority() {
             limit: None,
             offset: None,
             include_description: None,
+            query: None,
+            ids: None,
+            only_ready: None,
+            only_blocked: None,
+            updated_or_created_since: None,
         }))
         .await
         .unwrap();
@@ -137,6 +167,11 @@ async fn list_tasks_unknown_project_returns_tool_error() {
             limit: None,
             offset: None,
             include_description: None,
+            query: None,
+            ids: None,
+            only_ready: None,
+            only_blocked: None,
+            updated_or_created_since: None,
         }))
         .await
         .unwrap();
@@ -598,6 +633,11 @@ fn list_params(project_id: i64, include_description: Option<bool>) -> ListTasksP
         limit: None,
         offset: None,
         include_description,
+        query: None,
+        ids: None,
+        only_ready: None,
+        only_blocked: None,
+        updated_or_created_since: None,
     }
 }
 

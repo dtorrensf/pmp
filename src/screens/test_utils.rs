@@ -259,6 +259,17 @@ impl crate::db::repository::TaskRepository for FaultyRepository {
     fn list_tasks_by_project(&self, _: i64) -> Result<Vec<Task>, AppError> {
         unexpected!("list_tasks_by_project")
     }
+    fn list_tasks_page(
+        &self,
+        filter: &crate::db::repository::TaskFilter,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<Task>, AppError> {
+        self.inner.list_tasks_page(filter, limit, offset)
+    }
+    fn count_tasks(&self, filter: &crate::db::repository::TaskFilter) -> Result<u64, AppError> {
+        self.inner.count_tasks(filter)
+    }
     fn list_ready_tasks(&self, _: i64, _: Option<i64>) -> Result<Vec<Task>, AppError> {
         unexpected!("list_ready_tasks")
     }

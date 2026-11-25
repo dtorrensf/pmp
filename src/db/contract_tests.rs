@@ -151,6 +151,7 @@ fn list_tasks_page_filters_in_storage_and_paginates() {
             version_id: Some(version_id),
             status: Some(Status::Todo),
             priority: None,
+            ..Default::default()
         };
         assert_eq!(repo.count_tasks(&todo).unwrap(), 2, "{name}");
         assert_eq!(
@@ -161,7 +162,7 @@ fn list_tasks_page_filters_in_storage_and_paginates() {
 
         let high = TaskFilter {
             priority: Some(Priority::High),
-            ..todo
+            ..todo.clone()
         };
         assert_eq!(repo.count_tasks(&high).unwrap(), 1, "{name}");
         let page = repo.list_tasks_page(&high, 10, 0).unwrap();
@@ -172,7 +173,7 @@ fn list_tasks_page_filters_in_storage_and_paginates() {
 
         let done = TaskFilter {
             status: Some(Status::Done),
-            ..todo
+            ..todo.clone()
         };
         assert_eq!(repo.count_tasks(&done).unwrap(), 1, "{name}");
         assert_eq!(
@@ -1320,5 +1321,141 @@ fn claim_next_ready_task_without_ready_tasks_changes_nothing() {
             "{name}"
         );
         assert!(repo.list_task_notes(blocked).unwrap().is_empty(), "{name}");
+    });
+}
+
+#[test]
+fn task_filters_narrow_the_listing_the_same_way_everywhere() {
+    use crate::db::repository::Readiness;
+
+    for_each_repo(|name, repo| {
+        let pid = repo.create_project("P", "", None).unwrap().id.unwrap();
+        let vid = repo.default_version_id(pid).unwrap();
+        let add = |task_name: &str, description: &str, status: Status, priority: Priority| {
+            repo.create_task(pid, vid, task_name, description, status, priority)
+                .unwrap()
+                .id
+                .unwrap()
+        };
+        let design = add(
+            "Diseño de la API",
+            "Revisar ÉCRAN",
+            Status::Todo,
+            Priority::High,
+        );
+        let plain = add("Plain", "nothing here", Status::Todo, Priority::Low);
+        let blocked = add("Blocked", "", Status::Todo, Priority::Medium);
+        let blocker = add("Blocker", "", Status::Todo, Priority::Medium);
+        repo.add_dependency(blocked, blocker).unwrap();
+        repo.add_task_note(plain, "nota con Ünïcode").unwrap();
+
+        let ids = |filter: &TaskFilter| -> Vec<i64> {
+            let mut found: Vec<i64> = repo
+                .list_tasks_page(filter, 100, 0)
+                .unwrap()
+                .into_iter()
+                .map(|t| t.id.unwrap())
+                .collect();
+            found.sort_unstable();
+            found
+        };
+        let with = |change: TaskFilter| TaskFilter {
+            project_id: pid,
+            ..change
+        };
+
+        // Text folds letters beyond ASCII and searches name, description and notes.
+        let text = |q: &str| {
+            with(TaskFilter {
+                text: Some(q.to_string()),
+                ..Default::default()
+            })
+        };
+        assert_eq!(ids(&text("diseño")), vec![design], "{name}");
+        assert_eq!(
+            ids(&text("écran")),
+            vec![design],
+            "{name}: description, folded"
+        );
+        assert_eq!(ids(&text("ÜNÏCODE")), vec![plain], "{name}: note, folded");
+        assert!(ids(&text("zzz")).is_empty(), "{name}");
+        assert!(
+            ids(&text("%")).is_empty(),
+            "{name}: wildcards are plain text"
+        );
+
+        // Ids, including the empty list which matches nothing.
+        let by_ids = with(TaskFilter {
+            ids: Some(vec![plain, blocker]),
+            ..Default::default()
+        });
+        assert_eq!(
+            ids(&by_ids),
+            vec![plain.min(blocker), plain.max(blocker)],
+            "{name}"
+        );
+        let none = with(TaskFilter {
+            ids: Some(vec![]),
+            ..Default::default()
+        });
+        assert!(ids(&none).is_empty(), "{name}");
+
+        // Readiness: the blocked task waits for its blocker.
+        let ready = with(TaskFilter {
+            readiness: Some(Readiness::Ready),
+            ..Default::default()
+        });
+        let mut expected_ready = vec![design, plain, blocker];
+        expected_ready.sort_unstable();
+        assert_eq!(ids(&ready), expected_ready, "{name}");
+        let blocked_only = with(TaskFilter {
+            readiness: Some(Readiness::Blocked),
+            ..Default::default()
+        });
+        assert_eq!(ids(&blocked_only), vec![blocked], "{name}");
+        repo.update_task_status(blocker, Status::Done).unwrap();
+        assert!(
+            ids(&blocked_only).is_empty(),
+            "{name}: unblocked once the blocker is done"
+        );
+
+        // Time bound: every task was created now, so the past includes them all
+        // and the far future excludes them all.
+        let since = |bound: &str| {
+            with(TaskFilter {
+                touched_since: Some(bound.to_string()),
+                ..Default::default()
+            })
+        };
+        assert_eq!(ids(&since("2000-01-01 00:00:00")).len(), 4, "{name}");
+        assert!(ids(&since("9999-01-01 00:00:00")).is_empty(), "{name}");
+
+        // Filters combine, and the count describes the same rows as the page.
+        let combined = with(TaskFilter {
+            text: Some("blocked".to_string()),
+            readiness: Some(Readiness::Ready),
+            ..Default::default()
+        });
+        assert_eq!(
+            ids(&combined),
+            vec![blocked],
+            "{name}: ready since its blocker is done"
+        );
+        let high_ready = with(TaskFilter {
+            priority: Some(Priority::High),
+            readiness: Some(Readiness::Ready),
+            ..Default::default()
+        });
+        assert_eq!(ids(&high_ready), vec![design], "{name}");
+        let all_ready = with(TaskFilter {
+            readiness: Some(Readiness::Ready),
+            ..Default::default()
+        });
+        assert_eq!(repo.count_tasks(&all_ready).unwrap(), 3, "{name}");
+        assert_eq!(
+            repo.list_tasks_page(&all_ready, 2, 2).unwrap().len(),
+            1,
+            "{name}"
+        );
     });
 }

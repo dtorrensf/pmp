@@ -9,10 +9,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::db::repository::{Repository, TaskFilter};
+use crate::db::repository::{Readiness, Repository, TaskFilter};
 use crate::domain::error::AppError;
 use crate::domain::task::{Priority, Status, Task};
 use crate::domain::task_description::{compose_description, split_description};
+use crate::domain::timestamp::normalize_since;
 use crate::domain::validation::{validate_name, validate_text};
 
 use super::dependencies;
@@ -119,10 +120,58 @@ pub fn page(
     offset: u32,
     include_description: bool,
 ) -> Result<TaskPage, AppError> {
+    let filter = normalize_filter(filter)?;
     ensure_scope(repo, filter.project_id, filter.version_id)?;
-    let tasks = repo.list_tasks_page(filter, limit, offset)?;
-    let total = repo.count_tasks(filter)?;
+    let tasks = repo.list_tasks_page(&filter, limit, offset)?;
+    let total = repo.count_tasks(&filter)?;
     to_page(repo, tasks, total, limit, offset, include_description)
+}
+
+/// Largest number of ids accepted by one `ids` filter.
+pub const MAX_ID_FILTER: usize = 500;
+
+/// Validates client input for a listing filter and normalizes it: the search
+/// text is trimmed and must not be blank, the id list is bounded, and the time
+/// bound becomes a full UTC timestamp.
+pub fn normalize_filter(filter: &TaskFilter) -> Result<TaskFilter, AppError> {
+    let mut filter = filter.clone();
+    if let Some(text) = &filter.text {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Err(AppError::Validation("query must not be blank".to_string()));
+        }
+        validate_text("task", "query", trimmed)?;
+        filter.text = Some(trimmed.to_string());
+    }
+    if filter
+        .ids
+        .as_ref()
+        .is_some_and(|ids| ids.len() > MAX_ID_FILTER)
+    {
+        return Err(AppError::Validation(format!(
+            "ids accepts at most {MAX_ID_FILTER} values"
+        )));
+    }
+    if let Some(since) = &filter.touched_since {
+        filter.touched_since = Some(normalize_since(since)?);
+    }
+    Ok(filter)
+}
+
+/// Maps the two MCP flags to a readiness filter. Asking for both is rejected
+/// because no task can satisfy both.
+pub fn readiness_from_flags(
+    only_ready: bool,
+    only_blocked: bool,
+) -> Result<Option<Readiness>, AppError> {
+    match (only_ready, only_blocked) {
+        (true, true) => Err(AppError::Validation(
+            "only_ready and only_blocked cannot both be true".to_string(),
+        )),
+        (true, false) => Ok(Some(Readiness::Ready)),
+        (false, true) => Ok(Some(Readiness::Blocked)),
+        (false, false) => Ok(None),
+    }
 }
 
 /// Checks that a project exists and, when given, that the version belongs to it.
@@ -451,6 +500,7 @@ mod tests {
                 version_id: Some(foreign_version),
                 status: None,
                 priority: None,
+                ..Default::default()
             },
             10,
             0,
@@ -472,6 +522,7 @@ mod tests {
                 version_id: Some(version_id),
                 status: None,
                 priority: None,
+                ..Default::default()
             },
             2,
             0,
@@ -489,6 +540,7 @@ mod tests {
                 version_id: Some(version_id),
                 status: None,
                 priority: None,
+                ..Default::default()
             },
             2,
             2,
@@ -508,6 +560,7 @@ mod tests {
             version_id: Some(version_id),
             status: None,
             priority: None,
+            ..Default::default()
         };
 
         let light = page(&repo, &filter, 10, 0, false).unwrap();
@@ -543,6 +596,7 @@ mod tests {
             version_id: Some(version_id),
             status: None,
             priority: None,
+            ..Default::default()
         };
         let page = page(&repo, &filter, 10, 0, false).unwrap();
         let by_name = |name: &str| page.tasks.iter().find(|t| t.name == name).unwrap();
@@ -610,5 +664,86 @@ mod wire_tests {
         let json = serde_json::to_string(&page).unwrap();
         let back: TaskPage = serde_json::from_str(&json).unwrap();
         assert_eq!(back, page);
+    }
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::{MAX_ID_FILTER, normalize_filter, readiness_from_flags};
+    use crate::db::repository::{Readiness, TaskFilter};
+    use crate::domain::error::AppError;
+
+    fn filter() -> TaskFilter {
+        TaskFilter {
+            project_id: 1,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn query_is_trimmed_and_blank_queries_are_rejected() {
+        let trimmed = normalize_filter(&TaskFilter {
+            text: Some("  api  ".to_string()),
+            ..filter()
+        })
+        .unwrap();
+        assert_eq!(trimmed.text.as_deref(), Some("api"));
+
+        let blank = normalize_filter(&TaskFilter {
+            text: Some("   ".to_string()),
+            ..filter()
+        });
+        assert!(matches!(blank, Err(AppError::Validation(_))));
+    }
+
+    #[test]
+    fn ids_filter_is_bounded() {
+        let at_limit = normalize_filter(&TaskFilter {
+            ids: Some((1..=MAX_ID_FILTER as i64).collect()),
+            ..filter()
+        });
+        assert!(at_limit.is_ok());
+
+        let over = normalize_filter(&TaskFilter {
+            ids: Some((1..=MAX_ID_FILTER as i64 + 1).collect()),
+            ..filter()
+        });
+        assert!(matches!(over, Err(AppError::Validation(_))));
+    }
+
+    #[test]
+    fn time_bound_is_normalized_to_a_full_timestamp() {
+        let normalized = normalize_filter(&TaskFilter {
+            touched_since: Some("2026-03-04".to_string()),
+            ..filter()
+        })
+        .unwrap();
+        assert_eq!(
+            normalized.touched_since.as_deref(),
+            Some("2026-03-04 00:00:00")
+        );
+
+        let bad = normalize_filter(&TaskFilter {
+            touched_since: Some("last week".to_string()),
+            ..filter()
+        });
+        assert!(matches!(bad, Err(AppError::Validation(_))));
+    }
+
+    #[test]
+    fn only_ready_and_only_blocked_cannot_be_combined() {
+        assert_eq!(readiness_from_flags(false, false).unwrap(), None);
+        assert_eq!(
+            readiness_from_flags(true, false).unwrap(),
+            Some(Readiness::Ready)
+        );
+        assert_eq!(
+            readiness_from_flags(false, true).unwrap(),
+            Some(Readiness::Blocked)
+        );
+        assert!(matches!(
+            readiness_from_flags(true, true),
+            Err(AppError::Validation(_))
+        ));
     }
 }

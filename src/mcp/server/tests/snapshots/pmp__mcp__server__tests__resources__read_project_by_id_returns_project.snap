@@ -1,5 +1,5 @@
 ---
-source: src/mcp/server.rs
+source: src/mcp/server/tests/resources.rs
 expression: result
 ---
 {
@@ -7,7 +7,7 @@ expression: result
     {
       "uri": "pmp://projects/1",
       "mimeType": "application/json",
-      "text": "{\n  \"id\": 1,\n  \"name\": \"Alpha\",\n  \"description\": \"First project\",\n  \"created_at\": \"now\"\n}"
+      "text": "{\n  \"id\": 1,\n  \"name\": \"Alpha\",\n  \"description\": \"First project\",\n  \"created_at\": \"[timestamp]\"\n}"
     }
   ]
 }

@@ -3,13 +3,14 @@
 use std::sync::Mutex;
 
 use crate::db::repository::{
-    DependencyRepository, NoteRepository, ProjectRepository, Repository, SummaryRepository,
-    TaskRepository, VersionRepository, check_dependency_set, check_done_transition,
-    check_task_move, unique_ids,
+    DependencyRepository, NoteRepository, ProjectRepository, Readiness, Repository,
+    SummaryRepository, TaskFilter, TaskRepository, VersionRepository, check_dependency_set,
+    check_done_transition, check_task_move, unique_ids,
 };
 use crate::domain::error::AppError;
 use crate::domain::project::Project;
 use crate::domain::task::{Priority, Status, Task, TaskDependency, TaskNote};
+use crate::domain::timestamp::now_utc;
 use crate::domain::validation;
 use crate::domain::version::{self, Version, VersionStatus};
 use crate::domain::version_summary::VersionSummary;
@@ -143,6 +144,81 @@ fn sort_tasks(tasks: &mut [Task]) {
     });
 }
 
+impl StubRepository {
+    /// In-memory evaluation of a [`TaskFilter`]. This is the behaviour the SQL
+    /// filter in the SQLite backend must reproduce; the contract tests compare them.
+    fn matching_tasks(&self, filter: &TaskFilter) -> Result<Vec<Task>, AppError> {
+        let candidates = match filter.version_id {
+            Some(version_id) => self.list_tasks_by_version(version_id)?,
+            None => self.list_tasks_by_project(filter.project_id)?,
+        };
+        let needle = filter.text.as_ref().map(|text| text.to_lowercase());
+        let mut matching = Vec::new();
+        for task in candidates {
+            if task.project_id != filter.project_id
+                || filter.status.is_some_and(|status| task.status != status)
+                || filter
+                    .priority
+                    .is_some_and(|priority| task.priority != priority)
+            {
+                continue;
+            }
+            let id = task.id.ok_or(AppError::Internal)?;
+            if filter.ids.as_ref().is_some_and(|ids| !ids.contains(&id)) {
+                continue;
+            }
+            let needs_notes = needle.is_some() || filter.touched_since.is_some();
+            let notes = if needs_notes {
+                self.list_task_notes(id)?
+            } else {
+                Vec::new()
+            };
+            if let Some(needle) = &needle {
+                let hit = task.name.to_lowercase().contains(needle)
+                    || task.description.to_lowercase().contains(needle)
+                    || notes
+                        .iter()
+                        .any(|note| note.content.to_lowercase().contains(needle));
+                if !hit {
+                    continue;
+                }
+            }
+            if let Some(since) = &filter.touched_since {
+                let touched = task.created_at.as_str() >= since.as_str()
+                    || task
+                        .completed_at
+                        .as_deref()
+                        .is_some_and(|done| done >= since.as_str())
+                    || notes
+                        .iter()
+                        .any(|note| note.created_at.as_str() >= since.as_str());
+                if !touched {
+                    continue;
+                }
+            }
+            if let Some(readiness) = filter.readiness {
+                let mut blocked = false;
+                for dependency in self.get_dependencies(id)? {
+                    if self.get_task(dependency)?.status != Status::Done {
+                        blocked = true;
+                        break;
+                    }
+                }
+                let ready = !blocked && task.status == Status::Todo;
+                let wanted = match readiness {
+                    Readiness::Ready => ready,
+                    Readiness::Blocked => blocked,
+                };
+                if !wanted {
+                    continue;
+                }
+            }
+            matching.push(task);
+        }
+        Ok(matching)
+    }
+}
+
 impl ProjectRepository for StubRepository {
     fn list_projects(&self) -> Result<Vec<Project>, AppError> {
         Ok(self
@@ -164,7 +240,7 @@ impl ProjectRepository for StubRepository {
             id: Some(self.next_id(IdKind::Project)),
             name: name.to_string(),
             description: description.to_string(),
-            created_at: "now".to_string(),
+            created_at: now_utc(),
             working_dir: working_dir.map(str::to_string),
         };
         self.projects
@@ -180,7 +256,7 @@ impl ProjectRepository for StubRepository {
                 name: version::DEFAULT_VERSION_NAME.to_string(),
                 description: String::new(),
                 status: VersionStatus::Backlog,
-                created_at: "now".to_string(),
+                created_at: now_utc(),
             });
         Ok(project)
     }
@@ -302,7 +378,7 @@ impl VersionRepository for StubRepository {
             name: name.to_string(),
             description: description.to_string(),
             status,
-            created_at: "now".to_string(),
+            created_at: now_utc(),
         };
         self.versions
             .lock()
@@ -405,6 +481,24 @@ impl TaskRepository for StubRepository {
         Ok(tasks)
     }
 
+    fn list_tasks_page(
+        &self,
+        filter: &TaskFilter,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<Task>, AppError> {
+        Ok(self
+            .matching_tasks(filter)?
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .collect())
+    }
+
+    fn count_tasks(&self, filter: &TaskFilter) -> Result<u64, AppError> {
+        Ok(self.matching_tasks(filter)?.len() as u64)
+    }
+
     fn list_ready_tasks(
         &self,
         project_id: i64,
@@ -455,7 +549,7 @@ impl TaskRepository for StubRepository {
         let claimed = task.clone();
         if let Some(mut note) = note {
             note.id = Some(self.next_id(IdKind::Note));
-            note.created_at = "now".to_string();
+            note.created_at = now_utc();
             self.task_notes
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -484,7 +578,7 @@ impl TaskRepository for StubRepository {
             description: description.to_string(),
             status,
             priority,
-            created_at: "now".to_string(),
+            created_at: now_utc(),
             completed_at: None,
         };
         self.tasks
@@ -526,10 +620,7 @@ impl TaskRepository for StubRepository {
         task.status = status;
         task.priority = priority;
         task.completed_at = match status {
-            Status::Done => task
-                .completed_at
-                .clone()
-                .or_else(|| Some("now".to_string())),
+            Status::Done => task.completed_at.clone().or_else(|| Some(now_utc())),
             _ => None,
         };
         Ok(task.clone())
@@ -547,11 +638,7 @@ impl TaskRepository for StubRepository {
             .ok_or(AppError::NotFound)?;
         task.status = new_status;
         task.completed_at = match new_status {
-            Status::Done => Some(
-                task.completed_at
-                    .clone()
-                    .unwrap_or_else(|| "now".to_string()),
-            ),
+            Status::Done => Some(task.completed_at.clone().unwrap_or_else(now_utc)),
             _ => None,
         };
         Ok(task.clone())
@@ -768,7 +855,7 @@ impl NoteRepository for StubRepository {
     fn add_task_note(&self, task_id: i64, content: &str) -> Result<TaskNote, AppError> {
         let mut note = TaskNote::new(task_id, content)?;
         note.id = Some(self.next_id(IdKind::Note));
-        note.created_at = "now".to_string();
+        note.created_at = now_utc();
         self.task_notes
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -837,8 +924,8 @@ impl SummaryRepository for StubRepository {
             version_id,
             summary: summary.to_string(),
             snapshot_json: snapshot_json.to_string(),
-            generated_at: "now".to_string(),
-            created_at: "now".to_string(),
+            generated_at: now_utc(),
+            created_at: now_utc(),
         };
         summaries.push(summary.clone());
         Ok(summary)

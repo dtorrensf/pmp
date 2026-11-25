@@ -11,6 +11,7 @@ mod ready;
 mod records;
 mod resources;
 mod schema;
+mod search;
 mod summaries;
 mod tasks;
 mod versions;
@@ -181,6 +182,19 @@ impl VersionRepository for FailingRepository {
 
 impl TaskRepository for FailingRepository {
     fn list_tasks_by_project(&self, _: i64) -> Result<Vec<Task>, AppError> {
+        Err(AppError::DbError(rusqlite::Error::InvalidQuery))
+    }
+
+    fn list_tasks_page(
+        &self,
+        _: &crate::db::repository::TaskFilter,
+        _: u32,
+        _: u32,
+    ) -> Result<Vec<Task>, AppError> {
+        Err(AppError::DbError(rusqlite::Error::InvalidQuery))
+    }
+
+    fn count_tasks(&self, _: &crate::db::repository::TaskFilter) -> Result<u64, AppError> {
         Err(AppError::DbError(rusqlite::Error::InvalidQuery))
     }
 

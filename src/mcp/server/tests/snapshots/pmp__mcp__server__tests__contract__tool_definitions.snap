@@ -537,7 +537,7 @@ expression: tools
   },
   {
     "name": "list_tasks",
-    "description": "List tasks for a project, optionally filtered by version_id (see list_versions), status (todo, in_progress, done) and priority (Low, Medium, High). Each task comes as a light summary (id, names, status, priority, timestamps, depends_on_count and blocks_count); set include_description to true to add the full description, or call get_task for one task. Results are paginated: use limit (default 100, max 500) and offset, and check has_more/total to fetch the next page. Use when the user asks about their tasks, to-dos, pending work or progress, or to pick the next task to work on.",
+    "description": "List tasks for a project. Filters, all optional and combinable: version_id (see list_versions), status (todo, in_progress, done), priority (Low, Medium, High), query (case-insensitive text found in the name, description or notes), ids (up to 500 task ids), only_ready (todo with every dependency done) or only_blocked (waiting for an unfinished dependency), and updated_or_created_since (tasks created, completed or noted at or after a UTC time, YYYY-MM-DD or YYYY-MM-DD HH:MM:SS). Each task comes as a light summary (id, names, status, priority, timestamps, depends_on_count and blocks_count); set include_description to true to add the full description, or call get_task for one task. Results are paginated: use limit (default 100, max 500) and offset, and check has_more/total to fetch the next page. Use when the user asks about their tasks, to-dos, pending work or progress, to search for a topic, or to pick the next task to work on.",
     "inputSchema": {
       "$defs": {
         "PriorityParam": {
@@ -560,6 +560,17 @@ expression: tools
       },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
+        "ids": {
+          "description": "Only the tasks with these ids (at most 500).",
+          "items": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "include_description": {
           "description": "Include each task's full description (Context, Requirements, Benefits).\nDefaults to false: listings return a light summary; use get_task for one task's detail.",
           "type": [
@@ -585,6 +596,20 @@ expression: tools
             "null"
           ]
         },
+        "only_blocked": {
+          "description": "Only tasks with at least one dependency that is not done yet. Cannot be combined with only_ready.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "only_ready": {
+          "description": "Only tasks ready to implement: todo, with every dependency done.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "priority": {
           "anyOf": [
             {
@@ -599,6 +624,13 @@ expression: tools
           "format": "int64",
           "type": "integer"
         },
+        "query": {
+          "description": "Case-insensitive text searched in the name, the description and the notes of each task.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "status": {
           "anyOf": [
             {
@@ -607,6 +639,13 @@ expression: tools
             {
               "type": "null"
             }
+          ]
+        },
+        "updated_or_created_since": {
+          "description": "Only tasks created, completed or noted at or after this UTC time, as `YYYY-MM-DD` (midnight) or `YYYY-MM-DD HH:MM:SS`.",
+          "type": [
+            "string",
+            "null"
           ]
         },
         "version_id": {
