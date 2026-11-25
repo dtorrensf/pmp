@@ -82,6 +82,8 @@ async fn garbage_from_the_agent_fails_the_request_and_closes_the_connection() {
     assert_eq!(error.code(), ErrorCode::AgentFailed);
     assert!(error.user_message().contains("invalid JSON"));
     assert!(client.is_closed());
+    let reason = client.closed_reason().expect("the reason is kept");
+    assert!(reason.contains("invalid JSON"), "{reason}");
     assert!(matches!(
         events.recv().await.expect("a closed event"),
         AcpEvent::Closed { .. }
@@ -447,7 +449,7 @@ async fn an_unknown_update_does_not_break_the_turn() {
 
 #[tokio::test]
 async fn shutdown_closes_the_pipe_and_announces_it_once() {
-    let (client, agent) = sim::spawn(SimOptions::default()).await;
+    let (client, mut agent) = sim::spawn(SimOptions::default()).await;
     assert!(!client.is_closed());
     let mut events = client.subscribe();
     client.shutdown().await;

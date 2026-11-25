@@ -133,6 +133,10 @@ struct Inner {
     request_timeout_ms: AtomicU64,
     prompt_timeout_ms: AtomicU64,
     closed: AtomicBool,
+    /// Why the connection ended, once it did. A subscriber that arrives late
+    /// (an agent that died before the UI started listening) can still tell
+    /// what happened.
+    closed_reason: StdMutex<Option<String>>,
 }
 
 impl AcpClient {
@@ -216,6 +220,7 @@ impl AcpClient {
             request_timeout_ms: AtomicU64::new(millis(DEFAULT_REQUEST_TIMEOUT)),
             prompt_timeout_ms: AtomicU64::new(millis(DEFAULT_PROMPT_TIMEOUT)),
             closed: AtomicBool::new(false),
+            closed_reason: StdMutex::new(None),
         });
         let reader: Box<dyn AsyncBufRead + Send + Unpin> = Box::new(BufReader::new(reader));
         tokio::spawn(drive(Arc::clone(&inner), reader));
@@ -248,6 +253,12 @@ impl AcpClient {
     /// [`AcpClient::shutdown`] ran.
     pub fn is_closed(&self) -> bool {
         self.inner.closed.load(Ordering::SeqCst)
+    }
+
+    /// Why the connection ended, if it did. Lets a late subscriber report a
+    /// session that was already gone when it started listening.
+    pub fn closed_reason(&self) -> Option<String> {
+        lock(&self.inner.closed_reason).clone()
     }
 
     /// Negotiates the protocol version and capabilities.
@@ -442,6 +453,7 @@ impl Inner {
         if self.closed.swap(true, Ordering::SeqCst) {
             return;
         }
+        *lock(&self.closed_reason) = Some(reason.to_string());
         tracing::debug!(reason, "ACP connection closed");
         let _ = self.events.send(AcpEvent::Closed {
             reason: reason.to_string(),

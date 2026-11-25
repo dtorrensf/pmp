@@ -12,6 +12,7 @@ use crate::screens::Action;
 use std::sync::Arc;
 use std::time::Instant;
 
+mod agents;
 mod breadcrumb;
 mod misc;
 mod navigation;

@@ -112,7 +112,7 @@ pub struct Answer {
 
 /// Handle to a running simulated agent.
 pub struct SimAgent {
-    handle: JoinHandle<()>,
+    handle: Option<JoinHandle<()>>,
     answers: Arc<Mutex<Vec<Answer>>>,
     cancelled: Arc<AtomicBool>,
     session_params: Arc<Mutex<Option<Value>>>,
@@ -151,9 +151,13 @@ impl SimAgent {
     }
 
     /// Waits for the agent loop to end, which happens when the client closes
-    /// its side of the pipe.
-    pub async fn finished(self) -> bool {
-        tokio::time::timeout(Duration::from_secs(2), self.handle)
+    /// its side of the pipe. Taking `&mut self` lets the test keep inspecting
+    /// what the agent observed.
+    pub async fn finished(&mut self) -> bool {
+        let Some(handle) = self.handle.take() else {
+            return true;
+        };
+        tokio::time::timeout(Duration::from_secs(2), handle)
             .await
             .is_ok()
     }
@@ -187,7 +191,7 @@ impl SimAgent {
             Arc::clone(&prompt_params),
         ));
         Self {
-            handle,
+            handle: Some(handle),
             answers,
             cancelled,
             session_params,

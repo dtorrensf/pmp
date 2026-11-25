@@ -6,9 +6,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::Context;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, SetTitle, disable_raw_mode, enable_raw_mode,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use crossterm::{ExecutableCommand, cursor};
 use ratatui::backend::{Backend, CrosstermBackend};
@@ -17,6 +17,9 @@ use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
+
+pub mod events;
+pub mod sessions;
 
 use crate::app::App;
 use crate::config::AppearanceConfig;
@@ -30,7 +33,11 @@ use crate::screens::keybinding_footer::render_footer;
 use crate::screens::{Action, UiContext};
 use crate::update::update_command;
 
-/// Polling timeout for each iteration of the TUI event loop.
+use self::events::{EventSource, TuiEvent, TuiEvents};
+use self::sessions::AgentSessions;
+
+/// How long the loop waits for an event before producing an animation tick.
+/// It also paces auto-refresh: see [`auto_refresh_ticks`].
 const EVENT_TIMEOUT: Duration = Duration::from_millis(100);
 /// xterm-style escape codes that save and restore the window title. Terminals
 /// that do not support them ignore the sequences.
@@ -107,7 +114,7 @@ fn install_panic_hook() {
     }));
 }
 
-pub fn run(mut app: App, appearance: &AppearanceConfig) -> anyhow::Result<()> {
+pub async fn run(mut app: App, appearance: &AppearanceConfig) -> anyhow::Result<()> {
     let _cancel_update_check = CancelUpdateCheckOnDrop(app.update_check_cancel_handle());
     install_panic_hook();
     let _terminal_guard = TerminalGuard::install()?;
@@ -115,12 +122,24 @@ pub fn run(mut app: App, appearance: &AppearanceConfig) -> anyhow::Result<()> {
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend).context("create terminal")?;
     let terminate = setup_signal_flag().context("setup signal flag")?;
-    let mut events = CrosstermEvents;
+    // Every source —keys, ticks, the update check and the agent sessions—
+    // arrives through this one stream.
+    let mut events = TuiEvents::start(app.pending_update_slot(), EVENT_TIMEOUT)
+        .context("start the event loop")?;
+    let mut sessions = AgentSessions::new(events.sender());
     // Composition root: the resolved configuration becomes the UI context
     // once, before the first frame.
     let ui = ui_context(appearance);
 
-    run_loop(&mut app, &mut terminal, &mut events, &terminate, &ui)
+    run_loop(
+        &mut app,
+        &mut terminal,
+        &mut events,
+        &terminate,
+        &ui,
+        &mut sessions,
+    )
+    .await
 }
 
 /// Builds the UI context from the resolved appearance settings. This is the
@@ -172,7 +191,29 @@ impl FrameClock {
     }
 }
 
-fn run_loop<B, E>(
+/// Runs the loop and, whatever made it stop, cancels every agent session
+/// before returning. This is the one place that guarantees the interface never
+/// leaves an agent running.
+async fn run_loop<B, E>(
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+    events: &mut E,
+    stop: &AtomicBool,
+    ui: &UiContext,
+    sessions: &mut AgentSessions,
+) -> anyhow::Result<()>
+where
+    B: Backend,
+    B::Error: Send + Sync + 'static,
+    E: EventSource,
+{
+    let result = drive(app, terminal, events, stop, ui).await;
+    sessions.cancel_all().await;
+    result
+}
+
+/// The loop itself: draw the frame, then react to exactly one event.
+async fn drive<B, E>(
     app: &mut App,
     terminal: &mut Terminal<B>,
     events: &mut E,
@@ -190,7 +231,6 @@ where
 
     while !stop.load(Ordering::Relaxed) {
         let frame_ui = frame_clock.frame(ui);
-        app.poll_update();
         app.tick();
         app.active_component().tick(&frame_ui);
         let title = top_bar::window_title(&app.breadcrumb());
@@ -200,43 +240,62 @@ where
         }
         terminal.draw(|frame| render_app_frame(app, frame, &frame_ui))?;
 
-        let event = events.next_event(EVENT_TIMEOUT)?;
-        let is_timeout = event.is_none();
-        match event {
-            Some(Event::Key(key)) if key.kind == KeyEventKind::Press => {
-                if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
-                    break;
-                }
-                if !app.handle_update_key(key.code, key.modifiers)
-                    && !app.handle_help_key(key.code, key.modifiers)
-                    && !app.handle_toast_key(key.code)
-                {
-                    let mut next = app.active_component().handle_event(&Event::Key(key));
-                    while let Some(action) = next {
-                        if matches!(action, Action::Quit) {
-                            return Ok(());
-                        }
-                        next = app.dispatch(action);
-                    }
+        match events.next_event().await? {
+            TuiEvent::Input(event) => {
+                if matches!(handle_input(app, event), Flow::Quit) {
+                    return Ok(());
                 }
             }
-            Some(Event::Resize(_, _)) => {}
-            _ => {}
-        }
-
-        match app.active_component().auto_refresh_interval() {
-            Some(interval) if is_timeout => {
-                refresh_tick += 1;
-                if refresh_tick >= auto_refresh_ticks(interval) {
-                    app.dispatch(Action::Refresh);
+            TuiEvent::Tick => {
+                if let Some(interval) = app.active_component().auto_refresh_interval() {
+                    refresh_tick += 1;
+                    if refresh_tick >= auto_refresh_ticks(interval) {
+                        app.dispatch(Action::Refresh);
+                        refresh_tick = 0;
+                    }
+                } else {
                     refresh_tick = 0;
                 }
             }
-            Some(_) => {}
-            None => refresh_tick = 0,
+            TuiEvent::Update(version) => app.set_update_available(version),
+            TuiEvent::Agent(event) => app.record_agent_event(*event),
         }
     }
     Ok(())
+}
+
+/// What a handled input asks the loop to do next.
+enum Flow {
+    Continue,
+    Quit,
+}
+
+/// Routes one terminal event: global shortcuts first, then the active screen.
+fn handle_input(app: &mut App, event: Event) -> Flow {
+    // Resize, paste, focus and mouse events are redrawn but not routed.
+    let Event::Key(key) = event else {
+        return Flow::Continue;
+    };
+    if key.kind != KeyEventKind::Press {
+        return Flow::Continue;
+    }
+    if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
+        return Flow::Quit;
+    }
+    if app.handle_update_key(key.code, key.modifiers)
+        || app.handle_help_key(key.code, key.modifiers)
+        || app.handle_toast_key(key.code)
+    {
+        return Flow::Continue;
+    }
+    let mut next = app.active_component().handle_event(&Event::Key(key));
+    while let Some(action) = next {
+        if matches!(action, Action::Quit) {
+            return Flow::Quit;
+        }
+        next = app.dispatch(action);
+    }
+    Flow::Continue
 }
 
 /// Shared drawing for the whole application frame: active screen, footer
@@ -294,29 +353,6 @@ fn render_update_banner(
     frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), inner);
 }
 
-trait EventSource {
-    fn next_event(&mut self, timeout: Duration) -> anyhow::Result<Option<Event>>;
-    /// Sets the terminal window title. Does nothing by default so that tests
-    /// never write escape codes to the real terminal.
-    fn set_title(&mut self, _title: &str) {}
-}
-
-struct CrosstermEvents;
-
-impl EventSource for CrosstermEvents {
-    fn next_event(&mut self, timeout: Duration) -> anyhow::Result<Option<Event>> {
-        if event::poll(timeout).context("poll events")? {
-            Ok(Some(event::read().context("read event")?))
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn set_title(&mut self, title: &str) {
-        let _ = io::stdout().execute(SetTitle(title));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::db::repository::RepositoryPolicy;
@@ -358,8 +394,8 @@ mod tests {
         assert!(ui.motion().is_reduced());
     }
 
-    #[test]
-    fn restore_terminal_leaves_alternate_screen_and_shows_cursor() {
+    #[tokio::test]
+    async fn restore_terminal_leaves_alternate_screen_and_shows_cursor() {
         let mut out = Vec::new();
         restore_terminal_on(&mut out);
         let text = String::from_utf8_lossy(&out);
@@ -392,10 +428,11 @@ mod tests {
         key_event(KeyCode::Char(c))
     }
 
-    /// Test event source that replays a scripted sequence of entries, where
-    /// `None` represents an event-loop timeout.
+    /// Test event source that replays a scripted sequence of [`TuiEvent`]s.
+    /// Running out of script means "the loop has nothing left to react to": it
+    /// stops, exactly like a real timeout followed by a stop request.
     struct VecEventSource {
-        events: Vec<Option<Event>>,
+        events: Vec<TuiEvent>,
         index: usize,
         stop: Option<Arc<AtomicBool>>,
     }
@@ -403,7 +440,7 @@ mod tests {
     impl VecEventSource {
         fn new(events: Vec<Event>) -> Self {
             Self {
-                events: events.into_iter().map(Some).collect(),
+                events: events.into_iter().map(TuiEvent::Input).collect(),
                 index: 0,
                 stop: None,
             }
@@ -411,15 +448,28 @@ mod tests {
 
         fn with_stop(events: Vec<Event>, stop: Arc<AtomicBool>) -> Self {
             Self {
-                events: events.into_iter().map(Some).collect(),
+                events: events.into_iter().map(TuiEvent::Input).collect(),
                 index: 0,
                 stop: Some(stop),
             }
         }
 
-        fn with_timeouts(events: Vec<Option<Event>>, stop: Arc<AtomicBool>) -> Self {
+        /// Replays events as they are, for the ones a terminal never produces.
+        fn with_events(events: Vec<TuiEvent>, stop: Arc<AtomicBool>) -> Self {
             Self {
                 events,
+                index: 0,
+                stop: Some(stop),
+            }
+        }
+
+        /// `None` entries become animation ticks.
+        fn with_timeouts(events: Vec<Option<Event>>, stop: Arc<AtomicBool>) -> Self {
+            Self {
+                events: events
+                    .into_iter()
+                    .map(|event| event.map_or(TuiEvent::Tick, TuiEvent::Input))
+                    .collect(),
                 index: 0,
                 stop: Some(stop),
             }
@@ -427,18 +477,23 @@ mod tests {
     }
 
     impl EventSource for VecEventSource {
-        fn next_event(&mut self, _timeout: Duration) -> anyhow::Result<Option<Event>> {
+        async fn next_event(&mut self) -> anyhow::Result<TuiEvent> {
             if self.index < self.events.len() {
                 let event = self.events[self.index].clone();
                 self.index += 1;
-                Ok(event)
-            } else {
-                if let Some(stop) = &self.stop {
-                    stop.store(true, Ordering::Relaxed);
-                }
-                Ok(None)
+                return Ok(event);
             }
+            if let Some(stop) = &self.stop {
+                stop.store(true, Ordering::Relaxed);
+            }
+            Ok(TuiEvent::Tick)
         }
+    }
+
+    /// A registry with no sessions, which is all these loop tests need.
+    fn test_sessions() -> AgentSessions {
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        AgentSessions::new(sender)
     }
 
     fn setup_app_with_project() -> (Arc<StubRepository>, App) {
@@ -478,7 +533,7 @@ mod tests {
         (repo, app)
     }
 
-    fn run_with_events(app: &mut App, events: Vec<Event>) -> anyhow::Result<()> {
+    async fn run_with_events(app: &mut App, events: Vec<Event>) -> anyhow::Result<()> {
         let stop = Arc::new(AtomicBool::new(false));
         let mut events = VecEventSource::with_stop(events, stop.clone());
         let backend = TestBackend::new(60, 24);
@@ -489,15 +544,17 @@ mod tests {
             &mut events,
             &stop,
             &UiContext::default(),
+            &mut test_sessions(),
         )
+        .await
     }
 
-    #[test]
-    fn run_loop_breaks_on_quit_action() {
+    #[tokio::test]
+    async fn run_loop_breaks_on_quit_action() {
         let (_repo, mut app) = setup_app_with_project();
         let events = vec![char_event('q'), key_event(KeyCode::Enter)];
 
-        let result = run_with_events(&mut app, events);
+        let result = run_with_events(&mut app, events).await;
 
         assert!(result.is_ok());
         assert_eq!(app.screen, Screen::ProjectList);
@@ -529,34 +586,36 @@ mod tests {
         assert!(footer.contains("Quit"), "footer stays visible: {footer:?}");
     }
 
-    #[test]
-    fn question_mark_opens_help_and_swallows_keys_until_closed() {
+    #[tokio::test]
+    async fn question_mark_opens_help_and_swallows_keys_until_closed() {
         let (_repo, mut app) = setup_app_with_project();
         // `q` would quit, but while the overlay is open it must be swallowed.
         let events = vec![char_event('?'), char_event('q')];
 
-        run_with_events(&mut app, events).unwrap();
+        run_with_events(&mut app, events).await.unwrap();
 
         assert!(app.is_help_open());
         assert_eq!(app.screen, Screen::ProjectList);
     }
 
-    #[test]
-    fn esc_closes_help_without_reaching_the_screen() {
+    #[tokio::test]
+    async fn esc_closes_help_without_reaching_the_screen() {
         let (_repo, mut app) = setup_app_with_project();
         let events = vec![char_event('?'), key_event(KeyCode::Esc), char_event('q')];
 
-        let result = run_with_events(&mut app, events);
+        let result = run_with_events(&mut app, events).await;
 
         // The final `q` quits, proving the overlay closed on Esc.
         assert!(result.is_ok());
         assert!(!app.is_help_open());
     }
 
-    #[test]
-    fn help_overlay_lists_the_active_screen_sections() {
+    #[tokio::test]
+    async fn help_overlay_lists_the_active_screen_sections() {
         let (_repo, mut app) = setup_app_with_project();
-        run_with_events(&mut app, vec![char_event('?')]).unwrap();
+        run_with_events(&mut app, vec![char_event('?')])
+            .await
+            .unwrap();
 
         let text = render_app_to_string(&mut app);
 
@@ -574,25 +633,88 @@ mod tests {
         assert!(cancel.load(Ordering::Relaxed));
     }
 
-    #[test]
-    fn event_loop_navigates_entry_to_dashboard_on_enter() {
+    #[tokio::test]
+    async fn event_loop_navigates_entry_to_dashboard_on_enter() {
         let (_repo, mut app) = setup_app_with_project();
         assert_eq!(app.screen, Screen::ProjectList);
 
-        run_with_events(&mut app, vec![key_event(KeyCode::Enter)]).unwrap();
+        run_with_events(&mut app, vec![key_event(KeyCode::Enter)])
+            .await
+            .unwrap();
 
         assert!(matches!(app.screen, Screen::ProjectDashboard { .. }));
     }
 
-    #[test]
-    fn event_loop_ctrl_c_exits() {
+    #[tokio::test]
+    async fn event_loop_ctrl_c_exits() {
         let (_repo, mut app) = setup_app_with_project();
-        let result = run_with_events(&mut app, vec![ctrl_c_event()]);
+        let result = run_with_events(&mut app, vec![ctrl_c_event()]).await;
         assert!(result.is_ok());
     }
 
-    #[test]
-    fn dashboard_auto_refreshes_after_timeouts() {
+    #[tokio::test]
+    async fn the_loop_applies_the_version_the_background_check_found() {
+        let (_repo, mut app) = setup_app_with_project();
+        assert!(!app.has_update());
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut source =
+            VecEventSource::with_events(vec![TuiEvent::Update("0.9.0".to_string())], stop.clone());
+        let mut terminal = Terminal::new(TestBackend::new(60, 24)).unwrap();
+
+        run_loop(
+            &mut app,
+            &mut terminal,
+            &mut source,
+            &stop,
+            &UiContext::default(),
+            &mut test_sessions(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(app.update_version(), Some("0.9.0"));
+    }
+
+    #[tokio::test]
+    async fn the_loop_records_the_progress_of_an_agent_session() {
+        let (_repo, mut app) = setup_app_with_project();
+        let session = crate::acp::SessionId::new("sess-1");
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut source = VecEventSource::with_events(
+            vec![TuiEvent::Agent(Box::new(events::AgentEvent {
+                session: session.clone(),
+                agent: "claude".to_string(),
+                event: crate::acp::AcpEvent::Update(crate::acp::SessionUpdateNotification {
+                    session_id: session.clone(),
+                    update: crate::acp::SessionUpdate::AgentMessageChunk {
+                        content: crate::acp::ContentBlock::text("almost there"),
+                        message_id: None,
+                    },
+                }),
+            }))],
+            stop.clone(),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(60, 24)).unwrap();
+
+        run_loop(
+            &mut app,
+            &mut terminal,
+            &mut source,
+            &stop,
+            &UiContext::default(),
+            &mut test_sessions(),
+        )
+        .await
+        .unwrap();
+
+        let activity = app.agent_activity().get(&session).expect("the session");
+        assert_eq!(activity.agent, "claude");
+        assert_eq!(activity.updates, 1);
+        assert_eq!(activity.last_text.as_deref(), Some("almost there"));
+    }
+
+    #[tokio::test]
+    async fn dashboard_auto_refreshes_after_timeouts() {
         let (repo, mut app) = setup_app_with_project();
         app.dispatch(Action::Navigate(Screen::VersionDashboard {
             project_id: 1,
@@ -624,7 +746,9 @@ mod tests {
             &mut source,
             &stop,
             &UiContext::default(),
+            &mut test_sessions(),
         )
+        .await
         .unwrap();
 
         let text = render_app_to_string(&mut app);
@@ -634,8 +758,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn dashboard_auto_refresh_pauses_while_task_list_dialog_is_open() {
+    #[tokio::test]
+    async fn dashboard_auto_refresh_pauses_while_task_list_dialog_is_open() {
         let (repo, mut app) = setup_app_with_project();
         app.dispatch(Action::Navigate(Screen::VersionDashboard {
             project_id: 1,
@@ -668,7 +792,9 @@ mod tests {
             &mut source,
             &stop,
             &UiContext::default(),
+            &mut test_sessions(),
         )
+        .await
         .unwrap();
 
         let text = render_app_to_string(&mut app);
@@ -693,14 +819,16 @@ mod tests {
             &mut source,
             &stop,
             &UiContext::default(),
+            &mut test_sessions(),
         )
+        .await
         .unwrap();
 
         assert!(render_app_to_string(&mut app).contains("Dialog task"));
     }
 
-    #[test]
-    fn project_list_auto_refreshes_progress_after_timeouts() {
+    #[tokio::test]
+    async fn project_list_auto_refreshes_progress_after_timeouts() {
         let (repo, mut app) = setup_app_with_project();
         assert_eq!(app.screen, Screen::ProjectList);
 
@@ -729,7 +857,9 @@ mod tests {
             &mut source,
             &stop,
             &UiContext::default(),
+            &mut test_sessions(),
         )
+        .await
         .unwrap();
 
         let text = render_app_to_string(&mut app);
@@ -747,12 +877,12 @@ mod tests {
     }
 
     impl EventSource for TitleRecorder {
-        fn next_event(&mut self, _timeout: Duration) -> anyhow::Result<Option<Event>> {
+        async fn next_event(&mut self) -> anyhow::Result<TuiEvent> {
             if self.remaining == 0 {
                 self.stop.store(true, Ordering::Relaxed);
             }
             self.remaining = self.remaining.saturating_sub(1);
-            Ok(None)
+            Ok(TuiEvent::Tick)
         }
 
         fn set_title(&mut self, title: &str) {
@@ -760,8 +890,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn window_title_is_set_for_the_current_context_only_when_it_changes() {
+    #[tokio::test]
+    async fn window_title_is_set_for_the_current_context_only_when_it_changes() {
         let (_repo, mut app) = setup_app_with_project();
         let stop = Arc::new(AtomicBool::new(false));
         let mut source = TitleRecorder {
@@ -777,7 +907,9 @@ mod tests {
             &mut source,
             &stop,
             &UiContext::default(),
+            &mut test_sessions(),
         )
+        .await
         .unwrap();
         assert_eq!(source.titles, vec!["pmp — Projects".to_string()]);
 
@@ -794,7 +926,9 @@ mod tests {
             &mut source,
             &stop,
             &UiContext::default(),
+            &mut test_sessions(),
         )
+        .await
         .unwrap();
         assert_eq!(source.titles, vec!["pmp — Alpha".to_string()]);
     }
@@ -809,8 +943,8 @@ mod tests {
         assert!(first.contains("Alpha"), "{first:?}");
     }
 
-    #[test]
-    fn sigterm_flag_breaks_loop() {
+    #[tokio::test]
+    async fn sigterm_flag_breaks_loop() {
         let (_repo, mut app) = setup_app_with_project();
         let stop = Arc::new(AtomicBool::new(true));
         let mut events = VecEventSource::new(vec![]);
@@ -823,7 +957,9 @@ mod tests {
             &mut events,
             &stop,
             &UiContext::default(),
-        );
+            &mut test_sessions(),
+        )
+        .await;
 
         assert!(result.is_ok());
         assert_eq!(app.screen, Screen::ProjectList);
@@ -846,8 +982,8 @@ mod tests {
         assert!(stop.load(Ordering::Relaxed));
     }
 
-    #[test]
-    fn full_navigation_entry_to_dashboard_to_form_and_back() {
+    #[tokio::test]
+    async fn full_navigation_entry_to_dashboard_to_form_and_back() {
         let (_repo, mut app) = setup_app_with_project();
         let events = vec![
             key_event(KeyCode::Enter),
@@ -856,7 +992,7 @@ mod tests {
             key_event(KeyCode::Esc),
         ];
 
-        run_with_events(&mut app, events).unwrap();
+        run_with_events(&mut app, events).await.unwrap();
 
         assert_eq!(app.screen, Screen::ProjectList);
     }
@@ -967,30 +1103,36 @@ mod tests {
         (repo, app)
     }
 
-    #[test]
-    fn u_opens_update_banner_and_esc_closes_it() {
+    #[tokio::test]
+    async fn u_opens_update_banner_and_esc_closes_it() {
         let (_repo, mut app) = app_with_update("0.4.0");
 
-        run_with_events(&mut app, vec![char_event('u')]).unwrap();
+        run_with_events(&mut app, vec![char_event('u')])
+            .await
+            .unwrap();
         assert!(app.is_update_banner_open());
         assert!(render_app_to_string(&mut app).contains("Update available"));
 
-        run_with_events(&mut app, vec![key_event(KeyCode::Esc)]).unwrap();
+        run_with_events(&mut app, vec![key_event(KeyCode::Esc)])
+            .await
+            .unwrap();
         assert!(!app.is_update_banner_open());
         assert!(!render_app_to_string(&mut app).contains("Update available"));
     }
 
-    #[test]
-    fn u_does_nothing_without_update() {
+    #[tokio::test]
+    async fn u_does_nothing_without_update() {
         let (_repo, mut app) = setup_app_with_project();
 
-        run_with_events(&mut app, vec![char_event('u')]).unwrap();
+        run_with_events(&mut app, vec![char_event('u')])
+            .await
+            .unwrap();
 
         assert!(!app.is_update_banner_open());
     }
 
-    #[test]
-    fn u_is_text_input_inside_forms() {
+    #[tokio::test]
+    async fn u_is_text_input_inside_forms() {
         let (_repo, mut app) = app_with_update("0.4.0");
         app.dispatch(Action::Navigate(Screen::ProjectDashboard { project_id: 1 }));
         app.dispatch(Action::Navigate(Screen::TaskForm {
@@ -998,17 +1140,21 @@ mod tests {
             task_id: None,
         }));
 
-        run_with_events(&mut app, vec![char_event('u')]).unwrap();
+        run_with_events(&mut app, vec![char_event('u')])
+            .await
+            .unwrap();
 
         assert!(!app.is_update_banner_open());
     }
 
-    #[test]
-    fn open_update_banner_swallows_keys_except_esc() {
+    #[tokio::test]
+    async fn open_update_banner_swallows_keys_except_esc() {
         let (_repo, mut app) = app_with_update("0.4.0");
 
         // Enter would open the dashboard if it reached the project list.
-        run_with_events(&mut app, vec![char_event('u'), key_event(KeyCode::Enter)]).unwrap();
+        run_with_events(&mut app, vec![char_event('u'), key_event(KeyCode::Enter)])
+            .await
+            .unwrap();
 
         assert!(app.is_update_banner_open());
         assert_eq!(app.screen, Screen::ProjectList);

@@ -32,7 +32,7 @@ async fn main() -> anyhow::Result<()> {
             pmp::logging::init(&config.logging, &paths.logs_dir);
             let mut app = App::new(open_repo(&config, &paths)?);
             app.set_pending_update(pmp::update::spawn_check(env!("CARGO_PKG_VERSION")));
-            pmp::tui::run(app, &config.appearance)?
+            pmp::tui::run(app, &config.appearance).await?
         }
     }
     Ok(())

@@ -1,11 +1,13 @@
 // Copyright (C) 2026 Diego Torréns Farias
 // SPDX-License-Identifier: AGPL-3.0-or-later
+use std::collections::BTreeMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
+use crate::acp::SessionId;
 use crate::db::repository::Repository;
 use crate::domain::error::AppError;
 use crate::screens::components::toast::{Severity, Toasts};
@@ -14,12 +16,14 @@ use crate::screens::{
     VersionDashboard, VersionForm, VersionSummaryScreen,
 };
 
+pub(crate) mod agents;
 mod outcome;
 mod project_actions;
 mod summary_actions;
 mod task_actions;
 mod version_actions;
 
+use agents::AgentActivity;
 use outcome::Outcome;
 
 /// Returns the current time. Boxed so tests can substitute their own clock.
@@ -53,6 +57,8 @@ pub struct App {
     show_help: bool,
     pending_update: Option<Arc<OnceLock<String>>>,
     update_check_cancel: Option<Arc<AtomicBool>>,
+    /// Live agent sessions, fed by the TUI event loop.
+    agents: BTreeMap<SessionId, AgentActivity>,
     /// Version compiled into the running binary, used in the update banner.
     /// Defaults to `CARGO_PKG_VERSION` and is overridable from tests.
     current_version: String,
@@ -83,6 +89,7 @@ impl App {
             show_help: false,
             pending_update: None,
             update_check_cancel: None,
+            agents: BTreeMap::new(),
             current_version: env!("CARGO_PKG_VERSION").to_string(),
             components: Components {
                 project_list: ProjectListScreen::new(repo.clone()),
@@ -111,12 +118,10 @@ impl App {
         self.update_check_cancel.clone()
     }
 
-    /// Copies the background update result, if already available, into
-    /// `update_available`.
-    pub fn poll_update(&mut self) {
-        if let Some(version) = self.pending_update.as_ref().and_then(|slot| slot.get()) {
-            self.update_available = Some(version.clone());
-        }
+    /// The slot the background update check fills. The TUI event source reads
+    /// it and reports the result as an event.
+    pub(crate) fn pending_update_slot(&self) -> Option<Arc<OnceLock<String>>> {
+        self.pending_update.clone()
     }
 
     /// Opens the update banner. No-op when no update is available.

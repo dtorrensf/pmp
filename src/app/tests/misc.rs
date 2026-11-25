@@ -23,15 +23,21 @@ fn update_is_hidden_by_default() {
 }
 
 #[test]
-fn poll_update_copies_slot_value() {
+fn the_update_slot_is_exposed_to_the_event_source() {
     let mut app = App::new(Arc::new(StubRepository::default()));
     let slot = Arc::new(OnceLock::new());
     app.set_pending_update((slot.clone(), Arc::new(AtomicBool::new(false))));
-    app.poll_update();
-    assert!(!app.has_update());
+    let exposed = app.pending_update_slot().expect("the slot is exposed");
+    assert!(Arc::ptr_eq(&exposed, &slot));
+    assert!(exposed.get().is_none());
     slot.set("0.4.0".to_string()).unwrap();
-    app.poll_update();
-    assert_eq!(app.update_version(), Some("0.4.0"));
+    assert_eq!(exposed.get().map(String::as_str), Some("0.4.0"));
+    assert!(
+        App::new(Arc::new(StubRepository::default()))
+            .pending_update_slot()
+            .is_none(),
+        "without a check there is nothing to poll"
+    );
 }
 
 #[test]

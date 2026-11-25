@@ -36,6 +36,6 @@ pub use protocol::{
 pub use transport::{Incoming, RequestId, RpcError, TransportError};
 
 #[cfg(test)]
-mod sim;
+pub(crate) mod sim;
 #[cfg(test)]
 mod tests;

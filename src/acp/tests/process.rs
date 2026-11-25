@@ -53,14 +53,16 @@ async fn a_child_that_exits_immediately_closes_the_connection() {
     let mut shell = profile("/bin/sh");
     shell.args = vec!["-c".to_string(), "exit 3".to_string()];
     let client = AcpClient::launch(&shell).await.expect("the shell starts");
-    let mut events = client.subscribe();
     let error = client.initialize().await.expect_err("the child is gone");
     assert_eq!(error.code(), ErrorCode::AgentFailed);
     assert!(client.is_closed());
-    assert!(matches!(
-        events.recv().await.expect("a closed event"),
-        AcpEvent::Closed { .. }
-    ));
+    // The child may die before a subscriber exists, so the reason is stored
+    // instead of relying on the broadcast; the Closed event itself is covered
+    // by the simulated agent in the client tests.
+    assert!(
+        client.closed_reason().is_some(),
+        "the connection remembers why it ended"
+    );
     // Shutting down a child that already exited must not hang.
     tokio::time::timeout(Duration::from_secs(10), client.shutdown())
         .await
