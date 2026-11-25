@@ -15,18 +15,20 @@ use super::*;
 impl PmpServer {
     #[tool(
         name = "list_task_notes",
-        description = "List the notes of a task, newest first. Use to read progress updates, decisions, context and reminders before continuing work on it."
+        description = "List the notes of a task, newest first. Results are paginated: use limit (default 100, max 500) and offset, and check has_more/total to fetch older notes. Use to read progress updates, decisions, context and reminders before continuing work on it."
     )]
     pub(super) async fn list_task_notes(
         &self,
-        Parameters(params): Parameters<TaskIdParams>,
+        Parameters(params): Parameters<ListTaskNotesParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let task_id = params.task_id;
+        let limit = params.limit;
+        let offset = params.offset.unwrap_or(0);
         run_tool(
             self.repo.clone(),
             self.timeout,
             TASK_NOT_FOUND,
-            move |repo| application::notes::list(repo.as_ref(), task_id),
+            move |repo| application::notes::page(repo.as_ref(), task_id, limit, offset),
         )
         .await
     }

@@ -23,11 +23,16 @@ async fn list_task_notes_returns_notes_for_task() {
     repo.add_task_note(task_id, "second note").unwrap();
 
     let result = server
-        .list_task_notes(Parameters(TaskIdParams { task_id }))
+        .list_task_notes(Parameters(ListTaskNotesParams {
+            task_id,
+            limit: None,
+            offset: None,
+        }))
         .await
         .unwrap();
     let text = tool_text(result);
-    let notes: Vec<TaskNote> = serde_json::from_str(&text).unwrap();
+    let page: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let notes: Vec<TaskNote> = serde_json::from_value(page["notes"].clone()).unwrap();
     assert_eq!(notes.len(), 2);
     assert_eq!(notes[0].content, "second note");
     assert_eq!(notes[1].content, "first note");
@@ -37,7 +42,11 @@ async fn list_task_notes_returns_notes_for_task() {
 async fn list_task_notes_unknown_task_returns_error() {
     let (server, _) = server();
     let result = server
-        .list_task_notes(Parameters(TaskIdParams { task_id: 999 }))
+        .list_task_notes(Parameters(ListTaskNotesParams {
+            task_id: 999,
+            limit: None,
+            offset: None,
+        }))
         .await
         .unwrap();
     assert_eq!(result.is_error, Some(true));
@@ -161,4 +170,57 @@ async fn delete_task_note_unknown_note_returns_error() {
         .unwrap();
     assert_eq!(result.is_error, Some(true));
     assert!(tool_text(result).contains("note not found"));
+}
+
+#[tokio::test]
+async fn list_task_notes_pages_with_limit_and_offset() {
+    let (server, repo) = server();
+    let project = repo.create_project("Alpha", "", None).unwrap();
+    let pid = project.id.unwrap();
+    let task_id = repo
+        .create_task(
+            pid,
+            repo.default_version_id(pid).unwrap(),
+            "Task",
+            "",
+            Status::Todo,
+            Priority::Medium,
+        )
+        .unwrap()
+        .id
+        .unwrap();
+    for i in 0..5 {
+        repo.add_task_note(task_id, &format!("note {i}")).unwrap();
+    }
+
+    let params = |limit, offset| ListTaskNotesParams {
+        task_id,
+        limit,
+        offset,
+    };
+    let first = server
+        .list_task_notes(Parameters(params(Some(2), None)))
+        .await
+        .unwrap();
+    let page: serde_json::Value = serde_json::from_str(&tool_text(first)).unwrap();
+    assert_eq!(page["notes"].as_array().unwrap().len(), 2);
+    assert_eq!(page["total"], 5);
+    assert_eq!(page["has_more"], true);
+
+    let last = server
+        .list_task_notes(Parameters(params(Some(2), Some(4))))
+        .await
+        .unwrap();
+    let page: serde_json::Value = serde_json::from_str(&tool_text(last)).unwrap();
+    assert_eq!(page["notes"].as_array().unwrap().len(), 1);
+    assert_eq!(page["has_more"], false);
+
+    let beyond = server
+        .list_task_notes(Parameters(params(None, Some(50))))
+        .await
+        .unwrap();
+    let page: serde_json::Value = serde_json::from_str(&tool_text(beyond)).unwrap();
+    assert!(page["notes"].as_array().unwrap().is_empty());
+    assert_eq!(page["total"], 5);
+    assert_eq!(page["has_more"], false);
 }

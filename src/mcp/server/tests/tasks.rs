@@ -14,6 +14,7 @@ async fn list_tasks_returns_all_tasks_for_project() {
             priority: None,
             limit: None,
             offset: None,
+            include_description: None,
         }))
         .await
         .unwrap();
@@ -33,6 +34,7 @@ async fn list_tasks_paginates_with_limit_and_offset() {
             priority: None,
             limit: Some(2),
             offset: None,
+            include_description: None,
         }))
         .await
         .unwrap();
@@ -49,6 +51,7 @@ async fn list_tasks_paginates_with_limit_and_offset() {
             priority: None,
             limit: Some(2),
             offset: Some(2),
+            include_description: None,
         }))
         .await
         .unwrap();
@@ -69,6 +72,7 @@ async fn list_tasks_filters_by_status() {
             priority: None,
             limit: None,
             offset: None,
+            include_description: None,
         }))
         .await
         .unwrap();
@@ -89,6 +93,7 @@ async fn list_tasks_filters_by_priority() {
             priority: Some(PriorityParam::High),
             limit: None,
             offset: None,
+            include_description: None,
         }))
         .await
         .unwrap();
@@ -109,6 +114,7 @@ async fn list_tasks_filters_by_status_and_priority() {
             priority: Some(PriorityParam::Low),
             limit: None,
             offset: None,
+            include_description: None,
         }))
         .await
         .unwrap();
@@ -130,6 +136,7 @@ async fn list_tasks_unknown_project_returns_tool_error() {
             priority: None,
             limit: None,
             offset: None,
+            include_description: None,
         }))
         .await
         .unwrap();
@@ -560,4 +567,143 @@ async fn create_task_rejects_oversized_arguments() {
     assert_eq!(result.is_error, Some(true));
     let message = tool_text(result);
     assert!(message.contains("cannot exceed"), "{message}");
+}
+
+/// Creates `count` tasks with a long description and returns the project id.
+fn long_description_tasks(repo: &StubRepository, count: usize) -> i64 {
+    let project = repo.create_project("Payload", "", None).unwrap();
+    let pid = project.id.unwrap();
+    let version_id = repo.default_version_id(pid).unwrap();
+    let description = compose_description(&"c".repeat(900), &"r".repeat(900), &"b".repeat(900));
+    for i in 0..count {
+        repo.create_task(
+            pid,
+            version_id,
+            &format!("Task {i}"),
+            &description,
+            Status::Todo,
+            Priority::Medium,
+        )
+        .unwrap();
+    }
+    pid
+}
+
+fn list_params(project_id: i64, include_description: Option<bool>) -> ListTasksParams {
+    ListTasksParams {
+        project_id,
+        version_id: None,
+        status: None,
+        priority: None,
+        limit: None,
+        offset: None,
+        include_description,
+    }
+}
+
+#[tokio::test]
+async fn list_tasks_default_is_a_light_summary_with_dependency_counters() {
+    let (server, repo) = server();
+    let pid = long_description_tasks(&repo, 1);
+    let a = repo.list_tasks_by_project(pid).unwrap()[0].id.unwrap();
+    let b = repo
+        .create_task(
+            pid,
+            repo.default_version_id(pid).unwrap(),
+            "Blocked",
+            "",
+            Status::Todo,
+            Priority::Medium,
+        )
+        .unwrap()
+        .id
+        .unwrap();
+    repo.set_dependencies(b, &[a]).unwrap();
+
+    let result = server
+        .list_tasks(Parameters(list_params(pid, None)))
+        .await
+        .unwrap();
+    let page: serde_json::Value = serde_json::from_str(&tool_text(result)).unwrap();
+    let item = page["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "Blocked")
+        .unwrap();
+    assert!(item.get("description").is_none(), "{item}");
+    assert_eq!(item["depends_on_count"], 1);
+    assert_eq!(item["blocks_count"], 0);
+    assert_eq!(item["status"], "todo");
+    assert!(item.get("created_at").is_some());
+}
+
+#[tokio::test]
+async fn list_tasks_include_description_returns_full_sections() {
+    let (server, repo) = server();
+    let pid = long_description_tasks(&repo, 1);
+    let result = server
+        .list_tasks(Parameters(list_params(pid, Some(true))))
+        .await
+        .unwrap();
+    let page: serde_json::Value = serde_json::from_str(&tool_text(result)).unwrap();
+    let description = page["tasks"][0]["description"].as_str().unwrap();
+    assert!(description.contains("## Context"), "{description}");
+}
+
+#[tokio::test]
+async fn light_listing_is_much_smaller_than_full_listing() {
+    let (server, repo) = server();
+    let pid = long_description_tasks(&repo, 50);
+
+    let light = server
+        .list_tasks(Parameters(list_params(pid, None)))
+        .await
+        .unwrap();
+    let full = server
+        .list_tasks(Parameters(list_params(pid, Some(true))))
+        .await
+        .unwrap();
+    let light_len = tool_text(light).len();
+    let full_len = tool_text(full).len();
+    // Each description is about 2.7 KB; the summary drops it entirely.
+    assert!(
+        light_len * 5 < full_len,
+        "summary {light_len} bytes vs full {full_len} bytes"
+    );
+}
+
+#[tokio::test]
+async fn list_tasks_pages_beyond_the_default_size_are_consistent() {
+    let (server, repo) = server();
+    let pid = long_description_tasks(&repo, 7);
+    let mut seen = Vec::new();
+    let mut offset = 0;
+    loop {
+        let result = server
+            .list_tasks(Parameters(ListTasksParams {
+                limit: Some(3),
+                offset: Some(offset),
+                ..list_params(pid, None)
+            }))
+            .await
+            .unwrap();
+        let page: serde_json::Value = serde_json::from_str(&tool_text(result)).unwrap();
+        assert_eq!(page["total"], 7);
+        assert_eq!(page["limit"], 3);
+        seen.extend(
+            page_tasks(&page.to_string())
+                .into_iter()
+                .map(|t| t.id.unwrap()),
+        );
+        if page["has_more"] == false {
+            break;
+        }
+        offset += 3;
+    }
+    assert_eq!(seen.len(), 7);
+    let mut unique = seen.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), 7, "pages must not overlap");
 }

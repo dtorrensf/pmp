@@ -55,18 +55,20 @@ impl PmpServer {
 
     #[tool(
         name = "list_version_summaries",
-        description = "List the summaries of a version, newest first. A version holds at most one summary; after compaction its tasks live only in the summary snapshot. Use to review what was frozen."
+        description = "List the summaries of a version, newest first. Results are paginated: use limit (default 100, max 500) and offset, and check has_more/total to fetch the next page. A version holds at most one summary; after compaction its tasks live only in the summary snapshot. Use to review what was frozen."
     )]
     pub(super) async fn list_version_summaries(
         &self,
-        Parameters(params): Parameters<VersionIdParams>,
+        Parameters(params): Parameters<ListVersionSummariesParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let version_id = params.version_id;
+        let limit = params.limit;
+        let offset = params.offset.unwrap_or(0);
         run_tool(
             self.repo.clone(),
             self.timeout,
             VERSION_NOT_FOUND,
-            move |repo| application::summaries::list(repo.as_ref(), version_id),
+            move |repo| application::summaries::page(repo.as_ref(), version_id, limit, offset),
         )
         .await
     }

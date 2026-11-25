@@ -107,6 +107,7 @@ async fn list_tasks_filters_by_version_id() {
             priority: None,
             limit: None,
             offset: None,
+            include_description: None,
         }))
         .await
         .unwrap();
@@ -128,6 +129,7 @@ async fn list_tasks_rejects_version_from_another_project() {
             priority: None,
             limit: None,
             offset: None,
+            include_description: None,
         }))
         .await
         .unwrap();
@@ -383,6 +385,7 @@ async fn project_version_flow_create_version_task_and_filter() {
                 priority: None,
                 limit: None,
                 offset: None,
+                include_description: None,
             }))
             .await
             .unwrap(),

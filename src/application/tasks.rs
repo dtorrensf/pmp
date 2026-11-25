@@ -16,6 +16,7 @@ use crate::domain::task_description::{compose_description, split_description};
 use crate::domain::validation::{validate_name, validate_text};
 
 use super::dependencies;
+use super::pagination::PageMeta;
 
 /// Fields of a task to create.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,14 +51,55 @@ pub struct TaskEdit {
     pub depends_on: Option<Vec<i64>>,
 }
 
-/// One page of tasks plus the metadata a client needs to ask for the next one.
+/// Lightweight view of a task for listings: identity, state, timestamps and
+/// dependency counters. The description is included only on request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaskSummary {
+    pub id: Option<i64>,
+    pub project_id: i64,
+    pub version_id: i64,
+    pub name: String,
+    pub status: Status,
+    pub priority: Priority,
+    pub created_at: String,
+    pub completed_at: Option<String>,
+    /// Tasks this one waits for.
+    pub depends_on_count: u32,
+    /// Tasks waiting for this one.
+    pub blocks_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// One page of task summaries plus the metadata a client needs to ask for the next one.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskPage {
-    pub tasks: Vec<Task>,
-    pub total: u64,
-    pub limit: u32,
-    pub offset: u32,
-    pub has_more: bool,
+    pub tasks: Vec<TaskSummary>,
+    #[serde(flatten)]
+    pub meta: PageMeta,
+}
+
+fn summarize(
+    repo: &dyn Repository,
+    task: Task,
+    include_description: bool,
+) -> Result<TaskSummary, AppError> {
+    let id = task.id.ok_or(AppError::Internal)?;
+    let depends_on_count = repo.get_dependencies(id)?.len() as u32;
+    let blocks_count = repo.get_dependents(id)?.len() as u32;
+    Ok(TaskSummary {
+        id: task.id,
+        project_id: task.project_id,
+        version_id: task.version_id,
+        name: task.name,
+        status: task.status,
+        priority: task.priority,
+        created_at: task.created_at,
+        completed_at: task.completed_at,
+        depends_on_count,
+        blocks_count,
+        description: include_description.then_some(task.description),
+    })
 }
 
 pub fn list_by_project(repo: &dyn Repository, project_id: i64) -> Result<Vec<Task>, AppError> {
@@ -75,6 +117,7 @@ pub fn page(
     filter: &TaskFilter,
     limit: u32,
     offset: u32,
+    include_description: bool,
 ) -> Result<TaskPage, AppError> {
     repo.get_project(filter.project_id)?;
     if let Some(version_id) = filter.version_id {
@@ -87,12 +130,14 @@ pub fn page(
     }
     let tasks = repo.list_tasks_page(filter, limit, offset)?;
     let total = repo.count_tasks(filter)?;
+    let returned = tasks.len();
+    let tasks = tasks
+        .into_iter()
+        .map(|task| summarize(repo, task, include_description))
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(TaskPage {
-        has_more: (u64::from(offset) + tasks.len() as u64) < total,
         tasks,
-        total,
-        limit,
-        offset,
+        meta: super::pagination::meta(total, returned, limit, offset),
     })
 }
 
@@ -356,6 +401,7 @@ mod tests {
             },
             10,
             0,
+            false,
         );
         assert!(result.is_err());
     }
@@ -376,11 +422,12 @@ mod tests {
             },
             2,
             0,
+            false,
         )
         .unwrap();
         assert_eq!(first.tasks.len(), 2);
-        assert_eq!(first.total, 3);
-        assert!(first.has_more);
+        assert_eq!(first.meta.total, 3);
+        assert!(first.meta.has_more);
 
         let second = page(
             &repo,
@@ -392,10 +439,68 @@ mod tests {
             },
             2,
             2,
+            false,
         )
         .unwrap();
         assert_eq!(second.tasks.len(), 1);
-        assert!(!second.has_more);
+        assert!(!second.meta.has_more);
+    }
+
+    #[test]
+    fn page_is_a_summary_unless_the_description_is_requested() {
+        let (repo, project_id, version_id) = repo_with_version();
+        let task = create(&repo, new_task(version_id, "A")).unwrap();
+        let filter = TaskFilter {
+            project_id,
+            version_id: Some(version_id),
+            status: None,
+            priority: None,
+        };
+
+        let light = page(&repo, &filter, 10, 0, false).unwrap();
+        assert_eq!(light.tasks[0].name, "A");
+        assert_eq!(light.tasks[0].description, None);
+
+        let full = page(&repo, &filter, 10, 0, true).unwrap();
+        assert_eq!(
+            full.tasks[0].description.as_deref(),
+            Some(task.description.as_str())
+        );
+    }
+
+    #[test]
+    fn summary_counts_dependencies_and_blockers() {
+        let (repo, project_id, version_id) = repo_with_version();
+        let a = create(&repo, new_task(version_id, "A"))
+            .unwrap()
+            .id
+            .unwrap();
+        let b = create(&repo, new_task(version_id, "B"))
+            .unwrap()
+            .id
+            .unwrap();
+        let c = create(&repo, new_task(version_id, "C"))
+            .unwrap()
+            .id
+            .unwrap();
+        // B waits for A and C; nothing waits for B.
+        repo.set_dependencies(b, &[a, c]).unwrap();
+        let filter = TaskFilter {
+            project_id,
+            version_id: Some(version_id),
+            status: None,
+            priority: None,
+        };
+        let page = page(&repo, &filter, 10, 0, false).unwrap();
+        let by_name = |name: &str| page.tasks.iter().find(|t| t.name == name).unwrap();
+        assert_eq!(
+            (by_name("B").depends_on_count, by_name("B").blocks_count),
+            (2, 0)
+        );
+        assert_eq!(
+            (by_name("A").depends_on_count, by_name("A").blocks_count),
+            (0, 1)
+        );
     }
 
     #[test]
@@ -420,7 +525,7 @@ mod tests {
 
 #[cfg(test)]
 mod wire_tests {
-    use super::{TaskEdit, TaskPage};
+    use super::{PageMeta, TaskEdit, TaskPage};
     use crate::domain::task::Status;
 
     #[test]
@@ -442,10 +547,12 @@ mod wire_tests {
     fn task_page_round_trips_as_json() {
         let page = TaskPage {
             tasks: Vec::new(),
-            total: 0,
-            limit: 10,
-            offset: 0,
-            has_more: false,
+            meta: PageMeta {
+                total: 0,
+                limit: 10,
+                offset: 0,
+                has_more: false,
+            },
         };
         let json = serde_json::to_string(&page).unwrap();
         let back: TaskPage = serde_json::from_str(&json).unwrap();

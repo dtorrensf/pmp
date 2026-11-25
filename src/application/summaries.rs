@@ -9,15 +9,38 @@
 
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 use crate::db::repository::{Repository, RepositoryPolicy};
 use crate::domain::error::AppError;
 use crate::domain::validation::validate_text;
 use crate::domain::version::VersionStatus;
 use crate::domain::version_summary::VersionSummary;
 
+use super::pagination::{PageMeta, clamp_limit, window};
+
 pub fn list(repo: &dyn Repository, version_id: i64) -> Result<Vec<VersionSummary>, AppError> {
     repo.get_version(version_id)?;
     repo.list_version_summaries(version_id)
+}
+
+/// One page of a version's summaries, newest first.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SummaryPage {
+    pub summaries: Vec<VersionSummary>,
+    #[serde(flatten)]
+    pub meta: PageMeta,
+}
+
+pub fn page(
+    repo: &dyn Repository,
+    version_id: i64,
+    limit: Option<u32>,
+    offset: u32,
+) -> Result<SummaryPage, AppError> {
+    let summaries = list(repo, version_id)?;
+    let (summaries, meta) = window(summaries, clamp_limit(limit), offset);
+    Ok(SummaryPage { summaries, meta })
 }
 
 pub fn get(repo: &dyn Repository, summary_id: i64) -> Result<VersionSummary, AppError> {
