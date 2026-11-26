@@ -166,6 +166,11 @@ pub enum Action {
         task_id: i64,
         content: String,
     },
+    /// Send the task to a configured ACP agent for implementation. The app
+    /// validates dependencies and the project workspace before launching it.
+    ImplementTask {
+        task_id: i64,
+    },
     ExportVersionSummary {
         summary_id: i64,
     },

@@ -22,7 +22,9 @@ pub mod events;
 pub mod sessions;
 
 use crate::app::App;
-use crate::config::AppearanceConfig;
+use crate::app::agents::AgentRequest;
+use crate::config::{AppearanceConfig, Config};
+use crate::screens::components::agent;
 use crate::screens::components::glyphs::Glyphs;
 use crate::screens::components::help;
 use crate::screens::components::popup::{centered_rect, render_popup_scaffold};
@@ -114,7 +116,11 @@ fn install_panic_hook() {
     }));
 }
 
-pub async fn run(mut app: App, appearance: &AppearanceConfig) -> anyhow::Result<()> {
+pub async fn run(mut app: App, config: &Config) -> anyhow::Result<()> {
+    let appearance = &config.appearance;
+    // The resolved profiles are part of the composition root; screens and the
+    // loop never read the environment or the configuration file themselves.
+    app.set_agent_profiles(config.agents.clone());
     let _cancel_update_check = CancelUpdateCheckOnDrop(app.update_check_cancel_handle());
     install_panic_hook();
     let _terminal_guard = TerminalGuard::install()?;
@@ -207,7 +213,7 @@ where
     B::Error: Send + Sync + 'static,
     E: EventSource,
 {
-    let result = drive(app, terminal, events, stop, ui).await;
+    let result = drive(app, terminal, events, stop, ui, sessions).await;
     sessions.cancel_all().await;
     result
 }
@@ -219,6 +225,7 @@ async fn drive<B, E>(
     events: &mut E,
     stop: &AtomicBool,
     ui: &UiContext,
+    sessions: &mut AgentSessions,
 ) -> anyhow::Result<()>
 where
     B: Backend,
@@ -259,9 +266,50 @@ where
             }
             TuiEvent::Update(version) => app.set_update_available(version),
             TuiEvent::Agent(event) => app.record_agent_event(*event),
+            TuiEvent::AgentFinished(finished) => {
+                app.finish_agent_run(&finished);
+                if let Some(client) = sessions.remove(&finished.session) {
+                    // Closing stdin and reaping the child can take a moment;
+                    // the turn is over, so it must not stall the interface.
+                    tokio::spawn(async move { client.shutdown().await });
+                }
+            }
+        }
+        if let Some(session) = app.take_cancel_request()
+            && let Err(error) = sessions.cancel(&session).await
+        {
+            app.agent_cancel_failed(error.user_message());
+        }
+        if let Some(request) = app.take_agent_request() {
+            start_agent_run(app, sessions, request).await;
         }
     }
     Ok(())
+}
+
+/// Launches the validated run. A failure leaves the task untouched and becomes
+/// an error toast; the loop keeps running.
+async fn start_agent_run(app: &mut App, sessions: &mut AgentSessions, request: AgentRequest) {
+    let Some(profile) = app.agent_profile(&request.agent).cloned() else {
+        app.agent_start_failed(format!(
+            "agent profile '{}' is not configured",
+            request.agent
+        ));
+        return;
+    };
+    let repo = app.repo.clone();
+    match sessions
+        .start_task(&request.agent, &profile, &request.prepared, repo)
+        .await
+    {
+        Ok(session) => {
+            app.agent_session_started(session);
+            // Show the task's new in-progress state without waiting for the
+            // dashboard's periodic refresh.
+            app.dispatch(Action::Refresh);
+        }
+        Err(error) => app.agent_start_failed(error.user_message()),
+    }
 }
 
 /// What a handled input asks the loop to do next.
@@ -282,7 +330,8 @@ fn handle_input(app: &mut App, event: Event) -> Flow {
     if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
         return Flow::Quit;
     }
-    if app.handle_update_key(key.code, key.modifiers)
+    if app.handle_agent_key(key.code, key.modifiers)
+        || app.handle_update_key(key.code, key.modifiers)
         || app.handle_help_key(key.code, key.modifiers)
         || app.handle_toast_key(key.code)
     {
@@ -302,15 +351,21 @@ fn handle_input(app: &mut App, event: Event) -> Flow {
 /// (with the update hint when available), update banner and error overlay.
 fn render_app_frame(app: &mut App, frame: &mut Frame, ui: &UiContext) {
     let area = frame.area();
+    let status_height = if app.agent_status().is_some() {
+        agent::STATUS_HEIGHT
+    } else {
+        0
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Min(0),
+            Constraint::Length(status_height),
             Constraint::Length(1),
         ])
         .split(area);
-    let (top, body, footer) = (chunks[0], chunks[1], chunks[2]);
+    let (top, body, status, footer) = (chunks[0], chunks[1], chunks[2], chunks[3]);
     top_bar::render(
         frame,
         top,
@@ -321,8 +376,16 @@ fn render_app_frame(app: &mut App, frame: &mut Frame, ui: &UiContext) {
     );
     let keys = app.active_component().keybindings();
     app.active_component().render(frame, body, ui);
+    if status_height > 0
+        && let Some(agent_status) = app.agent_status()
+    {
+        agent::render_status(frame, status, &agent_status, ui);
+    }
     let help_hint = !app.screen.accepts_text_input();
     render_footer(frame, footer, keys, help_hint, ui);
+    if let Some((agents, selected)) = app.agent_picker() {
+        agent::render_picker(frame, area, agents, selected, ui);
+    }
     if let (true, Some(version)) = (app.is_update_banner_open(), app.update_version()) {
         render_update_banner(frame, version, app.current_version(), area, ui);
     }
@@ -355,6 +418,8 @@ fn render_update_banner(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use crate::db::repository::RepositoryPolicy;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -364,7 +429,9 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    use crate::db::repository::{ProjectRepository, TaskRepository};
+    use crate::acp::sim::{self, SimOptions};
+    use crate::config::AgentProfile;
+    use crate::db::repository::{NoteRepository, ProjectRepository, TaskRepository};
     use crate::db::stub::StubRepository;
     use crate::domain::task::{Priority, Status};
     use crate::screens::AUTO_REFRESH_INTERVAL;
@@ -1198,5 +1265,237 @@ mod tests {
         // No global clock survives the loop: the base context stays static.
         assert_eq!(base.frame_time(), None);
         assert!(!base.animating());
+    }
+
+    /// Event source fed by a real channel, so the agent bridge and the loop run
+    /// exactly as in production. It stops the loop after the turn ends and can
+    /// inject `Ctrl+x` once the first streamed update proves the prompt is in
+    /// flight.
+    struct ChannelSource {
+        receiver: tokio::sync::mpsc::UnboundedReceiver<TuiEvent>,
+        sender: tokio::sync::mpsc::UnboundedSender<TuiEvent>,
+        stop: Arc<AtomicBool>,
+        cancel_on_first_update: bool,
+    }
+
+    impl EventSource for ChannelSource {
+        async fn next_event(&mut self) -> anyhow::Result<TuiEvent> {
+            let event = match self.receiver.recv().await {
+                Some(event) => event,
+                None => {
+                    self.stop.store(true, Ordering::Relaxed);
+                    return Ok(TuiEvent::Tick);
+                }
+            };
+            if self.cancel_on_first_update && matches!(event, TuiEvent::Agent(_)) {
+                self.cancel_on_first_update = false;
+                let _ = self.sender.send(TuiEvent::Input(ctrl_x_event()));
+            }
+            if matches!(event, TuiEvent::AgentFinished(_)) {
+                self.stop.store(true, Ordering::Relaxed);
+            }
+            Ok(event)
+        }
+    }
+
+    fn ctrl_x_event() -> Event {
+        Event::Key(KeyEvent {
+            code: KeyCode::Char('x'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::empty(),
+        })
+    }
+
+    fn agent_app() -> (Arc<StubRepository>, App, tempfile::TempDir, i64) {
+        let repo = Arc::new(StubRepository::default());
+        let workspace = tempfile::tempdir().unwrap();
+        let project = repo
+            .create_project("Alpha", "", Some(workspace.path().to_str().unwrap()))
+            .unwrap();
+        let project_id = project.id.unwrap();
+        let version_id = repo.default_version_id(project_id).unwrap();
+        let task_id = repo
+            .create_task(
+                project_id,
+                version_id,
+                "Implement C3",
+                "## Context\n\nctx\n\n## Requirements\n\nreq\n\n## Benefits\n\nben",
+                Status::Todo,
+                Priority::High,
+            )
+            .unwrap()
+            .id
+            .unwrap();
+        let mut app = App::new(repo.clone());
+        app.set_agent_profiles(BTreeMap::from([(
+            "sim".to_string(),
+            AgentProfile {
+                command: "unused".to_string(),
+                args: Vec::new(),
+                env: BTreeMap::new(),
+            },
+        )]));
+        app.dispatch(Action::Navigate(Screen::VersionDashboard {
+            project_id,
+            version_id,
+        }));
+        (repo, app, workspace, task_id)
+    }
+
+    /// Starts a simulated turn the same way the loop does once a profile has
+    /// been launched: register the session and send the prepared prompt.
+    async fn start_simulated_turn(
+        app: &mut App,
+        sessions: &mut AgentSessions,
+        repo: Arc<StubRepository>,
+        workspace: &std::path::Path,
+        task_id: i64,
+        options: SimOptions,
+    ) -> (crate::acp::SessionId, sim::SimAgent, String) {
+        app.dispatch(Action::ImplementTask { task_id });
+        let request = app.take_agent_request().expect("the run is queued");
+        let expected_prompt = request.prepared.prompt.clone();
+        let (client, agent) = sim::spawn(options).await;
+        client.initialize().await.unwrap();
+        let session = client.new_session(workspace).await.unwrap();
+        sessions
+            .start_prompt(
+                client,
+                session.clone(),
+                &request.agent,
+                request.prepared.task_id,
+                request.prepared.prompt,
+                repo,
+            )
+            .unwrap();
+        app.agent_session_started(session.clone());
+        (session, agent, expected_prompt)
+    }
+
+    fn channel_sessions() -> (
+        tokio::sync::mpsc::UnboundedSender<TuiEvent>,
+        tokio::sync::mpsc::UnboundedReceiver<TuiEvent>,
+        AgentSessions,
+    ) {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let sessions = AgentSessions::new(sender.clone());
+        (sender, receiver, sessions)
+    }
+
+    #[tokio::test]
+    async fn c3_sends_a_task_to_a_simulated_agent_and_records_the_result() {
+        let (repo, mut app, workspace, task_id) = agent_app();
+        let (sender, receiver, mut sessions) = channel_sessions();
+        let (_session, mut agent, expected_prompt) = start_simulated_turn(
+            &mut app,
+            &mut sessions,
+            repo.clone(),
+            workspace.path(),
+            task_id,
+            SimOptions {
+                updates: vec![
+                    serde_json::json!({
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": { "type": "text", "text": "Implemented C3" },
+                    }),
+                    serde_json::json!({
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": { "type": "text", "text": " and verified it." },
+                    }),
+                ],
+                ..SimOptions::default()
+            },
+        )
+        .await;
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut source = ChannelSource {
+            receiver,
+            sender,
+            stop: stop.clone(),
+            cancel_on_first_update: false,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+
+        drive(
+            &mut app,
+            &mut terminal,
+            &mut source,
+            &stop,
+            &UiContext::default(),
+            &mut sessions,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            repo.get_task(task_id).unwrap().status,
+            Status::InProgress,
+            "the user keeps the final verification"
+        );
+        let notes = repo.list_task_notes(task_id).unwrap();
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].content.contains("end_turn"), "{notes:?}");
+        assert!(
+            notes[0].content.contains("Implemented C3 and verified it."),
+            "{notes:?}"
+        );
+        assert!(app.agent_run().is_none(), "the run is closed");
+        assert!(sessions.is_empty(), "the agent was shut down");
+        let prompt = agent.prompt_params().expect("session/prompt was sent");
+        assert_eq!(
+            prompt["prompt"][0]["text"].as_str(),
+            Some(expected_prompt.as_str())
+        );
+        assert!(agent.finished().await);
+    }
+
+    #[tokio::test]
+    async fn c3_ctrl_x_cancels_the_running_turn_and_notes_the_partial_output() {
+        let (repo, mut app, workspace, task_id) = agent_app();
+        let (sender, receiver, mut sessions) = channel_sessions();
+        let (_session, mut agent, _prompt) = start_simulated_turn(
+            &mut app,
+            &mut sessions,
+            repo.clone(),
+            workspace.path(),
+            task_id,
+            SimOptions {
+                updates: vec![serde_json::json!({
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": { "type": "text", "text": "working" },
+                })],
+                wait_for_cancel: true,
+                ..SimOptions::default()
+            },
+        )
+        .await;
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut source = ChannelSource {
+            receiver,
+            sender,
+            stop: stop.clone(),
+            cancel_on_first_update: true,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+
+        drive(
+            &mut app,
+            &mut terminal,
+            &mut source,
+            &stop,
+            &UiContext::default(),
+            &mut sessions,
+        )
+        .await
+        .unwrap();
+
+        let notes = repo.list_task_notes(task_id).unwrap();
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].content.contains("cancelled"), "{notes:?}");
+        assert!(notes[0].content.contains("working"), "{notes:?}");
+        assert_eq!(repo.get_task(task_id).unwrap().status, Status::InProgress);
+        assert!(agent.was_cancelled());
+        assert!(agent.finished().await);
     }
 }

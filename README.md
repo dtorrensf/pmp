@@ -92,6 +92,21 @@ shows it above the description. The path must be absolute and is normalized
 Projects without one keep working normally: only flows that operate on the
 filesystem, such as launching an ACP agent, require it.
 
+### Implementing a task with an agent
+
+From a version's task list, select a task and press **i**. PMP checks that the
+task is not done, that every dependency is finished and that the project's
+working directory exists; if anything is missing it explains why and launches
+nothing. It then starts the configured ACP agent in that directory with the
+same implementation prompt the MCP `implement-task` prompt renders, marks the
+task **in progress** and shows the streamed updates above the footer.
+
+While the agent works, **Ctrl+x** asks it to stop. When the turn ends, PMP
+appends a note with the agent's output and leaves the task in progress: the
+final verification and the decision to mark it done stay with you. The agent
+profiles come from `[agents.<name>]`; with more than one configured, a picker
+asks which one to use.
+
 ### Configuration
 
 All settings live in one optional file, `~/.config/pmp/config.toml` (under

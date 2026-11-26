@@ -8,6 +8,7 @@ use std::time::Instant;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::acp::SessionId;
+use crate::config::AgentProfile;
 use crate::db::repository::Repository;
 use crate::domain::error::AppError;
 use crate::screens::components::toast::{Severity, Toasts};
@@ -23,7 +24,7 @@ mod summary_actions;
 mod task_actions;
 mod version_actions;
 
-use agents::AgentActivity;
+use agents::{AgentActivity, AgentPicker, AgentRequest, AgentRun};
 use outcome::Outcome;
 
 /// Returns the current time. Boxed so tests can substitute their own clock.
@@ -59,6 +60,16 @@ pub struct App {
     update_check_cancel: Option<Arc<AtomicBool>>,
     /// Live agent sessions, fed by the TUI event loop.
     agents: BTreeMap<SessionId, AgentActivity>,
+    /// Resolved `[agents.*]` profiles from `config.toml`.
+    agent_profiles: BTreeMap<String, AgentProfile>,
+    /// The task currently being implemented by an agent, if any.
+    active_run: Option<AgentRun>,
+    /// Profile picker open while choosing the agent for a validated run.
+    agent_picker: Option<AgentPicker>,
+    /// Validated run waiting for the loop to launch it.
+    pending_agent_request: Option<AgentRequest>,
+    /// Session the loop must ask to stop.
+    pending_cancel: Option<SessionId>,
     /// Version compiled into the running binary, used in the update banner.
     /// Defaults to `CARGO_PKG_VERSION` and is overridable from tests.
     current_version: String,
@@ -90,6 +101,11 @@ impl App {
             pending_update: None,
             update_check_cancel: None,
             agents: BTreeMap::new(),
+            agent_profiles: BTreeMap::new(),
+            active_run: None,
+            agent_picker: None,
+            pending_agent_request: None,
+            pending_cancel: None,
             current_version: env!("CARGO_PKG_VERSION").to_string(),
             components: Components {
                 project_list: ProjectListScreen::new(repo.clone()),
@@ -446,6 +462,10 @@ impl App {
             Action::AddTaskNote { task_id, content } => {
                 let result = task_actions::add_note(self.repo.as_ref(), task_id, &content);
                 self.settle(result)
+            }
+            Action::ImplementTask { task_id } => {
+                self.request_task_run(task_id);
+                None
             }
             Action::ExportVersionSummary { summary_id } => {
                 let result = summary_actions::export(self.repo.as_ref(), summary_id);

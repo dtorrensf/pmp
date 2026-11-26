@@ -27,7 +27,7 @@ use crossterm::terminal::SetTitle;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::time::timeout;
 
-use crate::acp::{AcpEvent, SessionId};
+use crate::acp::{AcpEvent, SessionId, StopReason};
 
 /// How long the input thread blocks inside `crossterm` before checking whether
 /// the TUI is closing. It only bounds how long the thread takes to stop; an
@@ -47,6 +47,9 @@ pub enum TuiEvent {
     /// Streamed progress from one agent session. Boxed because it is much
     /// larger than the other variants and it travels through a channel.
     Agent(Box<AgentEvent>),
+    /// The prompt turn of one agent session ended, successfully or not. The
+    /// loop records the closing note and shuts the session down with it.
+    AgentFinished(Box<AgentFinished>),
 }
 
 impl TuiEvent {
@@ -72,6 +75,27 @@ pub struct AgentEvent {
     /// Profile name the session was launched with.
     pub agent: String,
     pub event: AcpEvent,
+}
+
+/// How a prompt turn ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentRunOutcome {
+    /// The agent answered with a stop reason (`end_turn`, `cancelled`, ...).
+    Finished(StopReason),
+    /// The request failed: the connection broke, timed out or the agent
+    /// rejected it. The message is already the user-facing one.
+    Failed(String),
+}
+
+/// The end of one agent turn, delivered once by the session bridge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentFinished {
+    pub session: SessionId,
+    pub agent: String,
+    pub task_id: i64,
+    pub outcome: AgentRunOutcome,
+    /// Agent message text streamed during the turn, capped by the bridge.
+    pub transcript: String,
 }
 
 /// Where the loop gets its events from. Tests implement it with a script so

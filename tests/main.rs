@@ -70,8 +70,8 @@ fn main_rs_injects_the_resolved_configuration() {
         "main.rs must inject the MCP timeout"
     );
     assert!(
-        source.contains("config.appearance"),
-        "main.rs must inject the appearance settings"
+        source.contains("pmp::tui::run(app, &config)"),
+        "main.rs must inject the resolved configuration (appearance and agents)"
     );
     assert!(
         source.contains("logging::init"),

@@ -64,6 +64,7 @@ impl VersionDashboard {
         (key(KeyCode::Char('x')), "Clear filters"),
         (key(KeyCode::Char('o')), "Sort"),
         (key(KeyCode::Char('m')), "Move"),
+        (key(KeyCode::Char('i')), "Implement"),
         (key(KeyCode::Char('s')), "Summary"),
         (key(KeyCode::Char('e')), "Export"),
         (key(KeyCode::Char('c')), "New"),
@@ -231,9 +232,8 @@ impl Component for VersionDashboard {
     fn help_sections(&self) -> Vec<HelpSection> {
         help::sections(self.keybindings(), |label| match label {
             "Down" | "Up" => help::NAVIGATION,
-            "New" | "Edit" | "Cycle" | "Delete" | "Filter" | "Clear filters" | "Sort" | "Move" => {
-                help::TASKS
-            }
+            "New" | "Edit" | "Cycle" | "Delete" | "Filter" | "Clear filters" | "Sort" | "Move"
+            | "Implement" => help::TASKS,
             "Summary" | "Export" => help::VERSIONS,
             _ => help::APPLICATION,
         })
@@ -262,6 +262,14 @@ impl Component for VersionDashboard {
                 match code {
                     KeyCode::Char('r') => return Some(Action::Refresh),
                     KeyCode::Char('m') => return self.open_move_popup(),
+                    KeyCode::Char('i') => {
+                        return self
+                            .view
+                            .tasks()
+                            .get(self.view.selected())
+                            .and_then(|task| task.id)
+                            .map(|task_id| Action::ImplementTask { task_id });
+                    }
                     KeyCode::Char('c') => {
                         return Some(Action::Navigate(Screen::TaskForm {
                             version_id: self.version_id,
@@ -460,6 +468,7 @@ mod tests {
                 (KeyCode::Char('x'), "Clear filters"),
                 (KeyCode::Char('o'), "Sort"),
                 (KeyCode::Char('m'), "Move"),
+                (KeyCode::Char('i'), "Implement"),
                 (KeyCode::Char('s'), "Summary"),
                 (KeyCode::Char('e'), "Export"),
                 (KeyCode::Char('c'), "New"),
@@ -735,6 +744,25 @@ mod tests {
             VersionStatus::Open
         );
         assert!(!screen.tasks().is_empty(), "pending tasks must remain");
+    }
+
+    #[test]
+    fn i_key_emits_implement_task_for_the_selected_task() {
+        let (_repo, mut screen, _project_id) = setup_with_tasks();
+        screen.view.set_selected(1);
+        let task_id = screen.tasks()[1].id.unwrap();
+        let action = screen.handle_event(&key_event(KeyCode::Char('i')));
+        assert_eq!(action, Some(Action::ImplementTask { task_id }));
+    }
+
+    #[test]
+    fn i_key_without_tasks_does_nothing() {
+        let repo = Arc::new(StubRepository::default());
+        let project_id = repo.create_project("Empty", "", None).unwrap().id.unwrap();
+        let mut screen = VersionDashboard::new(repo.clone());
+        screen.set_ids(project_id, repo.default_version_id(project_id).unwrap());
+        screen.init().unwrap();
+        assert_eq!(screen.handle_event(&key_event(KeyCode::Char('i'))), None);
     }
 
     #[test]
