@@ -64,6 +64,47 @@ pub const DEFAULT_PALETTE: &str = "default";
 /// Name of the high-contrast (bright ANSI) palette.
 pub const BRIGHT_PALETTE: &str = "bright";
 
+/// Every semantic color token accepted in `[appearance.tokens]` and the
+/// legacy theme file, in a stable order.
+pub const TOKEN_NAMES: [&str; 21] = [
+    "bg",
+    "surface",
+    "border",
+    "border_focus",
+    "text",
+    "muted",
+    "accent",
+    "success",
+    "warning",
+    "danger",
+    "selection_bg",
+    "selection_fg",
+    "status_todo",
+    "status_in_progress",
+    "status_done",
+    "priority_high",
+    "priority_medium",
+    "priority_low",
+    "version_backlog",
+    "version_open",
+    "version_released",
+];
+
+/// Whether `name` is a palette built into PMP.
+pub fn is_valid_palette(name: &str) -> bool {
+    matches!(name, DEFAULT_PALETTE | BRIGHT_PALETTE)
+}
+
+/// Whether `name` is a semantic color token PMP knows.
+pub fn is_valid_token(name: &str) -> bool {
+    TOKEN_NAMES.contains(&name)
+}
+
+/// Whether `value` is a color `ratatui` can parse (a name or `#rrggbb`).
+pub fn is_valid_color(value: &str) -> bool {
+    Color::from_str(value).is_ok()
+}
+
 /// The semantic tokens used across the app.
 ///
 /// Colors are always stored as concrete values so they can be inspected and
@@ -228,6 +269,10 @@ impl Theme {
                 return;
             }
         };
+        if !is_valid_token(name) {
+            tracing::warn!(token = name, "ignoring unknown color token");
+            return;
+        }
         let slot = match name {
             "bg" => &mut self.bg,
             "surface" => &mut self.surface,
@@ -612,6 +657,31 @@ mod tests {
 
     fn no_env(_: &str) -> Option<String> {
         None
+    }
+
+    #[test]
+    fn every_documented_token_has_a_real_slot() {
+        for name in TOKEN_NAMES {
+            let mut theme = Theme::default_theme();
+            theme.apply_override(name, "#010203");
+            assert_ne!(
+                theme,
+                Theme::default_theme(),
+                "token {name:?} is documented but has no destination field"
+            );
+        }
+    }
+
+    #[test]
+    fn palette_and_token_validators_cover_the_documented_names() {
+        assert!(is_valid_palette(DEFAULT_PALETTE));
+        assert!(is_valid_palette(BRIGHT_PALETTE));
+        assert!(!is_valid_palette("neon"));
+        assert!(is_valid_token("accent"));
+        assert!(!is_valid_token("not_a_token"));
+        assert!(is_valid_color("#7aa2f7"));
+        assert!(is_valid_color("red"));
+        assert!(!is_valid_color("no-such-color"));
     }
 
     #[test]

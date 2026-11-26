@@ -262,3 +262,102 @@ fn binary_invalid_arg_prints_help_and_exits_with_error() {
         "stderr should contain usage help"
     );
 }
+
+fn config_command(config_home: &std::path::Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_pmp"));
+    command
+        .env("XDG_CONFIG_HOME", config_home)
+        .env("XDG_DATA_HOME", config_home);
+    command
+}
+
+#[test]
+fn binary_config_round_trips_with_an_isolated_xdg_config_home() {
+    let config_home = tempfile::tempdir().unwrap();
+
+    let path = config_command(config_home.path())
+        .args(["config", "path"])
+        .output()
+        .expect("pmp config path should spawn");
+    assert!(path.status.success(), "{path:?}");
+    let expected = config_home.path().join("pmp/config.toml");
+    assert_eq!(
+        String::from_utf8_lossy(&path.stdout).trim(),
+        expected.display().to_string()
+    );
+
+    let set = config_command(config_home.path())
+        .args(["config", "set", "logging.level", "debug"])
+        .output()
+        .expect("pmp config set should spawn");
+    assert!(set.status.success(), "{set:?}");
+    let text = fs::read_to_string(&expected).expect("config.toml was created");
+    assert!(text.contains("level = \"debug\""), "{text}");
+
+    let get = config_command(config_home.path())
+        .args(["config", "get", "logging.level"])
+        .output()
+        .expect("pmp config get should spawn");
+    assert!(get.status.success(), "{get:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&get.stdout).trim(),
+        "logging.level = debug (config.toml)"
+    );
+
+    let list = config_command(config_home.path())
+        .args(["config", "list"])
+        .output()
+        .expect("pmp config list should spawn");
+    assert!(list.status.success(), "{list:?}");
+    assert!(String::from_utf8_lossy(&list.stdout).contains("logging.level = debug (config.toml)"));
+}
+
+#[test]
+fn binary_config_never_prints_or_edits_agent_secrets() {
+    let config_home = tempfile::tempdir().unwrap();
+    let config_dir = config_home.path().join("pmp");
+    fs::create_dir_all(&config_dir).unwrap();
+    let config_file = config_dir.join("config.toml");
+    fs::write(
+        &config_file,
+        "[agents.sim]\ncommand = \"sim-acp\"\nenv = { API_KEY = \"super-secret\" }\n",
+    )
+    .unwrap();
+
+    let list = config_command(config_home.path())
+        .args(["config", "list"])
+        .output()
+        .expect("pmp config list should spawn");
+    assert!(list.status.success(), "{list:?}");
+    let stdout = String::from_utf8_lossy(&list.stdout);
+    assert!(stdout.contains("1 variable(s) (hidden)"), "{stdout}");
+    assert!(!stdout.contains("super-secret"), "{stdout}");
+
+    let edit = config_command(config_home.path())
+        .args(["config", "set", "agents.sim.env", "API_KEY=other"])
+        .output()
+        .expect("pmp config set should spawn");
+    assert!(!edit.status.success(), "editing secrets must fail");
+    assert!(
+        String::from_utf8_lossy(&edit.stderr).contains("contains secrets"),
+        "{edit:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(&config_file).unwrap(),
+        "[agents.sim]\ncommand = \"sim-acp\"\nenv = { API_KEY = \"super-secret\" }\n"
+    );
+}
+
+#[test]
+fn binary_config_help_lists_the_commands() {
+    let config_home = tempfile::tempdir().unwrap();
+    let output = config_command(config_home.path())
+        .args(["config", "--help"])
+        .output()
+        .expect("pmp config --help should spawn");
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for command in ["list", "path", "get", "set", "reset"] {
+        assert!(stdout.contains(command), "missing {command} in:\n{stdout}");
+    }
+}

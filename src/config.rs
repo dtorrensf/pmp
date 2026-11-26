@@ -81,6 +81,13 @@ pub const LOG_FILE_ENV: &str = "PMP_LOG_FILE";
 
 const LOG_LEVELS: [&str; 5] = ["trace", "debug", "info", "warn", "error"];
 
+/// Whether `value` is one of the accepted logging levels, ignoring case and
+/// surrounding whitespace.
+pub fn is_valid_log_level(value: &str) -> bool {
+    let value = value.trim().to_ascii_lowercase();
+    LOG_LEVELS.contains(&value.as_str())
+}
+
 /// Resolved configuration for the whole process.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Config {

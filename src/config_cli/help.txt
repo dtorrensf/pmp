@@ -1,0 +1,32 @@
+pmp config - inspect and edit ~/.config/pmp/config.toml
+
+Usage: pmp config <command>
+
+Commands:
+  list                    Show every effective value and its source
+  path                    Print the resolved config.toml path
+  get [key|section]       Show one value, a section or everything
+  set <key> <value>       Edit config.toml preserving comments and format
+  reset <section>         Remove a section from config.toml
+
+Settable keys:
+  appearance.palette                 default | bright
+  appearance.colors                  true | false
+  appearance.ascii                   true | false
+  appearance.reduced_motion          true | false
+  appearance.tokens.<token>          color name or #rrggbb
+  database.busy_timeout_ms           positive integer
+  database.retry_attempts            1..=100
+  database.retry_base_delay_ms       positive integer
+  database.retry_max_delay_ms        positive integer
+  mcp.timeout_secs                   positive integer
+  logging.level                      trace | debug | info | warn | error
+  logging.file                       file name, or "" to disable
+  agents.<name>.command              non-empty command
+  agents.<name>.args                 TOML array, e.g. '["--stdio"]'
+
+Environment variables win over the file. `list` and `get` show the layer
+that produced each value (default, config.toml, theme.toml or environment).
+
+Agent profile env tables contain secrets: they are hidden from `get`/`list`
+and cannot be edited here. Edit config.toml directly for those.

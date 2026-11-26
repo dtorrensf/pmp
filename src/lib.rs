@@ -4,6 +4,7 @@ pub mod acp;
 pub mod app;
 pub mod application;
 pub mod config;
+pub mod config_cli;
 pub mod db;
 pub mod doctor;
 pub mod domain;

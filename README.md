@@ -149,6 +149,30 @@ an invalid value is logged and replaced by the previous layer, never fatal. A
 zero or negative timeout, an out-of-range retry count, an unknown log level or
 an agent profile without a `command` all fall back safely.
 
+#### Inspecting and editing the configuration
+
+`pmp config` reads and writes the same `config.toml` without starting the TUI
+or the MCP server:
+
+```bash
+pmp config path                       # ~/.config/pmp/config.toml
+pmp config list                       # effective values and their source layer
+pmp config get logging.level          # debug (config.toml)
+pmp config get appearance             # every appearance value
+pmp config set logging.level debug    # edit, preserving comments and format
+pmp config set agents.claude.command claude-code-acp
+pmp config set agents.claude.args '["--stdio"]'
+pmp config reset appearance.tokens    # remove one section
+```
+
+`list` and `get` show whether each value comes from the defaults,
+`config.toml`, the legacy `theme.toml` or an environment variable. `set`
+validates with the same rules as the parser (known palettes and tokens, valid
+colors, positive integers, valid log levels, `1..=100` retry attempts) and
+refuses to rewrite a malformed file. Agent profile `env` tables contain
+credentials: they are hidden as `N variable(s) (hidden)` and cannot be edited
+through this command; edit `config.toml` directly for those.
+
 #### Appearance and environment
 
 PMP uses the terminal's own ANSI palette, so it adapts to light and dark themes without extra configuration. The appearance values can also come from the environment, which wins over the file:
@@ -305,6 +329,7 @@ the code instead of matching message text:
 ```bash
 pmp              # Start the interactive TUI
 pmp mcp          # Start the MCP server
+pmp config       # Inspect or edit config.toml without starting the app
 pmp doctor       # Print environment and database diagnostics
 pmp --version    # Print version (also -v)
 pmp --help       # Print help (also -h)

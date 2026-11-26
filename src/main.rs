@@ -18,6 +18,7 @@ async fn main() -> anyhow::Result<()> {
         Some("-v" | "--version") => println!("{}", env!("CARGO_PKG_VERSION")),
         Some("-h" | "--help") => println!("{}", HELP),
         Some("doctor") => std::process::exit(pmp::doctor::run(&config)),
+        Some("config") => std::process::exit(pmp::config_cli::run(&args[2..])),
         Some("mcp") => {
             let paths = Paths::discover()?;
             pmp::logging::init(&config.logging, &paths.logs_dir);

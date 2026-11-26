@@ -8,6 +8,7 @@ Options:
 
 Commands:
   mcp              Start the MCP server
+  config           Inspect or edit config.toml without starting the app
   doctor           Print environment and database diagnostics
   (no command)     Start the interactive TUI (default)
 
