@@ -23,6 +23,30 @@ expression: tools
         "depends_on_id"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "depends_on_id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "task_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "task_id",
+        "depends_on_id"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -44,6 +68,40 @@ expression: tools
         "content"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "id": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "task_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "task_id",
+        "content",
+        "created_at"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
     }
   },
   {
@@ -76,6 +134,81 @@ expression: tools
         "project_id"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Status": {
+          "enum": [
+            "todo",
+            "in_progress",
+            "done"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "completed_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "priority": {
+          "description": "Priority: 1 = Low, 2 = Medium, 3 = High.",
+          "enum": [
+            1,
+            2,
+            3
+          ],
+          "maximum": 3,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "project_id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "version_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "version_id",
+        "name",
+        "description",
+        "status",
+        "priority",
+        "created_at"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
     }
   },
   {
@@ -104,6 +237,48 @@ expression: tools
         "summary"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "created_at": {
+          "type": "string"
+        },
+        "generated_at": {
+          "type": "string"
+        },
+        "id": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "snapshot_json": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "version_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version_id",
+        "summary",
+        "snapshot_json",
+        "generated_at",
+        "created_at"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
     }
   },
   {
@@ -133,6 +308,46 @@ expression: tools
         "name"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "created_at": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "working_dir": {
+          "description": "Absolute, normalized location of the project's workspace on disk.\nProjects created before the field existed keep `None`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "created_at"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
     }
   },
   {
@@ -187,6 +402,81 @@ expression: tools
         "benefits"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Status": {
+          "enum": [
+            "todo",
+            "in_progress",
+            "done"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "completed_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "priority": {
+          "description": "Priority: 1 = Low, 2 = Medium, 3 = High.",
+          "enum": [
+            1,
+            2,
+            3
+          ],
+          "maximum": 3,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "project_id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "version_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "version_id",
+        "name",
+        "description",
+        "status",
+        "priority",
+        "created_at"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
     }
   },
   {
@@ -235,6 +525,58 @@ expression: tools
         "name"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "VersionStatus": {
+          "enum": [
+            "backlog",
+            "open",
+            "released"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "created_at": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "project_id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/VersionStatus"
+        }
+      },
+      "required": [
+        "project_id",
+        "name",
+        "description",
+        "status",
+        "created_at"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
     }
   },
   {
@@ -256,6 +598,85 @@ expression: tools
         "project_id"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Removed": {
+          "description": "What a deletion removed, including everything dropped in cascade.",
+          "properties": {
+            "summaries": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "tasks": {
+              "$ref": "#/$defs/TaskCounts"
+            },
+            "versions": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "versions",
+            "tasks",
+            "summaries"
+          ],
+          "type": "object"
+        },
+        "TaskCounts": {
+          "description": "Task counts by status.",
+          "properties": {
+            "done": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "in_progress": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "todo": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "todo",
+            "in_progress",
+            "done"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "removed": {
+          "$ref": "#/$defs/Removed"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "removed"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -277,6 +698,85 @@ expression: tools
         "task_id"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Removed": {
+          "description": "What a deletion removed, including everything dropped in cascade.",
+          "properties": {
+            "summaries": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "tasks": {
+              "$ref": "#/$defs/TaskCounts"
+            },
+            "versions": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "versions",
+            "tasks",
+            "summaries"
+          ],
+          "type": "object"
+        },
+        "TaskCounts": {
+          "description": "Task counts by status.",
+          "properties": {
+            "done": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "in_progress": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "todo": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "todo",
+            "in_progress",
+            "done"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "removed": {
+          "$ref": "#/$defs/Removed"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "removed"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -294,6 +794,25 @@ expression: tools
         "note_id"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "note_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "note_id"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -315,6 +834,85 @@ expression: tools
         "version_id"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Removed": {
+          "description": "What a deletion removed, including everything dropped in cascade.",
+          "properties": {
+            "summaries": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "tasks": {
+              "$ref": "#/$defs/TaskCounts"
+            },
+            "versions": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "versions",
+            "tasks",
+            "summaries"
+          ],
+          "type": "object"
+        },
+        "TaskCounts": {
+          "description": "Task counts by status.",
+          "properties": {
+            "done": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "in_progress": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "todo": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "todo",
+            "in_progress",
+            "done"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "removed": {
+          "$ref": "#/$defs/Removed"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "removed"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -338,6 +936,25 @@ expression: tools
         "summary_id"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "summary_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "summary_id"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -355,6 +972,24 @@ expression: tools
         "summary_id"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
     }
   },
   {
@@ -372,6 +1007,95 @@ expression: tools
         "project_id"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Project": {
+          "properties": {
+            "created_at": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "id": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "name": {
+              "type": "string"
+            },
+            "working_dir": {
+              "description": "Absolute, normalized location of the project's workspace on disk.\nProjects created before the field existed keep `None`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "name",
+            "description",
+            "created_at"
+          ],
+          "type": "object"
+        },
+        "TaskCounts": {
+          "description": "Task counts by status.",
+          "properties": {
+            "done": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "in_progress": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "todo": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "todo",
+            "in_progress",
+            "done"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "project": {
+          "$ref": "#/$defs/Project"
+        },
+        "tasks": {
+          "$ref": "#/$defs/TaskCounts"
+        },
+        "versions": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project",
+        "versions",
+        "tasks"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -389,6 +1113,166 @@ expression: tools
         "task_id"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Status": {
+          "enum": [
+            "todo",
+            "in_progress",
+            "done"
+          ],
+          "type": "string"
+        },
+        "Task": {
+          "properties": {
+            "completed_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "created_at": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "id": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "name": {
+              "type": "string"
+            },
+            "priority": {
+              "description": "Priority: 1 = Low, 2 = Medium, 3 = High.",
+              "enum": [
+                1,
+                2,
+                3
+              ],
+              "maximum": 3,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "project_id": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "status": {
+              "$ref": "#/$defs/Status"
+            },
+            "version_id": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "project_id",
+            "version_id",
+            "name",
+            "description",
+            "status",
+            "priority",
+            "created_at"
+          ],
+          "type": "object"
+        },
+        "TaskNote": {
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string"
+            },
+            "id": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "task_id": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "task_id",
+            "content",
+            "created_at"
+          ],
+          "type": "object"
+        },
+        "TaskSections": {
+          "description": "The three sections of a task description, as written by `compose_description`.",
+          "properties": {
+            "benefits": {
+              "type": "string"
+            },
+            "context": {
+              "type": "string"
+            },
+            "requirements": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "context",
+            "requirements",
+            "benefits"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "blocks": {
+          "items": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "depends_on": {
+          "items": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "recent_notes": {
+          "items": {
+            "$ref": "#/$defs/TaskNote"
+          },
+          "type": "array"
+        },
+        "sections": {
+          "$ref": "#/$defs/TaskSections"
+        },
+        "task": {
+          "$ref": "#/$defs/Task"
+        }
+      },
+      "required": [
+        "task",
+        "sections",
+        "recent_notes",
+        "depends_on",
+        "blocks"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -406,6 +1290,89 @@ expression: tools
         "task_id"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Status": {
+          "enum": [
+            "todo",
+            "in_progress",
+            "done"
+          ],
+          "type": "string"
+        },
+        "TaskRef": {
+          "description": "A task named from a dependency edge: enough to identify it and judge whether\nit is finished.",
+          "properties": {
+            "id": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "name": {
+              "type": "string"
+            },
+            "priority": {
+              "description": "Priority: 1 = Low, 2 = Medium, 3 = High.",
+              "enum": [
+                1,
+                2,
+                3
+              ],
+              "maximum": 3,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "status": {
+              "$ref": "#/$defs/Status"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "status",
+            "priority"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "blocked_by": {
+          "description": "Tasks this one waits for.",
+          "items": {
+            "$ref": "#/$defs/TaskRef"
+          },
+          "type": "array"
+        },
+        "blocks": {
+          "description": "Tasks waiting for this one.",
+          "items": {
+            "$ref": "#/$defs/TaskRef"
+          },
+          "type": "array"
+        },
+        "ready": {
+          "description": "Todo and every blocker is done: the task can be claimed now.",
+          "type": "boolean"
+        },
+        "task_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "task_id",
+        "ready",
+        "blocked_by",
+        "blocks"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -423,6 +1390,89 @@ expression: tools
         "task_id"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Status": {
+          "enum": [
+            "todo",
+            "in_progress",
+            "done"
+          ],
+          "type": "string"
+        },
+        "TaskRef": {
+          "description": "A task named from a dependency edge: enough to identify it and judge whether\nit is finished.",
+          "properties": {
+            "id": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "name": {
+              "type": "string"
+            },
+            "priority": {
+              "description": "Priority: 1 = Low, 2 = Medium, 3 = High.",
+              "enum": [
+                1,
+                2,
+                3
+              ],
+              "maximum": 3,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "status": {
+              "$ref": "#/$defs/Status"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "status",
+            "priority"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "blocked_by": {
+          "description": "Tasks this one waits for.",
+          "items": {
+            "$ref": "#/$defs/TaskRef"
+          },
+          "type": "array"
+        },
+        "blocks": {
+          "description": "Tasks waiting for this one.",
+          "items": {
+            "$ref": "#/$defs/TaskRef"
+          },
+          "type": "array"
+        },
+        "ready": {
+          "description": "Todo and every blocker is done: the task can be claimed now.",
+          "type": "boolean"
+        },
+        "task_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "task_id",
+        "ready",
+        "blocked_by",
+        "blocks"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -440,6 +1490,105 @@ expression: tools
         "version_id"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "TaskCounts": {
+          "description": "Task counts by status.",
+          "properties": {
+            "done": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "in_progress": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "todo": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "todo",
+            "in_progress",
+            "done"
+          ],
+          "type": "object"
+        },
+        "Version": {
+          "properties": {
+            "created_at": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "id": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "name": {
+              "type": "string"
+            },
+            "project_id": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "status": {
+              "$ref": "#/$defs/VersionStatus"
+            }
+          },
+          "required": [
+            "project_id",
+            "name",
+            "description",
+            "status",
+            "created_at"
+          ],
+          "type": "object"
+        },
+        "VersionStatus": {
+          "enum": [
+            "backlog",
+            "open",
+            "released"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "summaries": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tasks": {
+          "$ref": "#/$defs/TaskCounts"
+        },
+        "version": {
+          "$ref": "#/$defs/Version"
+        }
+      },
+      "required": [
+        "version",
+        "tasks",
+        "summaries"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -448,6 +1597,62 @@ expression: tools
     "inputSchema": {
       "properties": {},
       "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Project": {
+          "properties": {
+            "created_at": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "id": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "name": {
+              "type": "string"
+            },
+            "working_dir": {
+              "description": "Absolute, normalized location of the project's workspace on disk.\nProjects created before the field existed keep `None`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "name",
+            "description",
+            "created_at"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/Project"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -498,6 +1703,134 @@ expression: tools
         "project_id"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Status": {
+          "enum": [
+            "todo",
+            "in_progress",
+            "done"
+          ],
+          "type": "string"
+        },
+        "TaskSummary": {
+          "description": "Lightweight view of a task for listings: identity, state, timestamps and\ndependency counters. The description is included only on request.",
+          "properties": {
+            "blocks_count": {
+              "description": "Tasks waiting for this one.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "completed_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "created_at": {
+              "type": "string"
+            },
+            "depends_on_count": {
+              "description": "Tasks this one waits for.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "name": {
+              "type": "string"
+            },
+            "priority": {
+              "description": "Priority: 1 = Low, 2 = Medium, 3 = High.",
+              "enum": [
+                1,
+                2,
+                3
+              ],
+              "maximum": 3,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "project_id": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "status": {
+              "$ref": "#/$defs/Status"
+            },
+            "version_id": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "project_id",
+            "version_id",
+            "name",
+            "status",
+            "priority",
+            "created_at",
+            "depends_on_count",
+            "blocks_count"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "has_more": {
+          "type": "boolean"
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "offset": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tasks": {
+          "items": {
+            "$ref": "#/$defs/TaskSummary"
+          },
+          "type": "array"
+        },
+        "total": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "tasks",
+        "total",
+        "limit",
+        "offset",
+        "has_more"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -533,6 +1866,78 @@ expression: tools
         "task_id"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "TaskNote": {
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string"
+            },
+            "id": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "task_id": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "task_id",
+            "content",
+            "created_at"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "has_more": {
+          "type": "boolean"
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "notes": {
+          "items": {
+            "$ref": "#/$defs/TaskNote"
+          },
+          "type": "array"
+        },
+        "offset": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "total": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "notes",
+        "total",
+        "limit",
+        "offset",
+        "has_more"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -661,6 +2066,134 @@ expression: tools
         "project_id"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Status": {
+          "enum": [
+            "todo",
+            "in_progress",
+            "done"
+          ],
+          "type": "string"
+        },
+        "TaskSummary": {
+          "description": "Lightweight view of a task for listings: identity, state, timestamps and\ndependency counters. The description is included only on request.",
+          "properties": {
+            "blocks_count": {
+              "description": "Tasks waiting for this one.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "completed_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "created_at": {
+              "type": "string"
+            },
+            "depends_on_count": {
+              "description": "Tasks this one waits for.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "name": {
+              "type": "string"
+            },
+            "priority": {
+              "description": "Priority: 1 = Low, 2 = Medium, 3 = High.",
+              "enum": [
+                1,
+                2,
+                3
+              ],
+              "maximum": 3,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "project_id": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "status": {
+              "$ref": "#/$defs/Status"
+            },
+            "version_id": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "project_id",
+            "version_id",
+            "name",
+            "status",
+            "priority",
+            "created_at",
+            "depends_on_count",
+            "blocks_count"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "has_more": {
+          "type": "boolean"
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "offset": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tasks": {
+          "items": {
+            "$ref": "#/$defs/TaskSummary"
+          },
+          "type": "array"
+        },
+        "total": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "tasks",
+        "total",
+        "limit",
+        "offset",
+        "has_more"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -696,6 +2229,87 @@ expression: tools
         "version_id"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "VersionSummary": {
+          "description": "Frozen summary of a compacted version.\n\nA version may hold at most one summary (`UNIQUE(version_id)`): once it is\ncompacted, its tasks live only inside `snapshot_json` and the human readable\nprose is kept in `summary`.",
+          "properties": {
+            "created_at": {
+              "type": "string"
+            },
+            "generated_at": {
+              "type": "string"
+            },
+            "id": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "snapshot_json": {
+              "type": "string"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "version_id": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "version_id",
+            "summary",
+            "snapshot_json",
+            "generated_at",
+            "created_at"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "has_more": {
+          "type": "boolean"
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "offset": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "summaries": {
+          "items": {
+            "$ref": "#/$defs/VersionSummary"
+          },
+          "type": "array"
+        },
+        "total": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "summaries",
+        "total",
+        "limit",
+        "offset",
+        "has_more"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -713,6 +2327,72 @@ expression: tools
         "project_id"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Version": {
+          "properties": {
+            "created_at": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "id": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "name": {
+              "type": "string"
+            },
+            "project_id": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "status": {
+              "$ref": "#/$defs/VersionStatus"
+            }
+          },
+          "required": [
+            "project_id",
+            "name",
+            "description",
+            "status",
+            "created_at"
+          ],
+          "type": "object"
+        },
+        "VersionStatus": {
+          "enum": [
+            "backlog",
+            "open",
+            "released"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/Version"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -736,6 +2416,81 @@ expression: tools
         "version_id"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Status": {
+          "enum": [
+            "todo",
+            "in_progress",
+            "done"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "completed_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "priority": {
+          "description": "Priority: 1 = Low, 2 = Medium, 3 = High.",
+          "enum": [
+            1,
+            2,
+            3
+          ],
+          "maximum": 3,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "project_id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "version_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "version_id",
+        "name",
+        "description",
+        "status",
+        "priority",
+        "created_at"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -753,6 +2508,246 @@ expression: tools
         "version_id"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Status": {
+          "enum": [
+            "todo",
+            "in_progress",
+            "done"
+          ],
+          "type": "string"
+        },
+        "Task": {
+          "properties": {
+            "completed_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "created_at": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "id": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "name": {
+              "type": "string"
+            },
+            "priority": {
+              "description": "Priority: 1 = Low, 2 = Medium, 3 = High.",
+              "enum": [
+                1,
+                2,
+                3
+              ],
+              "maximum": 3,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "project_id": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "status": {
+              "$ref": "#/$defs/Status"
+            },
+            "version_id": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "project_id",
+            "version_id",
+            "name",
+            "description",
+            "status",
+            "priority",
+            "created_at"
+          ],
+          "type": "object"
+        },
+        "TaskDependency": {
+          "properties": {
+            "depends_on_id": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "task_id": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "task_id",
+            "depends_on_id"
+          ],
+          "type": "object"
+        },
+        "TaskNote": {
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string"
+            },
+            "id": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "task_id": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "task_id",
+            "content",
+            "created_at"
+          ],
+          "type": "object"
+        },
+        "Version": {
+          "properties": {
+            "created_at": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "id": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "name": {
+              "type": "string"
+            },
+            "project_id": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "status": {
+              "$ref": "#/$defs/VersionStatus"
+            }
+          },
+          "required": [
+            "project_id",
+            "name",
+            "description",
+            "status",
+            "created_at"
+          ],
+          "type": "object"
+        },
+        "VersionStatus": {
+          "enum": [
+            "backlog",
+            "open",
+            "released"
+          ],
+          "type": "string"
+        },
+        "VersionSummary": {
+          "description": "Frozen summary of a compacted version.\n\nA version may hold at most one summary (`UNIQUE(version_id)`): once it is\ncompacted, its tasks live only inside `snapshot_json` and the human readable\nprose is kept in `summary`.",
+          "properties": {
+            "created_at": {
+              "type": "string"
+            },
+            "generated_at": {
+              "type": "string"
+            },
+            "id": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "snapshot_json": {
+              "type": "string"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "version_id": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "version_id",
+            "summary",
+            "snapshot_json",
+            "generated_at",
+            "created_at"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "dependencies": {
+          "items": {
+            "$ref": "#/$defs/TaskDependency"
+          },
+          "type": "array"
+        },
+        "notes": {
+          "items": {
+            "$ref": "#/$defs/TaskNote"
+          },
+          "type": "array"
+        },
+        "previous_summary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VersionSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tasks": {
+          "items": {
+            "$ref": "#/$defs/Task"
+          },
+          "type": "array"
+        },
+        "version": {
+          "$ref": "#/$defs/Version"
+        }
+      },
+      "required": [
+        "version",
+        "tasks",
+        "notes",
+        "dependencies"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -775,6 +2770,48 @@ expression: tools
         "summary_id"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "created_at": {
+          "type": "string"
+        },
+        "generated_at": {
+          "type": "string"
+        },
+        "id": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "snapshot_json": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "version_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version_id",
+        "summary",
+        "snapshot_json",
+        "generated_at",
+        "created_at"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -797,6 +2834,30 @@ expression: tools
         "depends_on_id"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "depends_on_id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "task_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "task_id",
+        "depends_on_id"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -823,6 +2884,33 @@ expression: tools
         "depends_on_ids"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "depends_on_ids": {
+          "items": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "task_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "task_id",
+        "depends_on_ids"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -858,6 +2946,46 @@ expression: tools
         "name"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "created_at": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "working_dir": {
+          "description": "Absolute, normalized location of the project's workspace on disk.\nProjects created before the field existed keep `None`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "created_at"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -903,6 +3031,81 @@ expression: tools
         "task_id"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Status": {
+          "enum": [
+            "todo",
+            "in_progress",
+            "done"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "completed_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "priority": {
+          "description": "Priority: 1 = Low, 2 = Medium, 3 = High.",
+          "enum": [
+            1,
+            2,
+            3
+          ],
+          "maximum": 3,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "project_id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "version_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "version_id",
+        "name",
+        "description",
+        "status",
+        "priority",
+        "created_at"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -935,6 +3138,81 @@ expression: tools
         "priority"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Status": {
+          "enum": [
+            "todo",
+            "in_progress",
+            "done"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "completed_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "priority": {
+          "description": "Priority: 1 = Low, 2 = Medium, 3 = High.",
+          "enum": [
+            1,
+            2,
+            3
+          ],
+          "maximum": 3,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "project_id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "version_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "version_id",
+        "name",
+        "description",
+        "status",
+        "priority",
+        "created_at"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -966,6 +3244,81 @@ expression: tools
         "status"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Status": {
+          "enum": [
+            "todo",
+            "in_progress",
+            "done"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "completed_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "priority": {
+          "description": "Priority: 1 = Low, 2 = Medium, 3 = High.",
+          "enum": [
+            1,
+            2,
+            3
+          ],
+          "maximum": 3,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "project_id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "version_id": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "version_id",
+        "name",
+        "description",
+        "status",
+        "priority",
+        "created_at"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   },
   {
@@ -1016,6 +3369,58 @@ expression: tools
         "name"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "VersionStatus": {
+          "enum": [
+            "backlog",
+            "open",
+            "released"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "created_at": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "project_id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/VersionStatus"
+        }
+      },
+      "required": [
+        "project_id",
+        "name",
+        "description",
+        "status",
+        "created_at"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
     }
   }
 ]

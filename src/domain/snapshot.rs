@@ -11,7 +11,7 @@ use crate::domain::version_summary::VersionSummary;
 /// `previous_summary` carries the summary of the prior compaction when it
 /// exists; because it embeds its own `snapshot_json`, recompacting a version
 /// preserves the full history recursively.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CompactSnapshot {
     pub version: Version,
     pub previous_summary: Option<VersionSummary>,

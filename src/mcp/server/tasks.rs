@@ -8,8 +8,10 @@ use rmcp::model::CallToolResult;
 use rmcp::{tool, tool_router};
 
 use crate::application;
+use crate::application::records::{Deleted, TaskDetail};
+use crate::application::tasks::TaskPage;
 use crate::db::repository::TaskFilter;
-use crate::domain::task::{Priority, Status};
+use crate::domain::task::{Priority, Status, Task};
 use crate::domain::task_description::compose_description;
 use crate::domain::validation::validate_text;
 use application::pagination::clamp_limit;
@@ -21,7 +23,14 @@ use super::*;
 impl PmpServer {
     #[tool(
         name = "list_tasks",
-        description = "List tasks for a project. Filters, all optional and combinable: version_id (see list_versions), status (todo, in_progress, done), priority (Low, Medium, High), query (case-insensitive text found in the name, description or notes), ids (up to 500 task ids), only_ready (todo with every dependency done) or only_blocked (waiting for an unfinished dependency), and updated_or_created_since (tasks created, completed or noted at or after a UTC time, YYYY-MM-DD or YYYY-MM-DD HH:MM:SS). Each task comes as a light summary (id, names, status, priority, timestamps, depends_on_count and blocks_count); set include_description to true to add the full description, or call get_task for one task. Results are paginated: use limit (default 100, max 500) and offset, and check has_more/total to fetch the next page. Use when the user asks about their tasks, to-dos, pending work or progress, to search for a topic, or to pick the next task to work on."
+        description = "List tasks for a project. Filters, all optional and combinable: version_id (see list_versions), status (todo, in_progress, done), priority (Low, Medium, High), query (case-insensitive text found in the name, description or notes), ids (up to 500 task ids), only_ready (todo with every dependency done) or only_blocked (waiting for an unfinished dependency), and updated_or_created_since (tasks created, completed or noted at or after a UTC time, YYYY-MM-DD or YYYY-MM-DD HH:MM:SS). Each task comes as a light summary (id, names, status, priority, timestamps, depends_on_count and blocks_count); set include_description to true to add the full description, or call get_task for one task. Results are paginated: use limit (default 100, max 500) and offset, and check has_more/total to fetch the next page. Use when the user asks about their tasks, to-dos, pending work or progress, to search for a topic, or to pick the next task to work on.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<TaskPage>()
     )]
     pub(super) async fn list_tasks(
         &self,
@@ -60,7 +69,14 @@ impl PmpServer {
 
     #[tool(
         name = "list_ready_tasks",
-        description = "List the tasks ready to implement: todo tasks whose dependencies are all done, highest priority first, then lowest id. Same summary shape and pagination as list_tasks (limit, offset, total, has_more). Use to see what can be worked on now; use claim_next_task to take one."
+        description = "List the tasks ready to implement: todo tasks whose dependencies are all done, highest priority first, then lowest id. Same summary shape and pagination as list_tasks (limit, offset, total, has_more). Use to see what can be worked on now; use claim_next_task to take one.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<TaskPage>()
     )]
     pub(super) async fn list_ready_tasks(
         &self,
@@ -87,7 +103,14 @@ impl PmpServer {
 
     #[tool(
         name = "claim_next_task",
-        description = "Claim the next ready task in one atomic step: the highest-priority todo task whose dependencies are all done is moved to in_progress, and the optional note is recorded as its start note. Returns the claimed task. Fails with no_ready_task when nothing is ready; nothing changes in that case. Prefer this over list_ready_tasks followed by update_task_status when you are about to start work."
+        description = "Claim the next ready task in one atomic step: the highest-priority todo task whose dependencies are all done is moved to in_progress, and the optional note is recorded as its start note. Returns the claimed task. Fails with no_ready_task when nothing is ready; nothing changes in that case. Prefer this over list_ready_tasks followed by update_task_status when you are about to start work.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<Task>()
     )]
     pub(super) async fn claim_next_task(
         &self,
@@ -111,7 +134,14 @@ impl PmpServer {
 
     #[tool(
         name = "move_task",
-        description = "Move a task to another version of its own project. Only the version changes: notes, status, priority and dates stay. Moving to the current version is a no-op. Fails if the target version belongs to another project, or if the task has dependencies or dependents: they must stay within one version, so clear them first with set_task_dependencies. Returns the updated task."
+        description = "Move a task to another version of its own project. Only the version changes: notes, status, priority and dates stay. Moving to the current version is a no-op. Fails if the target version belongs to another project, or if the task has dependencies or dependents: they must stay within one version, so clear them first with set_task_dependencies. Returns the updated task.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<Task>()
     )]
     pub(super) async fn move_task(
         &self,
@@ -134,7 +164,14 @@ impl PmpServer {
 
     #[tool(
         name = "update_task_priority",
-        description = "Change the priority of an existing task to Low, Medium or High. Use to reprioritize work; prefer this over editing the database directly."
+        description = "Change the priority of an existing task to Low, Medium or High. Use to reprioritize work; prefer this over editing the database directly.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<Task>()
     )]
     pub(super) async fn update_task_priority(
         &self,
@@ -153,7 +190,14 @@ impl PmpServer {
 
     #[tool(
         name = "update_task",
-        description = "Edit an existing task: name and/or the context, requirements and benefits sections. Omitted fields keep their current value, so send only what changes. Status, priority and dependencies are not changed here (use update_task_status, update_task_priority and set_task_dependencies). Returns the updated task."
+        description = "Edit an existing task: name and/or the context, requirements and benefits sections. Omitted fields keep their current value, so send only what changes. Status, priority and dependencies are not changed here (use update_task_status, update_task_priority and set_task_dependencies). Returns the updated task.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<Task>()
     )]
     pub(super) async fn update_task(
         &self,
@@ -182,7 +226,14 @@ impl PmpServer {
 
     #[tool(
         name = "create_task",
-        description = "Create a new task in a version of a project. Use only when the user asks for a new task or work item. Requires the project id, the version id (see list_versions), a task name, and context, requirements and benefits. The task starts as todo. Optionally accepts a priority (Low, Medium, High); defaults to Medium."
+        description = "Create a new task in a version of a project. Use only when the user asks for a new task or work item. Requires the project id, the version id (see list_versions), a task name, and context, requirements and benefits. The task starts as todo. Optionally accepts a priority (Low, Medium, High); defaults to Medium.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<Task>()
     )]
     pub(super) async fn create_task(
         &self,
@@ -218,7 +269,14 @@ impl PmpServer {
 
     #[tool(
         name = "update_task_status",
-        description = "Change the status of a task to todo, in_progress or done. Call with in_progress when you start working on a task and with done when it is finished. Marking a task done fails with a validation error while it has incomplete dependencies; finish those first. Unknown task ids return task not found."
+        description = "Change the status of a task to todo, in_progress or done. Call with in_progress when you start working on a task and with done when it is finished. Marking a task done fails with a validation error while it has incomplete dependencies; finish those first. Unknown task ids return task not found.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<Task>()
     )]
     pub(super) async fn update_task_status(
         &self,
@@ -237,7 +295,14 @@ impl PmpServer {
 
     #[tool(
         name = "get_task",
-        description = "Get one task by id: its name, status, priority, the Context, Requirements and Benefits sections, the 5 most recent notes, and the ids of the tasks it depends on and the tasks it blocks. Use instead of list_tasks when you need the full detail of a single task."
+        description = "Get one task by id: its name, status, priority, the Context, Requirements and Benefits sections, the 5 most recent notes, and the ids of the tasks it depends on and the tasks it blocks. Use instead of list_tasks when you need the full detail of a single task.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<TaskDetail>()
     )]
     pub(super) async fn get_task(
         &self,
@@ -255,7 +320,14 @@ impl PmpServer {
 
     #[tool(
         name = "delete_task",
-        description = "Delete a task with its notes and dependency links. Irreversible. Refused with error code confirmation_required while the task is in_progress or other tasks depend on it, unless confirm is true; the refusal lists the dependent task ids. Only delete when the user explicitly asks, for example a task created by mistake. To retire finished work, use the done status instead."
+        description = "Delete a task with its notes and dependency links. Irreversible. Refused with error code confirmation_required while the task is in_progress or other tasks depend on it, unless confirm is true; the refusal lists the dependent task ids. Only delete when the user explicitly asks, for example a task created by mistake. To retire finished work, use the done status instead.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<Deleted>()
     )]
     pub(super) async fn delete_task(
         &self,

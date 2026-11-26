@@ -21,7 +21,7 @@ pub fn compose_description(context: &str, requirements: &str, benefits: &str) ->
 }
 
 /// The three sections of a task description, as written by `compose_description`.
-#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
 pub struct TaskSections {
     pub context: String,
     pub requirements: String,

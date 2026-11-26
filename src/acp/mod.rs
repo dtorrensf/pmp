@@ -22,6 +22,7 @@
 pub mod client;
 pub mod profiles;
 pub mod protocol;
+pub mod tasks;
 pub mod transport;
 
 pub use client::{
@@ -33,6 +34,7 @@ pub use protocol::{
     PromptCapabilities, PromptRequest, PromptResponse, SessionId, SessionUpdate,
     SessionUpdateNotification, StopReason, ToolCallStatus, ToolKind,
 };
+pub use tasks::send_implement_task;
 pub use transport::{Incoming, RequestId, RpcError, TransportError};
 
 #[cfg(test)]

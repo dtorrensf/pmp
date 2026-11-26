@@ -109,7 +109,7 @@ pub fn next_version_name<'a>(existing: impl IntoIterator<Item = &'a str>) -> Str
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Version {
     pub id: Option<i64>,
     pub project_id: i64,

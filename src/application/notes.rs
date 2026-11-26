@@ -17,7 +17,7 @@ pub fn list(repo: &dyn Repository, task_id: i64) -> Result<Vec<TaskNote>, AppErr
 }
 
 /// One page of a task's notes, newest first.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NotePage {
     pub notes: Vec<TaskNote>,
     #[serde(flatten)]

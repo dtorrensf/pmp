@@ -8,16 +8,25 @@ use rmcp::model::CallToolResult;
 use rmcp::{tool, tool_router};
 
 use crate::application;
-use crate::domain::version::VersionStatus;
+use crate::domain::version::{Version, VersionStatus};
 use application::versions::{NewVersion, VersionEdit};
 
+use super::outputs::Items;
 use super::*;
+use crate::application::records::{Deleted, VersionDetail};
 
 #[tool_router(router = tool_router_versions, vis = "pub(super)")]
 impl PmpServer {
     #[tool(
         name = "list_versions",
-        description = "List the versions (release lines) of a project, open ones first, then backlog, then released. Use to find the version_id that tasks must be created in, or to check which versions are active or released."
+        description = "List the versions (release lines) of a project, open ones first, then backlog, then released. Use to find the version_id that tasks must be created in, or to check which versions are active or released.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<Items<Version>>()
     )]
     pub(super) async fn list_versions(
         &self,
@@ -34,7 +43,14 @@ impl PmpServer {
 
     #[tool(
         name = "create_version",
-        description = "Create a version (release line) in a project. Use when planning a new release, for example v0.2.0. Name must be unique within the project and not empty. Status is backlog (default), open or released."
+        description = "Create a version (release line) in a project. Use when planning a new release, for example v0.2.0. Name must be unique within the project and not empty. Status is backlog (default), open or released.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<Version>()
     )]
     pub(super) async fn create_version(
         &self,
@@ -61,7 +77,14 @@ impl PmpServer {
 
     #[tool(
         name = "update_version",
-        description = "Rename a version and/or change its description or status. Requires the version id and a non-empty name. Omit description or status to keep the current ones. Status is backlog, open or released. Fails when the name already exists in the same project. Use to edit version metadata instead of editing the database."
+        description = "Rename a version and/or change its description or status. Requires the version id and a non-empty name. Omit description or status to keep the current ones. Status is backlog, open or released. Fails when the name already exists in the same project. Use to edit version metadata instead of editing the database.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<Version>()
     )]
     pub(super) async fn update_version(
         &self,
@@ -88,7 +111,14 @@ impl PmpServer {
 
     #[tool(
         name = "get_version",
-        description = "Get one version by id: its details, task counts by status and number of compaction summaries. Use when the user asks about a specific release line or before deleting it."
+        description = "Get one version by id: its details, task counts by status and number of compaction summaries. Use when the user asks about a specific release line or before deleting it.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<VersionDetail>()
     )]
     pub(super) async fn get_version(
         &self,
@@ -106,7 +136,14 @@ impl PmpServer {
 
     #[tool(
         name = "delete_version",
-        description = "Delete a version with its tasks, notes and summaries. Irreversible. Refused with error code confirmation_required while it has active (todo or in_progress) tasks, unless confirm is true; the refusal lists the blocking task ids. Done tasks are removed without confirmation, so prefer compact_version to keep history. Only delete when the user explicitly asks."
+        description = "Delete a version with its tasks, notes and summaries. Irreversible. Refused with error code confirmation_required while it has active (todo or in_progress) tasks, unless confirm is true; the refusal lists the blocking task ids. Done tasks are removed without confirmation, so prefer compact_version to keep history. Only delete when the user explicitly asks.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<Deleted>()
     )]
     pub(super) async fn delete_version(
         &self,

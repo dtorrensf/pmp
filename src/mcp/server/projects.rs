@@ -10,13 +10,23 @@ use rmcp::{tool, tool_router};
 use crate::application;
 use application::projects::{NewProject, ProjectEdit};
 
+use super::outputs::Items;
 use super::*;
+use crate::application::records::{Deleted, ProjectDetail};
+use crate::domain::project::Project;
 
 #[tool_router(router = tool_router_projects, vis = "pub(super)")]
 impl PmpServer {
     #[tool(
         name = "list_projects",
-        description = "List all projects of the user. Use to discover project ids before listing versions or tasks, or when the user asks what projects they have."
+        description = "List all projects of the user. Use to discover project ids before listing versions or tasks, or when the user asks what projects they have.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<Items<Project>>()
     )]
     pub(super) async fn list_projects(&self) -> Result<CallToolResult, ErrorData> {
         run_tool(self.repo.clone(), self.timeout, PROJECT_NOT_FOUND, |repo| {
@@ -27,7 +37,14 @@ impl PmpServer {
 
     #[tool(
         name = "create_project",
-        description = "Create a new project. Use when the user asks to start a new project. Requires a non-empty name; description and working_dir are optional. working_dir must be an absolute path; it is normalized before storing. The project starts with a default version (see list_versions)."
+        description = "Create a new project. Use when the user asks to start a new project. Requires a non-empty name; description and working_dir are optional. working_dir must be an absolute path; it is normalized before storing. The project starts with a default version (see list_versions).",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<Project>()
     )]
     pub(super) async fn create_project(
         &self,
@@ -53,7 +70,14 @@ impl PmpServer {
 
     #[tool(
         name = "update_project",
-        description = "Rename a project and/or change its description or working directory. Requires the project id and a non-empty name. Omit description or working_dir to keep the current value; send an empty working_dir to clear it. Relative paths are rejected. Use to edit project metadata instead of editing the database."
+        description = "Rename a project and/or change its description or working directory. Requires the project id and a non-empty name. Omit description or working_dir to keep the current value; send an empty working_dir to clear it. Relative paths are rejected. Use to edit project metadata instead of editing the database.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<Project>()
     )]
     pub(super) async fn update_project(
         &self,
@@ -80,7 +104,14 @@ impl PmpServer {
 
     #[tool(
         name = "get_project",
-        description = "Get one project by id: its details (including working_dir), number of versions and task counts by status. Use when the user asks about a specific project or before deleting it."
+        description = "Get one project by id: its details (including working_dir), number of versions and task counts by status. Use when the user asks about a specific project or before deleting it.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<ProjectDetail>()
     )]
     pub(super) async fn get_project(
         &self,
@@ -98,7 +129,14 @@ impl PmpServer {
 
     #[tool(
         name = "delete_project",
-        description = "Delete a project with all its versions, tasks, notes and summaries. Irreversible. Refused with error code confirmation_required while it has active (todo or in_progress) tasks, unless confirm is true; the refusal lists the blocking task ids. Only delete when the user explicitly asks; the response reports everything removed."
+        description = "Delete a project with all its versions, tasks, notes and summaries. Irreversible. Refused with error code confirmation_required while it has active (todo or in_progress) tasks, unless confirm is true; the refusal lists the blocking task ids. Only delete when the user explicitly asks; the response reports everything removed.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<Deleted>()
     )]
     pub(super) async fn delete_project(
         &self,

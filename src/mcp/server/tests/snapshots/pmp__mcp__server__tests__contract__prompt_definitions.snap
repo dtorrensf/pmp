@@ -1,0 +1,50 @@
+---
+source: src/mcp/server/tests/contract.rs
+expression: prompts
+---
+[
+  {
+    "name": "implement-task",
+    "description": "Prepare an agent to implement one PMP task with its sections, dependencies and verification workflow.",
+    "arguments": [
+      {
+        "name": "task_id",
+        "description": "Positive id of the task to implement.",
+        "required": true
+      }
+    ]
+  },
+  {
+    "name": "plan-version",
+    "description": "Plan a PMP version in read-only mode from its tasks, dependencies and acceptance criteria.",
+    "arguments": [
+      {
+        "name": "version_id",
+        "description": "Positive id of the version to plan, review or summarise.",
+        "required": true
+      }
+    ]
+  },
+  {
+    "name": "release-notes",
+    "description": "Draft Markdown release notes from a PMP version's completed tasks and compacted summaries.",
+    "arguments": [
+      {
+        "name": "version_id",
+        "description": "Positive id of the version to plan, review or summarise.",
+        "required": true
+      }
+    ]
+  },
+  {
+    "name": "review-version",
+    "description": "Review a PMP version for release readiness without changing its records.",
+    "arguments": [
+      {
+        "name": "version_id",
+        "description": "Positive id of the version to plan, review or summarise.",
+        "required": true
+      }
+    ]
+  }
+]

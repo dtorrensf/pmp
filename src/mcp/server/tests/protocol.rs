@@ -82,8 +82,10 @@ async fn mcp_server_e2e_lifecycle_and_list_tasks() {
     let capabilities = &init_response["result"]["capabilities"];
     assert!(capabilities["tools"].is_object());
     assert!(capabilities["resources"].is_object());
+    assert!(capabilities["prompts"].is_object());
     assert_eq!(capabilities["tools"]["listChanged"], false);
     assert_eq!(capabilities["resources"]["listChanged"], false);
+    assert_eq!(capabilities["prompts"]["listChanged"], false);
 
     let initialized = serde_json::json!({
         "jsonrpc": "2.0",
@@ -124,6 +126,52 @@ async fn mcp_server_e2e_lifecycle_and_list_tasks() {
     assert!(tools.iter().any(|t| t["name"] == "read_version_summary"));
     assert!(tools.iter().any(|t| t["name"] == "delete_version_summary"));
     assert!(tools.iter().any(|t| t["name"] == "export_version_summary"));
+    assert!(
+        tools
+            .iter()
+            .all(|t| t["annotations"].is_object() && t["outputSchema"].is_object()),
+        "every tool advertises annotations and an outputSchema"
+    );
+
+    let prompts_request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 20,
+        "method": "prompts/list"
+    });
+    write_json_line(&mut writer, &prompts_request).await;
+    let prompts_response = read_json_line(&mut reader).await;
+    let prompt_names: Vec<&str> = prompts_response["result"]["prompts"]
+        .as_array()
+        .expect("prompts/list should return a prompts array")
+        .iter()
+        .filter_map(|prompt| prompt["name"].as_str())
+        .collect();
+    assert_eq!(
+        prompt_names,
+        [
+            "implement-task",
+            "plan-version",
+            "release-notes",
+            "review-version"
+        ]
+    );
+
+    let prompt_request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 21,
+        "method": "prompts/get",
+        "params": {
+            "name": "plan-version",
+            "arguments": { "version_id": default_version.to_string() }
+        }
+    });
+    write_json_line(&mut writer, &prompt_request).await;
+    let prompt_response = read_json_line(&mut reader).await;
+    let prompt_text = prompt_response["result"]["messages"][0]["content"]["text"]
+        .as_str()
+        .expect("the prompt should contain a text message");
+    assert!(prompt_text.contains("Plan PMP version"));
+    assert!(prompt_text.contains(&format!("#{default_version}")));
 
     let create_request = serde_json::json!({
         "jsonrpc": "2.0",
@@ -144,12 +192,14 @@ async fn mcp_server_e2e_lifecycle_and_list_tasks() {
     });
     write_json_line(&mut writer, &create_request).await;
     let create_response = read_json_line(&mut reader).await;
-    let created_task: Task = serde_json::from_str(
-        create_response["result"]["content"][0]["text"]
-            .as_str()
-            .expect("tool result should have text content"),
-    )
-    .unwrap();
+    let created_text = create_response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("tool result should have text content");
+    let created_task: Task = serde_json::from_str(created_text).unwrap();
+    assert_eq!(
+        create_response["result"]["structuredContent"],
+        serde_json::from_str::<serde_json::Value>(created_text).unwrap()
+    );
     assert_eq!(created_task.name, "E2E task");
     assert_eq!(created_task.status, Status::Todo);
     assert_eq!(created_task.priority, Priority::High);

@@ -19,7 +19,7 @@ pub fn list(repo: &dyn Repository, task_id: i64) -> Result<Vec<i64>, AppError> {
 
 /// A task named from a dependency edge: enough to identify it and judge whether
 /// it is finished.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TaskRef {
     pub id: i64,
     pub name: String,
@@ -28,7 +28,7 @@ pub struct TaskRef {
 }
 
 /// A task's dependency neighbourhood, resolved to names and states.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct DependencyView {
     pub task_id: i64,
     /// Todo and every blocker is done: the task can be claimed now.

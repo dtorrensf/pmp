@@ -54,7 +54,7 @@ pub struct TaskEdit {
 
 /// Lightweight view of a task for listings: identity, state, timestamps and
 /// dependency counters. The description is included only on request.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TaskSummary {
     pub id: Option<i64>,
     pub project_id: i64,
@@ -73,7 +73,7 @@ pub struct TaskSummary {
 }
 
 /// One page of task summaries plus the metadata a client needs to ask for the next one.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TaskPage {
     pub tasks: Vec<TaskSummary>,
     #[serde(flatten)]

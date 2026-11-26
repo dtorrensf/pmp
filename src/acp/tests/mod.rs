@@ -7,4 +7,5 @@ mod client;
 mod process;
 mod profiles;
 mod protocol;
+mod tasks;
 mod transport;

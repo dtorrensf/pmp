@@ -8,14 +8,25 @@ use rmcp::model::CallToolResult;
 use rmcp::{tool, tool_router};
 
 use crate::application;
+use crate::application::summaries::SummaryPage;
+use crate::domain::snapshot::CompactSnapshot;
+use crate::domain::version_summary::VersionSummary;
 
+use super::outputs::{DeletedSummary, ExportedSummary};
 use super::*;
 
 #[tool_router(router = tool_router_summaries, vis = "pub(super)")]
 impl PmpServer {
     #[tool(
         name = "preview_compact_version",
-        description = "Preview the JSON snapshot that compact_version would freeze for a version, without changing anything. Includes the version, its done tasks (todo tasks are not frozen), their notes and dependencies, plus the previous summary when recompacting. Use before compact_version to review what will be persisted."
+        description = "Preview the JSON snapshot that compact_version would freeze for a version, without changing anything. Includes the version, its done tasks (todo tasks are not frozen), their notes and dependencies, plus the previous summary when recompacting. Use before compact_version to review what will be persisted.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<CompactSnapshot>()
     )]
     pub(super) async fn preview_compact_version(
         &self,
@@ -33,7 +44,14 @@ impl PmpServer {
 
     #[tool(
         name = "compact_version",
-        description = "Compact a version into a frozen summary. Freezes only its done tasks (with their notes/dependencies) and deletes them; todo tasks stay in the version. Fails if any task is in_progress, or if there is nothing to freeze (no done tasks and no previous summary). If todo tasks remain, the version stays open; otherwise it is marked released by default. When recompacting, the new summary must preserve the relevant knowledge from the previous summary (available in the preview as previous_summary) while incorporating the new tasks, notes and dependencies with their completed_at."
+        description = "Compact a version into a frozen summary. Freezes only its done tasks (with their notes/dependencies) and deletes them; todo tasks stay in the version. Fails if any task is in_progress, or if there is nothing to freeze (no done tasks and no previous summary). If todo tasks remain, the version stays open; otherwise it is marked released by default. When recompacting, the new summary must preserve the relevant knowledge from the previous summary (available in the preview as previous_summary) while incorporating the new tasks, notes and dependencies with their completed_at.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<VersionSummary>()
     )]
     pub(super) async fn compact_version(
         &self,
@@ -55,7 +73,14 @@ impl PmpServer {
 
     #[tool(
         name = "list_version_summaries",
-        description = "List the summaries of a version, newest first. Results are paginated: use limit (default 100, max 500) and offset, and check has_more/total to fetch the next page. A version holds at most one summary; after compaction its tasks live only in the summary snapshot. Use to review what was frozen."
+        description = "List the summaries of a version, newest first. Results are paginated: use limit (default 100, max 500) and offset, and check has_more/total to fetch the next page. A version holds at most one summary; after compaction its tasks live only in the summary snapshot. Use to review what was frozen.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<SummaryPage>()
     )]
     pub(super) async fn list_version_summaries(
         &self,
@@ -75,7 +100,14 @@ impl PmpServer {
 
     #[tool(
         name = "read_version_summary",
-        description = "Read one version summary by id, restricted to the given version. Returns the summary prose plus its frozen snapshot JSON. Use to inspect what a compacted version contained."
+        description = "Read one version summary by id, restricted to the given version. Returns the summary prose plus its frozen snapshot JSON. Use to inspect what a compacted version contained.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<VersionSummary>()
     )]
     pub(super) async fn read_version_summary(
         &self,
@@ -94,7 +126,14 @@ impl PmpServer {
 
     #[tool(
         name = "delete_version_summary",
-        description = "Delete a version summary by its id, restricted to the given version. Use to remove a compaction artifact; tasks already deleted during compaction are not restored."
+        description = "Delete a version summary by its id, restricted to the given version. Use to remove a compaction artifact; tasks already deleted during compaction are not restored.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<DeletedSummary>()
     )]
     pub(super) async fn delete_version_summary(
         &self,
@@ -116,7 +155,14 @@ impl PmpServer {
 
     #[tool(
         name = "export_version_summary",
-        description = "Export a version summary to a self-contained Markdown file with Mermaid charts (status pie, priority pie, dependency flowchart) and a task table. The file is always written inside the app's exports folder; the tool takes no destination path. Use to share or render a compacted version outside the app. Returns the written path."
+        description = "Export a version summary to a self-contained Markdown file with Mermaid charts (status pie, priority pie, dependency flowchart) and a task table. The file is always written inside the app's exports folder; the tool takes no destination path. Use to share or render a compacted version outside the app. Returns the written path.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<ExportedSummary>()
     )]
     pub(super) async fn export_version_summary(
         &self,

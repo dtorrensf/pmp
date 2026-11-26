@@ -67,6 +67,120 @@ fn tool_definitions_match_snapshot() {
     insta::assert_json_snapshot!("tool_definitions", tools);
 }
 
+const READ_ONLY: &[&str] = &[
+    "list_projects",
+    "get_project",
+    "list_versions",
+    "get_version",
+    "list_tasks",
+    "list_ready_tasks",
+    "get_task",
+    "get_task_dependencies",
+    "get_task_dependents",
+    "list_task_notes",
+    "preview_compact_version",
+    "list_version_summaries",
+    "read_version_summary",
+];
+
+const ADDITIVE: &[&str] = &[
+    "create_project",
+    "create_version",
+    "create_task",
+    "add_task_note",
+    "export_version_summary",
+];
+
+const ADDITIVE_IDEMPOTENT: &[&str] = &["add_task_dependency"];
+
+const MUTATING_IDEMPOTENT: &[&str] = &[
+    "update_project",
+    "update_version",
+    "update_task",
+    "update_task_status",
+    "update_task_priority",
+    "move_task",
+    "set_task_dependencies",
+    "remove_task_dependency",
+    "delete_project",
+    "delete_version",
+    "delete_task",
+    "delete_task_note",
+    "delete_version_summary",
+];
+
+const MUTATING_NON_IDEMPOTENT: &[&str] = &["claim_next_task", "compact_version"];
+
+fn expected_hints(name: &str) -> (bool, bool, bool) {
+    let group = |group: &[&str]| group.contains(&name);
+    if group(READ_ONLY) {
+        (true, false, true)
+    } else if group(ADDITIVE) {
+        (false, false, false)
+    } else if group(ADDITIVE_IDEMPOTENT) {
+        (false, false, true)
+    } else if group(MUTATING_IDEMPOTENT) {
+        (false, true, true)
+    } else if group(MUTATING_NON_IDEMPOTENT) {
+        (false, true, false)
+    } else {
+        panic!("tool {name} is missing from the annotation groups");
+    }
+}
+
+#[test]
+fn every_tool_has_annotations_and_an_output_schema() {
+    for tool in PmpServer::tool_router().list_all() {
+        let annotations = tool
+            .annotations
+            .as_ref()
+            .unwrap_or_else(|| panic!("{} has no annotations", tool.name));
+        let (read_only, destructive, idempotent) = expected_hints(&tool.name);
+        assert_eq!(
+            annotations.read_only_hint,
+            Some(read_only),
+            "readOnlyHint for {}",
+            tool.name
+        );
+        assert_eq!(
+            annotations.destructive_hint,
+            Some(destructive),
+            "destructiveHint for {}",
+            tool.name
+        );
+        assert_eq!(
+            annotations.idempotent_hint,
+            Some(idempotent),
+            "idempotentHint for {}",
+            tool.name
+        );
+        assert_eq!(
+            annotations.open_world_hint,
+            Some(false),
+            "openWorldHint for {}",
+            tool.name
+        );
+        assert!(
+            tool.output_schema.is_some(),
+            "{} has no outputSchema",
+            tool.name
+        );
+        assert_eq!(
+            tool.output_schema.as_ref().unwrap().get("type"),
+            Some(&serde_json::json!("object")),
+            "{} outputSchema must be an object",
+            tool.name
+        );
+    }
+}
+
+#[test]
+fn prompt_definitions_match_snapshot() {
+    let mut prompts = PmpServer::prompt_router().list_all();
+    prompts.sort_by(|a, b| a.name.cmp(&b.name));
+    insta::assert_json_snapshot!("prompt_definitions", prompts);
+}
+
 #[tokio::test]
 async fn resource_surface_matches_snapshot() {
     let (server, _) = server();

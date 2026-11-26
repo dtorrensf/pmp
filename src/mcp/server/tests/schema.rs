@@ -35,6 +35,22 @@ mod priority_param_tests {
     }
 
     #[test]
+    fn task_output_priority_schema_matches_its_integer_wire_format() {
+        let schema = schema_for::<Task>();
+        let prop = &schema["properties"]["priority"];
+        let refd = prop.get("$ref").and_then(|r| r.as_str());
+        let def = match refd {
+            Some(r) => &schema["$defs"][r.trim_start_matches("#/$defs/")],
+            None => prop,
+        };
+        assert_eq!(
+            def["type"], "integer",
+            "output priority must be numeric: {def}"
+        );
+        assert_eq!(def["enum"], serde_json::json!([1, 2, 3]));
+    }
+
+    #[test]
     fn create_task_params_accept_named_priority() {
         let params: CreateTaskParams = serde_json::from_value(serde_json::json!({
             "project_id": 1, "version_id": 1, "name": "n",

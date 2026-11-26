@@ -141,6 +141,15 @@ fn binary_mcp_arg_responds_to_initialize_then_exits_cleanly() {
         "initialize result should advertise tools capability: {}",
         response
     );
+    assert!(
+        response["result"]["capabilities"]["prompts"].is_object(),
+        "initialize result should advertise prompts capability: {}",
+        response
+    );
+    assert_eq!(
+        response["result"]["capabilities"]["prompts"]["listChanged"],
+        false
+    );
 
     let status = child.wait().expect("child should exit");
     assert!(status.success(), "pmp mcp should exit cleanly");

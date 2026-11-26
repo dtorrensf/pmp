@@ -25,7 +25,7 @@ pub fn list(repo: &dyn Repository, version_id: i64) -> Result<Vec<VersionSummary
 }
 
 /// One page of a version's summaries, newest first.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SummaryPage {
     pub summaries: Vec<VersionSummary>,
     #[serde(flatten)]

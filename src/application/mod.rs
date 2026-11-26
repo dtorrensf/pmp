@@ -18,6 +18,7 @@ pub mod export;
 pub mod notes;
 pub mod pagination;
 pub mod projects;
+pub mod prompts;
 pub mod records;
 pub mod summaries;
 pub mod tasks;
@@ -30,7 +31,7 @@ mod architecture_tests {
     /// (`rmcp`, `crate::mcp`), and must not reach back into the TUI `App`.
     #[test]
     fn application_layer_is_free_of_presentation_and_transport() {
-        let files: [(&str, &str); 9] = [
+        let files: [(&str, &str); 10] = [
             ("export.rs", include_str!("export.rs")),
             ("projects.rs", include_str!("projects.rs")),
             ("versions.rs", include_str!("versions.rs")),
@@ -40,6 +41,7 @@ mod architecture_tests {
             ("pagination.rs", include_str!("pagination.rs")),
             ("summaries.rs", include_str!("summaries.rs")),
             ("records.rs", include_str!("records.rs")),
+            ("prompts.rs", include_str!("prompts.rs")),
         ];
         let forbidden = [
             "ratatui",

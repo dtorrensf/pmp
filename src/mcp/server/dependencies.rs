@@ -8,14 +8,24 @@ use rmcp::model::CallToolResult;
 use rmcp::{tool, tool_router};
 
 use crate::application;
+use crate::application::dependencies::DependencyView;
+use crate::domain::task::TaskDependency;
 
+use super::outputs::TaskDependencies;
 use super::*;
 
 #[tool_router(router = tool_router_dependencies, vis = "pub(super)")]
 impl PmpServer {
     #[tool(
         name = "get_task_dependencies",
-        description = "Get the dependency neighbourhood of a task: blocked_by (the tasks it waits for) and blocks (the tasks waiting for it), each resolved to id, name, status and priority, plus ready: true when the task is todo and every blocker is done. Check before starting a task: incomplete blockers block marking it done."
+        description = "Get the dependency neighbourhood of a task: blocked_by (the tasks it waits for) and blocks (the tasks waiting for it), each resolved to id, name, status and priority, plus ready: true when the task is todo and every blocker is done. Check before starting a task: incomplete blockers block marking it done.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<DependencyView>()
     )]
     pub(super) async fn get_task_dependencies(
         &self,
@@ -32,7 +42,14 @@ impl PmpServer {
 
     #[tool(
         name = "get_task_dependents",
-        description = "Get the tasks that depend on a task (the ones it blocks), resolved to id, name, status and priority. The same view as get_task_dependencies is returned. Use to understand the impact of changing or deleting a task."
+        description = "Get the tasks that depend on a task (the ones it blocks), resolved to id, name, status and priority. The same view as get_task_dependencies is returned. Use to understand the impact of changing or deleting a task.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<DependencyView>()
     )]
     pub(super) async fn get_task_dependents(
         &self,
@@ -49,7 +66,14 @@ impl PmpServer {
 
     #[tool(
         name = "add_task_dependency",
-        description = "Make one task depend on another: task_id depends on depends_on_id. Both tasks must be in the same version. Rejects self-dependencies and circular dependencies."
+        description = "Make one task depend on another: task_id depends on depends_on_id. Both tasks must be in the same version. Rejects self-dependencies and circular dependencies.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<TaskDependency>()
     )]
     pub(super) async fn add_task_dependency(
         &self,
@@ -74,7 +98,14 @@ impl PmpServer {
 
     #[tool(
         name = "set_task_dependencies",
-        description = "Set the complete list of tasks that a task depends on, replacing the current list in one atomic operation. Prefer this over add/remove when changing several dependencies. Pass an empty list to clear them. Rejects self-dependencies, cycles and tasks from another version; on error nothing is changed. Returns the resulting depends_on ids."
+        description = "Set the complete list of tasks that a task depends on, replacing the current list in one atomic operation. Prefer this over add/remove when changing several dependencies. Pass an empty list to clear them. Rejects self-dependencies, cycles and tasks from another version; on error nothing is changed. Returns the resulting depends_on ids.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<TaskDependencies>()
     )]
     pub(super) async fn set_task_dependencies(
         &self,
@@ -98,7 +129,14 @@ impl PmpServer {
 
     #[tool(
         name = "remove_task_dependency",
-        description = "Remove a dependency between two tasks. The task_id depends on depends_on_id."
+        description = "Remove a dependency between two tasks. The task_id depends on depends_on_id.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<TaskDependency>()
     )]
     pub(super) async fn remove_task_dependency(
         &self,

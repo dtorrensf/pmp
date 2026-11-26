@@ -8,14 +8,24 @@ use rmcp::model::CallToolResult;
 use rmcp::{tool, tool_router};
 
 use crate::application;
+use crate::application::notes::NotePage;
+use crate::domain::task::TaskNote;
 
+use super::outputs::DeletedNote;
 use super::*;
 
 #[tool_router(router = tool_router_notes, vis = "pub(super)")]
 impl PmpServer {
     #[tool(
         name = "list_task_notes",
-        description = "List the notes of a task, newest first. Results are paginated: use limit (default 100, max 500) and offset, and check has_more/total to fetch older notes. Use to read progress updates, decisions, context and reminders before continuing work on it."
+        description = "List the notes of a task, newest first. Results are paginated: use limit (default 100, max 500) and offset, and check has_more/total to fetch older notes. Use to read progress updates, decisions, context and reminders before continuing work on it.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<NotePage>()
     )]
     pub(super) async fn list_task_notes(
         &self,
@@ -35,7 +45,14 @@ impl PmpServer {
 
     #[tool(
         name = "add_task_note",
-        description = "Add a note to a task to record progress, decisions or context. Add notes as you work so the task history reflects what was actually done."
+        description = "Add a note to a task to record progress, decisions or context. Add notes as you work so the task history reflects what was actually done.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<TaskNote>()
     )]
     pub(super) async fn add_task_note(
         &self,
@@ -54,7 +71,14 @@ impl PmpServer {
 
     #[tool(
         name = "delete_task_note",
-        description = "Delete a task note by its note id."
+        description = "Delete a task note by its note id.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+        output_schema = output_schema::<DeletedNote>()
     )]
     pub(super) async fn delete_task_note(
         &self,

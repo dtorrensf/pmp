@@ -21,7 +21,7 @@ use crate::domain::version::Version;
 pub const RECENT_NOTES: usize = 5;
 
 /// Task counts by status.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct TaskCounts {
     pub todo: u32,
     pub in_progress: u32,
@@ -51,21 +51,21 @@ impl TaskCounts {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct ProjectDetail {
     pub project: Project,
     pub versions: u32,
     pub tasks: TaskCounts,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct VersionDetail {
     pub version: Version,
     pub tasks: TaskCounts,
     pub summaries: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct TaskDetail {
     pub task: Task,
     pub sections: TaskSections,
@@ -75,14 +75,14 @@ pub struct TaskDetail {
 }
 
 /// What a deletion removed, including everything dropped in cascade.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct Removed {
     pub versions: u32,
     pub tasks: TaskCounts,
     pub summaries: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct Deleted {
     pub kind: &'static str,
     pub id: i64,

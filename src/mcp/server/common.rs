@@ -5,7 +5,10 @@ use std::time::Duration;
 
 use anyhow::Result;
 use rmcp::ErrorData;
-use rmcp::model::{CallToolResult, ContentBlock, ErrorCode, ReadResourceResult, ResourceContents};
+use rmcp::model::{
+    CallToolResult, ContentBlock, ErrorCode, JsonObject, ReadResourceResult, ResourceContents,
+};
+use schemars::JsonSchema;
 use serde::Serialize;
 use tokio::task;
 
@@ -34,9 +37,11 @@ pub(super) const VERSION_TASKS_TEMPLATE: &str = "pmp://versions/{id}/tasks";
 pub(super) const VERSION_SUMMARIES_TEMPLATE: &str = "pmp://versions/{id}/summaries";
 pub(super) const SUMMARY_TEMPLATE: &str = "pmp://summaries/{id}";
 
-/// Upper bound for one serialized tool or resource response. Pagination keeps
-/// normal pages below this; the cap protects the client context window when a
-/// single record (a summary snapshot, a note) is still large.
+/// Upper bound for the textual JSON representation of one tool or resource
+/// response. Structured tool responses repeat the same JSON in
+/// `structuredContent`, so the wire payload can be roughly twice this size.
+/// Pagination keeps normal pages below the cap; it protects the client context
+/// window when a single record (a summary snapshot, a note) is still large.
 pub(super) const MAX_RESPONSE_BYTES: usize = 1_000_000;
 
 /// Items per page when listing resources or resource templates.
@@ -110,6 +115,29 @@ pub(super) fn json_content<T: Serialize>(value: &T) -> Result<ContentBlock, Erro
     ContentBlock::json(value).map_err(internal_error)
 }
 
+/// Generates the `outputSchema` declared by a tool. MCP requires an object at
+/// the root; tool results that are arrays are wrapped in `{"items": [...]}`.
+pub(super) fn output_schema<T: JsonSchema + 'static>() -> Arc<JsonObject> {
+    rmcp::handler::server::tool::schema_for_output::<T>().unwrap_or_else(|error| {
+        panic!(
+            "invalid MCP output schema for {}: {error}",
+            std::any::type_name::<T>()
+        )
+    })
+}
+
+/// Converts a tool result to the object stored in `structuredContent`.
+fn structured_value<T: Serialize>(value: &T) -> Result<serde_json::Value, ErrorData> {
+    let value = serde_json::to_value(value).map_err(internal_error)?;
+    match value {
+        serde_json::Value::Object(_) => Ok(value),
+        serde_json::Value::Array(items) => Ok(serde_json::json!({ "items": items })),
+        _ => Err(internal_error(
+            "a tool returned a scalar where structured content requires an object",
+        )),
+    }
+}
+
 /// Error returned when one response would exceed [`MAX_RESPONSE_BYTES`].
 pub(super) fn response_too_large() -> ErrorData {
     ErrorData::invalid_params(
@@ -143,7 +171,9 @@ pub(super) fn paginate_page<T>(
 }
 
 pub(super) fn tool_success<T: Serialize>(value: &T) -> Result<CallToolResult, ErrorData> {
-    Ok(CallToolResult::success(vec![json_content(value)?]))
+    let mut result = CallToolResult::success(vec![json_content(value)?]);
+    result.structured_content = Some(structured_value(value)?);
+    Ok(result)
 }
 
 pub(super) fn tool_result<T: Serialize>(

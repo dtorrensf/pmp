@@ -68,7 +68,7 @@ impl Status {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, schemars::JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i64)]
 pub enum Priority {
     Low = 1,
@@ -179,7 +179,28 @@ impl<'de> Deserialize<'de> for Priority {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+impl schemars::JsonSchema for Priority {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Priority".into()
+    }
+
+    /// The wire format is an integer (`1..=3`), not the Rust variant name.
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "integer",
+            "enum": [1, 2, 3],
+            "minimum": 1,
+            "maximum": 3,
+            "description": "Priority: 1 = Low, 2 = Medium, 3 = High."
+        })
+    }
+
+    fn inline_schema() -> bool {
+        true
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Task {
     pub id: Option<i64>,
     pub project_id: i64,
@@ -192,13 +213,13 @@ pub struct Task {
     pub completed_at: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TaskDependency {
     pub task_id: i64,
     pub depends_on_id: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TaskNote {
     pub id: Option<i64>,
     pub task_id: i64,

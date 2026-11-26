@@ -12,7 +12,7 @@ use rmcp::model::{
     ReadResourceResult, ServerCapabilities, ServerInfo,
 };
 use rmcp::service::{RequestContext, RoleServer};
-use rmcp::tool_handler;
+use rmcp::{prompt_handler, tool_handler};
 
 use crate::config::DEFAULT_MCP_TIMEOUT;
 use crate::db::repository::Repository;
@@ -20,8 +20,10 @@ use crate::db::repository::Repository;
 mod common;
 mod dependencies;
 mod notes;
+mod outputs;
 mod params;
 mod projects;
+mod prompts;
 mod resources;
 mod summaries;
 mod tasks;
@@ -68,6 +70,7 @@ impl PmpServer {
     }
 }
 
+#[prompt_handler]
 #[tool_handler]
 impl ServerHandler for PmpServer {
     async fn list_resources(
@@ -100,9 +103,11 @@ impl ServerHandler for PmpServer {
         let mut capabilities = ServerCapabilities::builder()
             .enable_resources()
             .enable_tools()
+            .enable_prompts()
             .build();
         capabilities.resources.as_mut().unwrap().list_changed = Some(false);
         capabilities.tools.as_mut().unwrap().list_changed = Some(false);
+        capabilities.prompts.as_mut().unwrap().list_changed = Some(false);
         ServerInfo::new(capabilities)
             .with_instructions(
                 "Personal project manager for the user's projects, tasks and productivity.\n\n\
