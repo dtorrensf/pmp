@@ -32,6 +32,11 @@ async fn main() -> anyhow::Result<()> {
             let paths = Paths::discover()?;
             pmp::logging::init(&config.logging, &paths.logs_dir);
             let mut app = App::new(open_repo(&config, &paths)?);
+            app.set_default_working_dir(
+                std::env::current_dir()
+                    .ok()
+                    .map(|dir| dir.to_string_lossy().into_owned()),
+            );
             app.set_pending_update(pmp::update::spawn_check(env!("CARGO_PKG_VERSION")));
             pmp::tui::run(app, &config).await?
         }

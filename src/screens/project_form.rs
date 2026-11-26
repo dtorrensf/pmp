@@ -24,6 +24,10 @@ pub struct ProjectForm {
     name: String,
     description: TextArea<'static>,
     working_dir: String,
+    /// Directory proposed when creating a project. Injected by the
+    /// composition root; the form never reads the environment itself. `None`
+    /// leaves the field empty.
+    default_working_dir: Option<String>,
     active_field: u8,
     return_to: Screen,
 }
@@ -39,6 +43,7 @@ impl ProjectForm {
             name: String::new(),
             description: TextArea::default(),
             working_dir: String::new(),
+            default_working_dir: None,
             active_field: 0,
             return_to: Screen::ProjectList,
         }
@@ -46,6 +51,13 @@ impl ProjectForm {
 
     pub fn set_project_id(&mut self, project_id: Option<i64>) {
         self.project_id = project_id;
+    }
+
+    /// Sets the directory proposed when creating a project, typically the
+    /// directory `pmp` was started from. Editing always keeps the project's
+    /// own value.
+    pub fn set_default_working_dir(&mut self, dir: Option<String>) {
+        self.default_working_dir = dir;
     }
 
     pub fn set_return_to(&mut self, screen: &Screen) {
@@ -83,7 +95,7 @@ impl Component for ProjectForm {
         } else {
             self.name.clear();
             self.description = TextArea::default();
-            self.working_dir.clear();
+            self.working_dir = self.default_working_dir.clone().unwrap_or_default();
         }
         self.active_field = 0;
         Ok(())
@@ -253,6 +265,51 @@ mod tests {
         form.set_project_id(None);
         form.init().unwrap();
         assert!(form.working_dir.is_empty());
+    }
+
+    #[test]
+    fn init_prefills_the_injected_working_dir_when_create() {
+        let repo = Arc::new(StubRepository::default());
+        let mut form = ProjectForm::new(repo);
+        form.set_default_working_dir(Some("/home/me/checkout".to_string()));
+        form.init().unwrap();
+        assert_eq!(form.working_dir, "/home/me/checkout");
+    }
+
+    #[test]
+    fn edit_wins_over_the_injected_working_dir() {
+        let repo = Arc::new(StubRepository::default());
+        let project = repo
+            .create_project("Alpha", "Desc", Some("/srv/repos/alpha"))
+            .unwrap();
+        let mut form = ProjectForm::new(repo.clone());
+        form.set_default_working_dir(Some("/home/me/checkout".to_string()));
+        form.set_project_id(project.id);
+        form.init().unwrap();
+        assert_eq!(form.working_dir, "/srv/repos/alpha");
+
+        // A project without a directory stays empty instead of borrowing the
+        // directory pmp was started from.
+        let plain = repo.create_project("Beta", "Desc", None).unwrap();
+        form.set_project_id(plain.id);
+        form.init().unwrap();
+        assert!(form.working_dir.is_empty());
+    }
+
+    #[test]
+    fn the_prefilled_working_dir_reaches_save_project() {
+        let repo = Arc::new(StubRepository::default());
+        let mut form = ProjectForm::new(repo);
+        form.set_default_working_dir(Some("/home/me/checkout".to_string()));
+        form.init().unwrap();
+        for c in "Alpha".chars() {
+            form.handle_event(&char_event(c));
+        }
+        assert!(matches!(
+            form.handle_event(&ctrl_s_event()),
+            Some(Action::SaveProject { working_dir, .. })
+                if working_dir == "/home/me/checkout"
+        ));
     }
 
     #[test]

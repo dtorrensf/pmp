@@ -87,7 +87,10 @@ Use the **arrow keys** to navigate, **Tab** to change statuses or jump between p
 Every project can optionally be bound to a directory: the checkout or workspace
 the project describes. Set it in the last field of the project form, or through
 `create_project` / `update_project` with `working_dir`; the project dashboard
-shows it above the description. The path must be absolute and is normalized
+shows it above the description. When you create a project, the field is
+prefilled with the directory `pmp` was started from, which is usually the
+checkout itself; editing a project always shows its saved value. The path must
+be absolute and is normalized
 (`/srv/repo/../repo` becomes `/srv/repo`), and an empty value clears it.
 Projects without one keep working normally: only flows that operate on the
 filesystem, such as launching an ACP agent, require it.

@@ -130,6 +130,13 @@ impl App {
         self.update_check_cancel = Some(cancel);
     }
 
+    /// Sets the directory proposed by the "New project" form. The composition
+    /// root passes the directory `pmp` was started from, so screens keep not
+    /// reading the environment.
+    pub fn set_default_working_dir(&mut self, dir: Option<String>) {
+        self.components.project_form.set_default_working_dir(dir);
+    }
+
     pub(crate) fn update_check_cancel_handle(&self) -> Option<Arc<AtomicBool>> {
         self.update_check_cancel.clone()
     }

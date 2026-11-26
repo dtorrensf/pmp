@@ -24,6 +24,7 @@
 * Add subtle motion: eased progress gauges and bars, a braille spinner next to in-progress tasks, toasts that slide in, a short celebration when a version reaches 100% or is compacted, and a `PMP_REDUCED_MOTION` switch to turn it all off.
 * Add a top bar with the app version, a centered breadcrumb of the current context and the update badge. The terminal window title follows the breadcrumb and is restored on exit.
 * Add `pmp config` to inspect every effective configuration value with the layer that produced it and to edit `config.toml` preserving comments and format, without starting the TUI or the MCP server. Agent profile `env` secrets are hidden and cannot be edited through the command.
+* Prefill the new project's working directory with the directory `pmp` was started from, so creating a project no longer needs typing the checkout path by hand. Editing a project always shows its saved directory.
 
 ## [0.5.0](https://github.com/dtorrensf/pmp/compare/pmp-v0.4.1...pmp-v0.5.0) (2026-10-25)
 
