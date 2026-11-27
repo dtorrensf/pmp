@@ -4,11 +4,12 @@ use std::sync::Mutex;
 
 use crate::db::repository::{
     DependencyRepository, NoteRepository, ProjectRepository, Readiness, Repository,
-    SummaryRepository, TaskFilter, TaskRepository, VersionRepository, check_dependency_set,
-    check_done_transition, check_task_move, unique_ids,
+    SnapshotRepository, SummaryRepository, TaskFilter, TaskRepository, VersionRepository,
+    check_dependency_set, check_done_transition, check_task_move, unique_ids,
 };
 use crate::domain::error::AppError;
 use crate::domain::project::Project;
+use crate::domain::snapshot::{DataSnapshot, SnapshotCounts};
 use crate::domain::task::{Priority, Status, Task, TaskDependency, TaskNote};
 use crate::domain::timestamp::now_utc;
 use crate::domain::validation;
@@ -960,6 +961,97 @@ impl SummaryRepository for StubRepository {
         self.delete_done_tasks_by_version(version_id)?;
         Ok(created)
     }
+}
+
+impl SnapshotRepository for StubRepository {
+    fn export_snapshot(&self) -> Result<DataSnapshot, AppError> {
+        let mut projects = self
+            .projects
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let mut versions = self
+            .versions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let mut notes = self
+            .task_notes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let mut dependencies = self
+            .dependencies
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let mut summaries = self
+            .version_summaries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        projects.sort_by_key(|project| project.id);
+        versions.sort_by_key(|version| version.id);
+        tasks.sort_by_key(|task| task.id);
+        notes.sort_by_key(|note| note.id);
+        dependencies.sort_by_key(|dependency| (dependency.task_id, dependency.depends_on_id));
+        summaries.sort_by_key(|summary| summary.id);
+        Ok(DataSnapshot::new(
+            projects,
+            versions,
+            tasks,
+            notes,
+            dependencies,
+            summaries,
+        ))
+    }
+
+    fn import_snapshot(
+        &self,
+        snapshot: &DataSnapshot,
+        replace: bool,
+    ) -> Result<SnapshotCounts, AppError> {
+        snapshot.validate()?;
+        let mut projects = self.projects.lock().unwrap_or_else(|e| e.into_inner());
+        if !projects.is_empty() && !replace {
+            return Err(AppError::Validation(
+                "the database already holds projects; import with replace to overwrite it"
+                    .to_string(),
+            ));
+        }
+        let mut versions = self.versions.lock().unwrap_or_else(|e| e.into_inner());
+        let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
+        let mut notes = self.task_notes.lock().unwrap_or_else(|e| e.into_inner());
+        let mut dependencies = self.dependencies.lock().unwrap_or_else(|e| e.into_inner());
+        let mut summaries = self
+            .version_summaries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        *projects = snapshot.projects.clone();
+        *versions = snapshot.versions.clone();
+        *tasks = snapshot.tasks.clone();
+        *notes = snapshot.notes.clone();
+        *dependencies = snapshot.dependencies.clone();
+        *summaries = snapshot.summaries.clone();
+
+        let mut counters = self.next_ids.lock().unwrap_or_else(|e| e.into_inner());
+        *counters = IdCounters {
+            project: next_after(projects.iter().map(|p| p.id.unwrap_or(0))),
+            version: next_after(versions.iter().map(|v| v.id.unwrap_or(0))),
+            task: next_after(tasks.iter().map(|t| t.id.unwrap_or(0))),
+            note: next_after(notes.iter().map(|n| n.id.unwrap_or(0))),
+            summary: next_after(summaries.iter().map(|s| s.id.unwrap_or(0))),
+        };
+        Ok(snapshot.counts())
+    }
+}
+
+/// First id after the highest existing one, so id allocation keeps matching
+/// SQLite's `rowid + 1` after a snapshot import.
+fn next_after(ids: impl Iterator<Item = i64>) -> i64 {
+    ids.max().map(|highest| highest + 1).unwrap_or(1)
 }
 
 #[cfg(test)]

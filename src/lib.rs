@@ -11,6 +11,7 @@ pub mod domain;
 pub mod logging;
 pub mod paths;
 pub mod screens;
+pub mod snapshot_cli;
 pub mod tui;
 pub mod update;
 
@@ -25,7 +26,7 @@ mod tests {
     fn lib_reexports_public_modules() {
         use crate::{
             acp, app, application, db, doctor, domain, logging, mcp, paths, repository, screens,
-            tui,
+            snapshot_cli, tui,
         };
     }
 }

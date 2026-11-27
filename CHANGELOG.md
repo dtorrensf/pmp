@@ -25,6 +25,8 @@
 * Add a top bar with the app version, a centered breadcrumb of the current context and the update badge. The terminal window title follows the breadcrumb and is restored on exit.
 * Add `pmp config` to inspect every effective configuration value with the layer that produced it and to edit `config.toml` preserving comments and format, without starting the TUI or the MCP server. Agent profile `env` secrets are hidden and cannot be edited through the command.
 * Prefill the new project's working directory with the directory `pmp` was started from, so creating a project no longer needs typing the checkout path by hand. Editing a project always shows its saved directory.
+* Back up `pmp.db` automatically before applying pending migrations, restoring the copy (and naming its path) when a migration fails.
+* Add `pmp snapshot export`/`import`: a portable, versioned JSON dump of every project, version, task, note, dependency and summary, validated and imported in one transaction. Imports preserve ids and require an empty store unless `--replace` is given.
 
 ## [0.5.0](https://github.com/dtorrensf/pmp/compare/pmp-v0.4.1...pmp-v0.5.0) (2026-10-25)
 

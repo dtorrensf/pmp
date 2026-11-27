@@ -9,6 +9,7 @@ Options:
 Commands:
   mcp              Start the MCP server
   config           Inspect or edit config.toml without starting the app
+  snapshot         Export or import a portable JSON snapshot of the whole store
   doctor           Print environment and database diagnostics
   (no command)     Start the interactive TUI (default)
 

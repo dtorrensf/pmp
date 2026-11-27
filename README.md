@@ -308,6 +308,33 @@ it:
 Invalid values are ignored and the configured (or default) value is kept, so a
 typo never prevents the store from opening or the server from starting.
 
+#### Backups before migrations
+
+Before applying pending schema migrations, PMP copies the database to
+`backups/` next to `pmp.db` (`pmp-pre-migration-schema-<from>-to-<to>-<time>.db`).
+If a migration fails, that copy is restored automatically and the error names
+the backup path. A brand-new database has nothing to protect, so it is not
+backed up, and a restart on an up-to-date schema creates no extra copies.
+
+#### Portable snapshots
+
+`pmp snapshot` exports and imports the whole store as one versioned JSON file,
+without starting the TUI or the MCP server:
+
+```bash
+pmp snapshot export                                    # <data dir>/exports/pmp-snapshot-<time>.json
+pmp snapshot export --output ~/backups/pmp.json        # explicit destination
+pmp snapshot import ~/backups/pmp.json                 # only into an empty store
+pmp snapshot import ~/backups/pmp.json --replace       # overwrite the current store
+```
+
+The document records its `schema` and `schema_version`; a file written by a
+newer PMP is rejected instead of silently losing fields. Ids are preserved, so
+dependencies, notes and per-version summaries keep their links. Validation
+checks every reference (tasks to versions and projects, notes to tasks,
+dependencies within one version and without cycles) before writing, and the
+import runs in one transaction: a rejected file changes nothing.
+
 ### Error codes
 
 Every failure carries a stable code, shared by the TUI (as the error toast) and
@@ -333,6 +360,7 @@ the code instead of matching message text:
 pmp              # Start the interactive TUI
 pmp mcp          # Start the MCP server
 pmp config       # Inspect or edit config.toml without starting the app
+pmp snapshot     # Export or import a portable JSON snapshot of the whole store
 pmp doctor       # Print environment and database diagnostics
 pmp --version    # Print version (also -v)
 pmp --help       # Print help (also -h)

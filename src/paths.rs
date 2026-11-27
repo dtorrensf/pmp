@@ -17,7 +17,8 @@ use crate::config::CONFIG_FILE;
 pub struct Paths {
     /// `~/.config/pmp/config.toml`; `None` when no config directory is known.
     pub config_file: Option<PathBuf>,
-    /// `~/.local/share/pmp`, holding the database and the logs.
+    /// `~/.local/share/pmp`, holding the database, its backups, the exports
+    /// and the logs.
     pub data_dir: PathBuf,
     /// `~/.local/share/pmp/logs`, where the structured logs are written.
     pub logs_dir: PathBuf,

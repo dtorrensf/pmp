@@ -1,0 +1,25 @@
+pmp snapshot - export or import a portable snapshot of the whole store
+
+Usage: pmp snapshot <COMMAND> [OPTIONS]
+
+Commands:
+  export [--output <path>]   Write every project, version, task, note,
+                             dependency and summary to one versioned JSON file.
+                             Default: <data dir>/exports/pmp-snapshot-<time>.json
+  import <path> [--replace]  Read a snapshot file into the database.
+                             The store must be empty unless --replace is given,
+                             which overwrites every existing row.
+  -h, --help                 Print this help information
+
+Notes:
+  - The file records its format (`schema`) and `schema_version`; a file written
+    by a newer PMP is rejected instead of losing fields.
+  - Ids are preserved, so dependencies, notes and summaries keep their links.
+  - The import runs in one transaction: a rejected file changes nothing.
+  - Before applying pending schema migrations PMP copies the database to
+    <data dir>/backups/ and restores that copy if a migration fails.
+
+Examples:
+  pmp snapshot export
+  pmp snapshot export --output ~/backups/pmp-before-upgrade.json
+  pmp snapshot import ~/backups/pmp-before-upgrade.json --replace

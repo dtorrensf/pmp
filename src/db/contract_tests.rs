@@ -7,11 +7,12 @@
 //! (Liskov Substitution Principle). Add new behavioral guarantees here
 //! whenever the trait contract grows.
 
-use crate::db::repository::{Repository, RepositoryPolicy, TaskFilter};
+use crate::db::repository::{Repository, RepositoryPolicy, SnapshotRepository, TaskFilter};
 use crate::db::sqlite::SqliteRepository;
 use crate::db::stub::StubRepository;
 use crate::domain::error::AppError;
-use crate::domain::task::{Priority, Status};
+use crate::domain::project::Project;
+use crate::domain::task::{Priority, Status, Task};
 use crate::domain::validation::{MAX_NAME_LEN, MAX_TEXT_LEN};
 use crate::domain::version::VersionStatus;
 
@@ -1456,6 +1457,190 @@ fn task_filters_narrow_the_listing_the_same_way_everywhere() {
             repo.list_tasks_page(&all_ready, 2, 2).unwrap().len(),
             1,
             "{name}"
+        );
+    });
+}
+
+/// Builds a store with every entity a snapshot must carry, then returns it.
+fn snapshot_fixture(repo: &dyn Repository) -> i64 {
+    let project = repo
+        .create_project("P", "description", Some("/tmp/workspace"))
+        .unwrap();
+    let pid = project.id.unwrap();
+    repo.create_project("Q", "", None).unwrap();
+    let v1 = repo.default_version_id(pid).unwrap();
+    let v2 = repo
+        .create_version(pid, "v2.0.0", "next")
+        .unwrap()
+        .id
+        .unwrap();
+    let done = repo
+        .create_task(pid, v1, "Done", "", Status::Done, Priority::High)
+        .unwrap()
+        .id
+        .unwrap();
+    let todo = repo
+        .create_task(pid, v1, "Todo", "", Status::Todo, Priority::Low)
+        .unwrap()
+        .id
+        .unwrap();
+    repo.create_task(pid, v2, "Later", "", Status::Todo, Priority::Medium)
+        .unwrap();
+    repo.add_dependency(todo, done).unwrap();
+    repo.add_task_note(todo, "kept note").unwrap();
+    repo.create_version_summary(v2, "frozen", "{\"tasks\":[]}")
+        .unwrap();
+    pid
+}
+
+#[test]
+fn snapshot_round_trip_preserves_every_entity_and_its_links() {
+    for_each_repo(|name, repo| {
+        let pid = snapshot_fixture(repo);
+        let first = repo.export_snapshot().unwrap();
+        assert_eq!(first.projects.len(), 2, "{name}");
+        assert_eq!(first.versions.len(), 3, "{name}");
+        assert_eq!(first.tasks.len(), 3, "{name}");
+        assert_eq!(first.notes.len(), 1, "{name}");
+        assert_eq!(first.dependencies.len(), 1, "{name}");
+        assert_eq!(first.summaries.len(), 1, "{name}");
+
+        // Wipe the store through an import of the snapshot with replace.
+        repo.create_project("noise", "", None).unwrap();
+        let counts = repo.import_snapshot(&first, true).unwrap();
+        assert_eq!(counts, first.counts(), "{name}");
+
+        let second = repo.export_snapshot().unwrap();
+        assert_eq!(first.projects, second.projects, "{name}");
+        assert_eq!(first.versions, second.versions, "{name}");
+        assert_eq!(first.tasks, second.tasks, "{name}");
+        assert_eq!(first.notes, second.notes, "{name}");
+        assert_eq!(first.dependencies, second.dependencies, "{name}");
+        assert_eq!(first.summaries, second.summaries, "{name}");
+
+        // Relationships survive the round trip, not just the rows.
+        let project = repo.get_project(pid).unwrap();
+        assert_eq!(project.working_dir.as_deref(), Some("/tmp/workspace"));
+        assert_eq!(repo.list_task_notes(2).unwrap()[0].content, "kept note");
+        assert_eq!(repo.get_dependencies(2).unwrap(), vec![1]);
+        // Id allocation continues after the highest imported id.
+        let fresh = repo.create_project("fresh", "", None).unwrap();
+        assert!(fresh.id.unwrap() > 2, "{name}: {:?}", fresh.id);
+    });
+}
+
+#[test]
+fn snapshot_import_into_a_non_empty_store_requires_replace() {
+    for_each_repo(|name, repo| {
+        snapshot_fixture(repo);
+        let empty = StubRepository::default().export_snapshot().unwrap();
+        let error = repo.import_snapshot(&empty, false).unwrap_err();
+        assert!(
+            matches!(error, AppError::Validation(ref message) if message.contains("replace")),
+            "{name}: {error:?}"
+        );
+        assert_eq!(repo.list_projects().unwrap().len(), 2, "{name}");
+    });
+}
+
+#[test]
+fn snapshot_import_rejects_broken_references_without_writing() {
+    for_each_repo(|name, repo| {
+        let mut snapshot = StubRepository::default().export_snapshot().unwrap();
+        snapshot.projects.push(Project {
+            id: Some(1),
+            name: "P".to_string(),
+            description: String::new(),
+            created_at: "2026-01-01 00:00:00".to_string(),
+            working_dir: None,
+        });
+        snapshot.tasks.push(Task {
+            id: Some(1),
+            project_id: 1,
+            version_id: 99,
+            name: "orphan".to_string(),
+            description: String::new(),
+            status: Status::Todo,
+            priority: Priority::Medium,
+            created_at: "2026-01-01 00:00:00".to_string(),
+            completed_at: None,
+        });
+        let error = repo.import_snapshot(&snapshot, true).unwrap_err();
+        assert!(
+            matches!(error, AppError::Validation(_)),
+            "{name}: expected a validation error, got {error:?}"
+        );
+        assert!(repo.list_projects().unwrap().is_empty(), "{name}");
+    });
+}
+
+#[test]
+fn snapshot_import_rejects_records_without_ids() {
+    for_each_repo(|name, repo| {
+        let mut snapshot = StubRepository::default().export_snapshot().unwrap();
+        snapshot.projects.push(Project {
+            id: None,
+            name: "P".to_string(),
+            description: String::new(),
+            created_at: "2026-01-01 00:00:00".to_string(),
+            working_dir: None,
+        });
+        let error = repo.import_snapshot(&snapshot, true).unwrap_err();
+        assert!(
+            matches!(error, AppError::Validation(_)),
+            "{name}: expected a validation error, got {error:?}"
+        );
+    });
+}
+
+#[test]
+fn snapshot_import_rejects_a_cycle_between_tasks() {
+    for_each_repo(|name, repo| {
+        let mut snapshot = StubRepository::default().export_snapshot().unwrap();
+        snapshot.projects.push(Project {
+            id: Some(1),
+            name: "P".to_string(),
+            description: String::new(),
+            created_at: "2026-01-01 00:00:00".to_string(),
+            working_dir: None,
+        });
+        snapshot.versions.push(crate::domain::version::Version {
+            id: Some(1),
+            project_id: 1,
+            name: "v1.0.0".to_string(),
+            description: String::new(),
+            status: crate::domain::version::VersionStatus::Open,
+            created_at: "2026-01-01 00:00:00".to_string(),
+        });
+        for id in [1, 2] {
+            snapshot.tasks.push(Task {
+                id: Some(id),
+                project_id: 1,
+                version_id: 1,
+                name: format!("T{id}"),
+                description: String::new(),
+                status: Status::Todo,
+                priority: Priority::Low,
+                created_at: "2026-01-01 00:00:00".to_string(),
+                completed_at: None,
+            });
+        }
+        snapshot
+            .dependencies
+            .push(crate::domain::task::TaskDependency {
+                task_id: 1,
+                depends_on_id: 2,
+            });
+        snapshot
+            .dependencies
+            .push(crate::domain::task::TaskDependency {
+                task_id: 2,
+                depends_on_id: 1,
+            });
+        let error = repo.import_snapshot(&snapshot, true).unwrap_err();
+        assert!(
+            matches!(error, AppError::Validation(ref message) if message.contains("cycle")),
+            "{name}: {error:?}"
         );
     });
 }

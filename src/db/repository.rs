@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use crate::domain::error::AppError;
 use crate::domain::policy::{CompactService, CompactionQueries, VersionPolicy, VersionQueries};
 use crate::domain::project::Project;
+use crate::domain::snapshot::{DataSnapshot, SnapshotCounts};
 use crate::domain::task::{Priority, Status, Task, TaskNote};
 use crate::domain::version::{Version, VersionStatus};
 use crate::domain::version_summary::VersionSummary;
@@ -251,6 +252,22 @@ pub trait SummaryRepository {
     ) -> Result<VersionSummary, AppError>;
 }
 
+/// Whole-store snapshots: the portable JSON backup of A8.
+pub trait SnapshotRepository {
+    /// Reads every project, version, task, note, dependency and summary in one
+    /// consistent view, stamped with the format metadata of this build.
+    fn export_snapshot(&self) -> Result<DataSnapshot, AppError>;
+
+    /// Validates `snapshot` and writes it in one transaction. Without `replace`
+    /// a store that already holds projects is rejected and nothing is written.
+    /// Ids are preserved, so every relationship survives the round trip.
+    fn import_snapshot(
+        &self,
+        snapshot: &DataSnapshot,
+        replace: bool,
+    ) -> Result<SnapshotCounts, AppError>;
+}
+
 /// The full persistence port: every aggregate interface. Implementations
 /// provide the aggregate traits; this one is implemented for all of them.
 /// Business rules live in `domain::policy` and are reached through
@@ -262,6 +279,7 @@ pub trait Repository:
     + DependencyRepository
     + NoteRepository
     + SummaryRepository
+    + SnapshotRepository
     + Send
     + Sync
 {
@@ -286,6 +304,7 @@ impl<T> Repository for T where
         + DependencyRepository
         + NoteRepository
         + SummaryRepository
+        + SnapshotRepository
         + Send
         + Sync
 {

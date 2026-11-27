@@ -10,24 +10,21 @@ use rusqlite::{
     Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params, params_from_iter,
 };
 
-use crate::db::busy::{BusyOptions, is_lock_error, retry_busy};
+use crate::db::busy::{BusyOptions, retry_busy};
+use crate::db::{backup, schema};
 
 use crate::db::repository::{
     DependencyRepository, LIST_LIMIT, NoteRepository, ProjectRepository, Readiness,
-    SummaryRepository, TaskFilter, TaskRepository, VersionRepository, check_dependency_set,
-    check_done_transition, check_list_size, check_task_move, unique_ids,
+    SnapshotRepository, SummaryRepository, TaskFilter, TaskRepository, VersionRepository,
+    check_dependency_set, check_done_transition, check_list_size, check_task_move, unique_ids,
 };
 use crate::domain::error::AppError;
 use crate::domain::project::Project;
-use crate::domain::task::{Priority, Status, Task, TaskNote};
+use crate::domain::snapshot::{DataSnapshot, SnapshotCounts};
+use crate::domain::task::{Priority, Status, Task, TaskDependency, TaskNote};
 use crate::domain::validation;
 use crate::domain::version::{self, Version, VersionStatus};
 use crate::domain::version_summary::VersionSummary;
-
-mod embedded {
-    use refinery::embed_migrations;
-    embed_migrations!("src/db/migrations");
-}
 
 /// Column lists shared by every query that maps a row with `task_from_row`
 /// or `version_from_row`; those read the columns by name.
@@ -49,8 +46,14 @@ impl SqliteRepository {
     }
 
     /// Opens the store with an explicit locking policy.
+    ///
+    /// When migrations are pending, the database is copied to `backups/` first
+    /// (A8) and, if a migration fails, that copy is restored before the error
+    /// is reported. A fresh database has nothing to protect, so it is not
+    /// backed up.
     pub fn open_with(path: impl AsRef<Path>, options: BusyOptions) -> Result<Self, AppError> {
-        let mut conn = Connection::open(path)?;
+        let db_path = path.as_ref();
+        let mut conn = Connection::open(db_path)?;
         register_functions(&conn)?;
         conn.busy_timeout(options.busy_timeout)?;
         // `journal_mode` needs a write lock the first time the file switches to
@@ -62,15 +65,41 @@ impl SqliteRepository {
             )?;
             Ok(())
         })?;
-        retry_busy(&options, || {
-            embedded::migrations::runner()
-                .run(&mut conn)
-                .map_err(migration_error)?;
+
+        let from = schema::applied_version(&mut conn)?;
+        let pending = schema::pending(&mut conn)?;
+        let backup = backup::backup_before_migrations(&conn, db_path, from, &pending, &options)?;
+        let migrated = retry_busy(&options, || {
+            schema::migrate(&mut conn)?;
             Ok(())
-        })?;
+        });
+        match (migrated, backup) {
+            (Ok(()), _) => {}
+            (Err(error), Some(backup)) => {
+                // The connection must be closed before the file is replaced.
+                drop(conn);
+                return Err(backup::failed_migration(db_path, &backup, error));
+            }
+            (Err(error), None) => return Err(error),
+        }
         Ok(Self {
             conn: Mutex::new(conn),
             options,
+        })
+    }
+
+    /// Runs a read-only block inside one transaction, so a snapshot export sees
+    /// every table at the same point in time even while another process writes.
+    /// Dropping the transaction without committing rolls nothing back, because
+    /// nothing was written.
+    fn read_transaction<T>(
+        &self,
+        mut operation: impl FnMut(&Connection) -> Result<T, AppError>,
+    ) -> Result<T, AppError> {
+        retry_busy(&self.options, || {
+            let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+            let tx = conn.unchecked_transaction()?;
+            operation(&tx)
         })
     }
 
@@ -322,16 +351,6 @@ fn dependents_of(conn: &Connection, task_id: i64) -> Result<Vec<i64>, AppError> 
         .query_map([task_id], |row| row.get(0))?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(dependents)
-}
-
-/// Classifies a migration failure: a locked database is transient and retried,
-/// anything else is reported as before.
-fn migration_error(error: refinery::Error) -> AppError {
-    if is_lock_error(&error) {
-        AppError::DbBusy
-    } else {
-        AppError::Validation(format!("migration error: {error}"))
-    }
 }
 
 impl ProjectRepository for SqliteRepository {
@@ -976,6 +995,173 @@ impl SummaryRepository for SqliteRepository {
             Ok(id)
         })?;
         self.get_version_summary(id)
+    }
+}
+
+impl SnapshotRepository for SqliteRepository {
+    fn export_snapshot(&self) -> Result<DataSnapshot, AppError> {
+        self.read_transaction(|conn| {
+            let projects = conn
+                .prepare(
+                    "SELECT id, name, description, created_at, working_dir \
+                     FROM projects ORDER BY id",
+                )?
+                .query_map([], project_from_row)?
+                .collect::<Result<Vec<_>, _>>()?;
+            let versions = conn
+                .prepare(&format!(
+                    "SELECT {VERSION_COLUMNS} FROM versions ORDER BY id"
+                ))?
+                .query_map([], version_from_row)?
+                .collect::<Result<Vec<_>, _>>()?;
+            let tasks = conn
+                .prepare(&format!("SELECT {TASK_COLUMNS} FROM tasks ORDER BY id"))?
+                .query_map([], task_from_row)?
+                .collect::<Result<Vec<_>, _>>()?;
+            let notes = conn
+                .prepare("SELECT id, task_id, content, created_at FROM task_notes ORDER BY id")?
+                .query_map([], task_note_from_row)?
+                .collect::<Result<Vec<_>, _>>()?;
+            let dependencies = conn
+                .prepare(
+                    "SELECT task_id, depends_on_id FROM task_dependencies \
+                     ORDER BY task_id, depends_on_id",
+                )?
+                .query_map([], |row| {
+                    Ok(TaskDependency {
+                        task_id: row.get(0)?,
+                        depends_on_id: row.get(1)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            let summaries = conn
+                .prepare(
+                    "SELECT id, version_id, summary, snapshot_json, generated_at, created_at \
+                     FROM version_summaries ORDER BY id",
+                )?
+                .query_map([], version_summary_from_row)?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(DataSnapshot::new(
+                projects,
+                versions,
+                tasks,
+                notes,
+                dependencies,
+                summaries,
+            ))
+        })
+    }
+
+    /// Replaces (or fills) the store with `snapshot` in one transaction. The
+    /// snapshot is validated first, so a rejected file writes nothing; ids are
+    /// preserved so dependencies, notes and summaries keep pointing at the same
+    /// records.
+    fn import_snapshot(
+        &self,
+        snapshot: &DataSnapshot,
+        replace: bool,
+    ) -> Result<SnapshotCounts, AppError> {
+        snapshot.validate()?;
+        self.write_transaction(|tx| {
+            let existing: i64 =
+                tx.query_row("SELECT COUNT(*) FROM projects", [], |row| row.get(0))?;
+            if existing > 0 && !replace {
+                return Err(AppError::Validation(
+                    "the database already holds projects; import with replace to overwrite it"
+                        .to_string(),
+                ));
+            }
+            if existing > 0 {
+                // Children first, so the wipe works with or without FK cascade.
+                tx.execute_batch(
+                    "DELETE FROM version_summaries;
+                     DELETE FROM task_dependencies;
+                     DELETE FROM task_notes;
+                     DELETE FROM tasks;
+                     DELETE FROM versions;
+                     DELETE FROM projects;",
+                )?;
+            }
+            for project in &snapshot.projects {
+                tx.execute(
+                    "INSERT INTO projects (id, name, description, created_at, working_dir) \
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        project.id.expect("validated snapshot"),
+                        project.name,
+                        project.description,
+                        project.created_at,
+                        project.working_dir
+                    ],
+                )?;
+            }
+            for version in &snapshot.versions {
+                tx.execute(
+                    "INSERT INTO versions (id, project_id, name, description, status, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        version.id.expect("validated snapshot"),
+                        version.project_id,
+                        version.name,
+                        version.description,
+                        version.status.as_str(),
+                        version.created_at
+                    ],
+                )?;
+            }
+            for task in &snapshot.tasks {
+                tx.execute(
+                    "INSERT INTO tasks (id, project_id, version_id, name, description, status, \
+                     priority, created_at, completed_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![
+                        task.id.expect("validated snapshot"),
+                        task.project_id,
+                        task.version_id,
+                        task.name,
+                        task.description,
+                        task.status.as_str(),
+                        i64::from(task.priority),
+                        task.created_at,
+                        task.completed_at
+                    ],
+                )?;
+            }
+            for note in &snapshot.notes {
+                tx.execute(
+                    "INSERT INTO task_notes (id, task_id, content, created_at) \
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        note.id.expect("validated snapshot"),
+                        note.task_id,
+                        note.content,
+                        note.created_at
+                    ],
+                )?;
+            }
+            for dependency in &snapshot.dependencies {
+                tx.execute(
+                    "INSERT INTO task_dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
+                    params![dependency.task_id, dependency.depends_on_id],
+                )?;
+            }
+            for summary in &snapshot.summaries {
+                tx.execute(
+                    "INSERT INTO version_summaries \
+                     (id, version_id, summary, snapshot_json, generated_at, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        summary.id.expect("validated snapshot"),
+                        summary.version_id,
+                        summary.summary,
+                        summary.snapshot_json,
+                        summary.generated_at,
+                        summary.created_at
+                    ],
+                )?;
+            }
+            Ok(snapshot.counts())
+        })
     }
 }
 
@@ -1916,7 +2102,7 @@ mod tests {
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         // Stop at V5, the schema versions had before Backlog existed. Its
         // versions CHECK only accepted open/released.
-        embedded::migrations::runner()
+        schema::runner()
             .set_target(Target::Version(5))
             .run(&mut conn)
             .unwrap();

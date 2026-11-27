@@ -384,3 +384,16 @@ impl crate::db::repository::SummaryRepository for FaultyRepository {
         unexpected!("compact_version")
     }
 }
+
+impl crate::db::repository::SnapshotRepository for FaultyRepository {
+    fn export_snapshot(&self) -> Result<crate::domain::snapshot::DataSnapshot, AppError> {
+        unexpected!("export_snapshot")
+    }
+    fn import_snapshot(
+        &self,
+        _: &crate::domain::snapshot::DataSnapshot,
+        _: bool,
+    ) -> Result<crate::domain::snapshot::SnapshotCounts, AppError> {
+        unexpected!("import_snapshot")
+    }
+}

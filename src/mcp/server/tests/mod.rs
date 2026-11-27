@@ -27,12 +27,13 @@ use rmcp::model::{CallToolResult, ErrorCode, ReadResourceResult, ResourceContent
 
 use crate::application::tasks::TaskSummary;
 use crate::db::repository::{
-    DependencyRepository, NoteRepository, ProjectRepository, SummaryRepository, TaskRepository,
-    VersionRepository,
+    DependencyRepository, NoteRepository, ProjectRepository, SnapshotRepository, SummaryRepository,
+    TaskRepository, VersionRepository,
 };
 use crate::db::stub::StubRepository;
 use crate::domain::error::AppError;
 use crate::domain::project::Project;
+use crate::domain::snapshot::{DataSnapshot, SnapshotCounts};
 use crate::domain::task::{Priority, Status, Task, TaskNote};
 use crate::domain::validation::MAX_TEXT_LEN;
 use crate::domain::version::{Version, VersionStatus};
@@ -327,6 +328,16 @@ impl SummaryRepository for FailingRepository {
     }
 
     fn compact_version(&self, _: i64, _: &str, _: &str) -> Result<VersionSummary, AppError> {
+        unimplemented!()
+    }
+}
+
+impl SnapshotRepository for FailingRepository {
+    fn export_snapshot(&self) -> Result<DataSnapshot, AppError> {
+        unimplemented!()
+    }
+
+    fn import_snapshot(&self, _: &DataSnapshot, _: bool) -> Result<SnapshotCounts, AppError> {
         unimplemented!()
     }
 }
