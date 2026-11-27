@@ -21,12 +21,17 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 
-use crate::acp::{AcpClient, AcpEvent, SessionId, SessionUpdate, SessionUpdateNotification};
+use crate::acp::{
+    AcpClient, AcpEvent, PermissionHandler, PermissionRequest, SessionId, SessionUpdate,
+    SessionUpdateNotification,
+};
 use crate::application::runs::{self, PreparedRun};
 use crate::config::AgentProfile;
 use crate::db::repository::Repository;
 use crate::domain::error::AppError;
-use crate::tui::events::{AgentEvent, AgentFinished, AgentRunOutcome, TuiEvent};
+use crate::tui::events::{
+    AgentEvent, AgentFinished, AgentRunOutcome, PermissionAsk, PermissionReply, TuiEvent,
+};
 
 /// Largest agent message text kept for the closing note, in bytes. A long turn
 /// keeps its last output instead of growing without bound.
@@ -148,7 +153,13 @@ impl AgentSessions {
         prompt: String,
         repo: Arc<dyn Repository>,
     ) -> Result<(), AppError> {
-        runs::mark_started(repo.as_ref(), task_id)?;
+        let task = runs::mark_started(repo.as_ref(), task_id)?;
+        client.on_permission_request(permission_handler(
+            self.sender.clone(),
+            agent.to_string(),
+            task_id,
+            task.project_id,
+        ));
         self.register(agent, session.clone(), client.clone());
         let sender = self.sender.clone();
         let agent = agent.to_string();
@@ -233,6 +244,38 @@ impl AgentSessions {
 async fn open_session(client: &AcpClient, cwd: &Path) -> Result<SessionId, AppError> {
     client.initialize().await?;
     client.new_session(cwd).await
+}
+
+/// Routes an agent's permission request to the loop and waits for the answer.
+///
+/// The loop owns the allowlist and the dialog, so this handler only forwards
+/// the request. If the loop is gone, or the answer channel is dropped (the
+/// turn was cancelled or finished), the request is cancelled.
+fn permission_handler(
+    sender: UnboundedSender<TuiEvent>,
+    agent: String,
+    task_id: i64,
+    project_id: i64,
+) -> PermissionHandler {
+    Arc::new(move |request: PermissionRequest| {
+        let sender = sender.clone();
+        let agent = agent.clone();
+        Box::pin(async move {
+            let (reply, answer) = PermissionReply::new();
+            let ask = PermissionAsk {
+                session: request.session_id.clone(),
+                agent,
+                task_id,
+                project_id,
+                request,
+                reply,
+            };
+            if sender.send(TuiEvent::Permission(Box::new(ask))).is_err() {
+                return None;
+            }
+            answer.await.ok().flatten()
+        })
+    })
 }
 
 /// Appends one agent message chunk to the turn transcript, keeping the most

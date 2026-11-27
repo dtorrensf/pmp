@@ -266,6 +266,7 @@ where
             }
             TuiEvent::Update(version) => app.set_update_available(version),
             TuiEvent::Agent(event) => app.record_agent_event(*event),
+            TuiEvent::Permission(ask) => app.record_permission_ask(*ask),
             TuiEvent::AgentFinished(finished) => {
                 app.finish_agent_run(&finished);
                 if let Some(client) = sessions.remove(&finished.session) {
@@ -385,6 +386,9 @@ fn render_app_frame(app: &mut App, frame: &mut Frame, ui: &UiContext) {
     render_footer(frame, footer, keys, help_hint, ui);
     if let Some((agents, selected)) = app.agent_picker() {
         agent::render_picker(frame, area, agents, selected, ui);
+    }
+    if let Some(dialog) = app.permission_dialog() {
+        agent::render_permission(frame, area, &dialog, ui);
     }
     if let (true, Some(version)) = (app.is_update_banner_open(), app.update_version()) {
         render_update_banner(frame, version, app.current_version(), area, ui);

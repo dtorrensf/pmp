@@ -20,14 +20,17 @@
 //! future headless CLI share it (C3 and C8).
 
 pub mod client;
+pub mod permissions;
 pub mod profiles;
 pub mod protocol;
 pub mod tasks;
 pub mod transport;
 
 pub use client::{
-    AcpClient, AcpEvent, DEFAULT_PROMPT_TIMEOUT, DEFAULT_REQUEST_TIMEOUT, SHUTDOWN_GRACE,
+    AcpClient, AcpEvent, DEFAULT_PROMPT_TIMEOUT, DEFAULT_REQUEST_TIMEOUT, PermissionHandler,
+    SHUTDOWN_GRACE,
 };
+pub use permissions::{Allowlist, Decision, PermissionRequest, Rule};
 pub use protocol::{
     AgentCapabilities, AuthMethod, CancelNotification, ContentBlock, Implementation,
     InitializeResponse, McpCapabilities, McpServer, NewSessionRequest, PROTOCOL_VERSION, PlanEntry,

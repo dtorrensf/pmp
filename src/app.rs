@@ -1,13 +1,13 @@
 // Copyright (C) 2026 Diego Torréns Farias
 // SPDX-License-Identifier: AGPL-3.0-or-later
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
-use crate::acp::SessionId;
+use crate::acp::{Allowlist, SessionId};
 use crate::config::AgentProfile;
 use crate::db::repository::Repository;
 use crate::domain::error::AppError;
@@ -16,6 +16,7 @@ use crate::screens::{
     Action, Component, ProjectDashboard, ProjectForm, ProjectListScreen, Screen, TaskForm,
     VersionDashboard, VersionForm, VersionSummaryScreen,
 };
+use crate::tui::events::PermissionAsk;
 
 pub(crate) mod agents;
 mod outcome;
@@ -70,6 +71,13 @@ pub struct App {
     pending_agent_request: Option<AgentRequest>,
     /// Session the loop must ask to stop.
     pending_cancel: Option<SessionId>,
+    /// Permission requests waiting for the user, oldest first. The front one is
+    /// the open dialog.
+    permission_queue: VecDeque<PermissionAsk>,
+    /// Highlighted choice of the open permission dialog.
+    permission_selected: usize,
+    /// "Allow always" grants, per project, agent and tool kind.
+    allowlist: Allowlist,
     /// Version compiled into the running binary, used in the update banner.
     /// Defaults to `CARGO_PKG_VERSION` and is overridable from tests.
     current_version: String,
@@ -106,6 +114,9 @@ impl App {
             agent_picker: None,
             pending_agent_request: None,
             pending_cancel: None,
+            permission_queue: VecDeque::new(),
+            permission_selected: 0,
+            allowlist: Allowlist::default(),
             current_version: env!("CARGO_PKG_VERSION").to_string(),
             components: Components {
                 project_list: ProjectListScreen::new(repo.clone()),

@@ -5,12 +5,16 @@
 //! orderly shutdown.
 
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::json;
 
 use crate::acp::sim::{self, AgentAsk, SimOptions};
-use crate::acp::{AcpClient, AcpEvent, ContentBlock, SessionId, SessionUpdate};
+use crate::acp::{
+    AcpClient, AcpEvent, ContentBlock, Decision, PermissionHandler, PermissionRequest, SessionId,
+    SessionUpdate,
+};
 use crate::domain::error::ErrorCode;
 
 /// A real directory, so the working-directory validation passes.
@@ -480,4 +484,89 @@ async fn from_io_connects_over_existing_pipes() {
     assert!(error.user_message().contains("timed out"));
     client.shutdown().await;
     assert!(client.is_closed());
+}
+
+/// A handler that records every request it sees and answers with `answer`.
+fn answering(
+    answer: Option<Decision>,
+    seen: Arc<Mutex<Vec<PermissionRequest>>>,
+) -> PermissionHandler {
+    Arc::new(move |request| {
+        seen.lock().unwrap().push(request);
+        Box::pin(async move { answer })
+    })
+}
+
+#[tokio::test]
+async fn the_handler_decision_is_sent_to_the_agent_as_the_offered_option() {
+    let options = SimOptions {
+        ask: Some(AgentAsk::permission(&SessionId::new("sess-sim"))),
+        ..SimOptions::default()
+    };
+    let (client, agent) = sim::spawn(options).await;
+    client.initialize().await.unwrap();
+    let workspace = workspace();
+    let session = client.new_session(workspace.path()).await.unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    client.on_permission_request(answering(Some(Decision::AllowOnce), Arc::clone(&seen)));
+
+    let stop = client.prompt(&session, "run the tests").await.unwrap();
+    assert!(stop.is_end_turn());
+
+    let answers = agent.answers();
+    assert_eq!(answers.len(), 1);
+    assert_eq!(
+        answers[0].result,
+        Ok(json!({ "outcome": { "outcome": "selected", "optionId": "allow" } })),
+    );
+    let seen = seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].title, "Run the test suite");
+    assert_eq!(seen[0].tool_kind, "execute");
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn no_decision_cancels_the_permission_request() {
+    let options = SimOptions {
+        ask: Some(AgentAsk::permission(&SessionId::new("sess-sim"))),
+        ..SimOptions::default()
+    };
+    let (client, agent) = sim::spawn(options).await;
+    client.initialize().await.unwrap();
+    let workspace = workspace();
+    let session = client.new_session(workspace.path()).await.unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    client.on_permission_request(answering(None, seen));
+
+    client.prompt(&session, "run the tests").await.unwrap();
+
+    assert_eq!(
+        agent.answers()[0].result,
+        Ok(json!({ "outcome": { "outcome": "cancelled" } })),
+    );
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn deny_without_a_reject_option_is_cancelled_not_an_allow() {
+    // The simulated agent only offers `allow_once`: denying must never pick it.
+    let options = SimOptions {
+        ask: Some(AgentAsk::permission(&SessionId::new("sess-sim"))),
+        ..SimOptions::default()
+    };
+    let (client, agent) = sim::spawn(options).await;
+    client.initialize().await.unwrap();
+    let workspace = workspace();
+    let session = client.new_session(workspace.path()).await.unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    client.on_permission_request(answering(Some(Decision::Deny), seen));
+
+    client.prompt(&session, "run the tests").await.unwrap();
+
+    assert_eq!(
+        agent.answers()[0].result,
+        Ok(json!({ "outcome": { "outcome": "cancelled" } })),
+    );
+    client.shutdown().await;
 }

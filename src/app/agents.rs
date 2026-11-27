@@ -14,12 +14,20 @@ use std::collections::BTreeMap;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
-use crate::acp::{AcpEvent, SessionId};
+use crate::acp::{AcpEvent, Decision, Rule, SessionId};
 use crate::app::App;
+use crate::application::notes;
 use crate::application::runs::{self, PreparedRun};
 use crate::config::AgentProfile;
-use crate::screens::components::agent::{AgentRunState, AgentStatus};
-use crate::tui::events::{AgentEvent, AgentFinished, AgentRunOutcome};
+use crate::screens::components::agent::{
+    AgentRunState, AgentStatus, PERMISSION_CHOICES, PermissionDialog,
+};
+use crate::tui::events::{AgentEvent, AgentFinished, AgentRunOutcome, PermissionAsk};
+
+/// The decision behind each choice of the permission dialog, in the order of
+/// [`PERMISSION_CHOICES`].
+const PERMISSION_DECISIONS: [Decision; 3] =
+    [Decision::AllowOnce, Decision::AllowAlways, Decision::Deny];
 
 /// What the TUI knows about one agent session.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -190,6 +198,13 @@ impl App {
     /// Handles the picker and the global cancel shortcut. Returns `true` when
     /// the key was consumed and must not reach the screen.
     pub fn handle_agent_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+        // An open permission dialog takes every key except Ctrl+x, which still
+        // cancels the run (and with it the requests the agent is waiting on).
+        let cancel_run = code == KeyCode::Char('x') && modifiers == KeyModifiers::CONTROL;
+        if !self.permission_queue.is_empty() && !cancel_run {
+            self.handle_permission_key(code);
+            return true;
+        }
         if self.agent_picker.is_some() {
             self.handle_picker_key(code);
             return true;
@@ -207,7 +222,117 @@ impl App {
                 self.pending_cancel = Some(session.clone());
             }
         }
+        let session = self.active_run.as_ref().and_then(|run| run.session.clone());
+        if let Some(session) = session {
+            self.drop_permissions_for(&session);
+        }
         true
+    }
+
+    /// Answers a permission request from the allowlist, or queues it for the
+    /// dialog. Called once per request by the loop.
+    pub fn record_permission_ask(&mut self, ask: PermissionAsk) {
+        if self
+            .allowlist
+            .allows(ask.project_id, &ask.agent, &ask.request.tool_kind)
+        {
+            self.resolve_permission(ask, Decision::AllowOnce, "an always-allow rule");
+            return;
+        }
+        self.permission_queue.push_back(ask);
+    }
+
+    /// The open permission dialog, for the render pass.
+    pub fn permission_dialog(&self) -> Option<PermissionDialog<'_>> {
+        let ask = self.permission_queue.front()?;
+        Some(PermissionDialog {
+            agent: &ask.agent,
+            task_id: ask.task_id,
+            title: &ask.request.title,
+            tool_kind: &ask.request.tool_kind,
+            selected: self.permission_selected,
+            waiting: self.permission_queue.len() - 1,
+        })
+    }
+
+    /// Number of standing "allow always" grants.
+    pub fn allowlist_len(&self) -> usize {
+        self.allowlist.len()
+    }
+
+    fn handle_permission_key(&mut self, code: KeyCode) {
+        let decision = match code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.permission_selected = self.permission_selected.saturating_sub(1);
+                return;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.permission_selected =
+                    (self.permission_selected + 1).min(PERMISSION_CHOICES.len() - 1);
+                return;
+            }
+            KeyCode::Enter => PERMISSION_DECISIONS[self.permission_selected],
+            KeyCode::Char('o') => Decision::AllowOnce,
+            KeyCode::Char('a') => Decision::AllowAlways,
+            KeyCode::Char('d') | KeyCode::Esc => Decision::Deny,
+            _ => return,
+        };
+        self.decide_permission(decision);
+    }
+
+    /// Answers the request at the front of the queue. "Allow always" stores a
+    /// rule; when the allowlist is full the request is allowed once and the
+    /// user is told why.
+    fn decide_permission(&mut self, decision: Decision) {
+        let Some(ask) = self.permission_queue.pop_front() else {
+            return;
+        };
+        self.permission_selected = 0;
+        let (decision, source) = match decision {
+            Decision::AllowAlways => {
+                let rule = Rule {
+                    project_id: ask.project_id,
+                    agent: ask.agent.clone(),
+                    tool_kind: ask.request.tool_kind.clone(),
+                };
+                match self.allowlist.allow_always(rule) {
+                    Ok(()) => (Decision::AllowAlways, "always for this project"),
+                    Err(error) => {
+                        self.push_error(error.user_message());
+                        (Decision::AllowOnce, "allowlist full")
+                    }
+                }
+            }
+            other => (other, "chosen by the user"),
+        };
+        self.resolve_permission(ask, decision, source);
+    }
+
+    /// Sends the answer to the waiting agent and records it on the task.
+    fn resolve_permission(&mut self, ask: PermissionAsk, decision: Decision, source: &str) {
+        let verdict = match decision {
+            Decision::AllowOnce => "allowed once",
+            Decision::AllowAlways => "allowed always",
+            Decision::Deny => "denied",
+        };
+        ask.reply.send(Some(decision));
+        let note = format!(
+            "Permission for {} ({}) \"{}\": {verdict} ({source})",
+            ask.agent, ask.request.tool_kind, ask.request.title
+        );
+        if let Err(error) = notes::add(self.repo.as_ref(), ask.task_id, &note) {
+            self.push_error(error.user_message());
+        }
+    }
+
+    /// Drops the queued requests of a session that is cancelled or finished.
+    /// Dropping an ask drops its reply, so the agent's request is cancelled.
+    fn drop_permissions_for(&mut self, session: &SessionId) {
+        let before = self.permission_queue.len();
+        self.permission_queue.retain(|ask| &ask.session != session);
+        if self.permission_queue.len() != before {
+            self.permission_selected = 0;
+        }
     }
 
     fn handle_picker_key(&mut self, code: KeyCode) {
@@ -264,6 +389,7 @@ impl App {
     /// Closes the run: records the agent's text as a note and leaves the task
     /// `in_progress`. The user decides when the verification is complete.
     pub fn finish_agent_run(&mut self, finished: &AgentFinished) {
+        self.drop_permissions_for(&finished.session);
         // A late event from a run that is no longer active must not clear the
         // live one.
         if self

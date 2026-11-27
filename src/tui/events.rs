@@ -17,6 +17,7 @@
 //! and never asks "did the timeout fire?": [`TuiEvent::Tick`] says so.
 
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -25,9 +26,10 @@ use crossterm::ExecutableCommand;
 use crossterm::event::{self, Event, KeyEvent};
 use crossterm::terminal::SetTitle;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::oneshot;
 use tokio::time::timeout;
 
-use crate::acp::{AcpEvent, SessionId, StopReason};
+use crate::acp::{AcpEvent, Decision, PermissionRequest, SessionId, StopReason};
 
 /// How long the input thread blocks inside `crossterm` before checking whether
 /// the TUI is closing. It only bounds how long the thread takes to stop; an
@@ -50,6 +52,9 @@ pub enum TuiEvent {
     /// The prompt turn of one agent session ended, successfully or not. The
     /// loop records the closing note and shuts the session down with it.
     AgentFinished(Box<AgentFinished>),
+    /// An agent asks permission for an operation. The loop answers from the
+    /// allowlist or asks the user; the agent waits until it does.
+    Permission(Box<PermissionAsk>),
 }
 
 impl TuiEvent {
@@ -85,6 +90,58 @@ pub enum AgentRunOutcome {
     /// The request failed: the connection broke, timed out or the agent
     /// rejected it. The message is already the user-facing one.
     Failed(String),
+}
+
+/// A permission request waiting for an answer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PermissionAsk {
+    pub session: SessionId,
+    /// Profile name the session was launched with.
+    pub agent: String,
+    pub task_id: i64,
+    pub project_id: i64,
+    pub request: PermissionRequest,
+    pub reply: PermissionReply,
+}
+
+/// The one-shot answer channel of a [`PermissionAsk`]. `Some(decision)` answers
+/// the request and `None` cancels it. It is shared behind an `Arc` so the event
+/// stays cloneable; the first call to [`PermissionReply::send`] wins.
+#[derive(Clone)]
+pub struct PermissionReply(Arc<StdMutex<Option<oneshot::Sender<Option<Decision>>>>>);
+
+impl PermissionReply {
+    /// A reply and the receiver the agent-side handler awaits.
+    pub fn new() -> (Self, oneshot::Receiver<Option<Decision>>) {
+        let (sender, receiver) = oneshot::channel();
+        (Self(Arc::new(StdMutex::new(Some(sender)))), receiver)
+    }
+
+    /// Sends the answer. Returns `false` when it was already sent or the
+    /// handler is gone.
+    pub fn send(&self, answer: Option<Decision>) -> bool {
+        let sender = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        sender.is_some_and(|sender| sender.send(answer).is_ok())
+    }
+}
+
+impl std::fmt::Debug for PermissionReply {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PermissionReply")
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for PermissionReply {
+    /// Two replies are equal when they answer the same request.
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 /// The end of one agent turn, delivered once by the session bridge.

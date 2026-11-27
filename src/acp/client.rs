@@ -47,7 +47,9 @@
 //! never include stack traces or local storage details.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard, PoisonError};
@@ -63,10 +65,11 @@ use tokio::time::timeout;
 use crate::config::AgentProfile;
 use crate::domain::error::AppError;
 
+use super::permissions::{Decision, PermissionRequest};
 use super::protocol::{
     CancelNotification, ContentBlock, InitializeRequest, InitializeResponse, NewSessionRequest,
-    NewSessionResponse, PROTOCOL_VERSION, PromptRequest, PromptResponse, RequestPermissionResponse,
-    SessionId, SessionUpdateNotification, StopReason,
+    NewSessionResponse, PROTOCOL_VERSION, PermissionOutcome, PromptRequest, PromptResponse,
+    RequestPermissionResponse, SessionId, SessionUpdateNotification, StopReason,
 };
 use super::transport::{self, Incoming, RequestId, RpcError};
 
@@ -80,6 +83,16 @@ pub const DEFAULT_PROMPT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// How long an agent has to exit after its stdin is closed before it is killed.
 pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+
+/// Answers one `session/request_permission`: `Some(decision)` is the user's
+/// choice, `None` means nobody answered and the request is cancelled. The
+/// future may wait for a person, so it runs on its own task and never blocks
+/// the reader.
+pub type PermissionHandler = Arc<
+    dyn Fn(PermissionRequest) -> Pin<Box<dyn Future<Output = Option<Decision>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// How many events one subscriber may lag behind. Progress updates are
 /// disposable: a slow consumer loses the oldest ones instead of blocking the
@@ -137,6 +150,9 @@ struct Inner {
     /// (an agent that died before the UI started listening) can still tell
     /// what happened.
     closed_reason: StdMutex<Option<String>>,
+    /// Answers permission requests. `None` means the client has no one to ask,
+    /// so every request is cancelled.
+    permission_handler: StdMutex<Option<PermissionHandler>>,
 }
 
 impl AcpClient {
@@ -221,6 +237,7 @@ impl AcpClient {
             prompt_timeout_ms: AtomicU64::new(millis(DEFAULT_PROMPT_TIMEOUT)),
             closed: AtomicBool::new(false),
             closed_reason: StdMutex::new(None),
+            permission_handler: StdMutex::new(None),
         });
         let reader: Box<dyn AsyncBufRead + Send + Unpin> = Box::new(BufReader::new(reader));
         tokio::spawn(drive(Arc::clone(&inner), reader));
@@ -241,6 +258,12 @@ impl AcpClient {
     pub fn with_prompt_timeout(self, timeout: Duration) -> Self {
         set_timeout(&self.inner.prompt_timeout_ms, timeout, "prompt");
         self
+    }
+
+    /// Installs the answerer for `session/request_permission`. Without one,
+    /// requests are cancelled. Replaces any previous handler.
+    pub fn on_permission_request(&self, handler: PermissionHandler) {
+        *lock(&self.inner.permission_handler) = Some(handler);
     }
 
     /// Subscribes to the connection events. A subscriber that falls behind
@@ -551,7 +574,15 @@ fn dispatch(inner: &Inner, method: &str, params: Value) {
 /// is `cancelled`, which never leaves the agent waiting. Every other method is
 /// one the client did not advertise, so `method not found` tells the agent to
 /// stop asking. Both are reported to the UI as [`AcpEvent::Unserved`].
-async fn serve(inner: &Inner, id: RequestId, method: &str, _params: Value) {
+async fn serve(inner: &Arc<Inner>, id: RequestId, method: &str, params: Value) {
+    if method == "session/request_permission" {
+        let handler = lock(&inner.permission_handler).clone();
+        if let Some(handler) = handler {
+            let inner = Arc::clone(inner);
+            tokio::spawn(async move { answer_permission(&inner, id, params, &handler).await });
+            return;
+        }
+    }
     tracing::debug!(method, id = %id, "the agent requested a client method");
     inner.publish(AcpEvent::Unserved {
         method: method.to_string(),
@@ -566,6 +597,32 @@ async fn serve(inner: &Inner, id: RequestId, method: &str, _params: Value) {
     };
     if let Err(error) = inner.write(reply).await {
         tracing::warn!(%error, method, "cannot answer the agent request");
+    }
+}
+
+/// Asks the handler about a permission request and sends the answer.
+///
+/// A request that cannot be parsed, or that nobody answers, is cancelled: the
+/// agent must never wait forever on a dialog.
+async fn answer_permission(
+    inner: &Inner,
+    id: RequestId,
+    params: Value,
+    handler: &PermissionHandler,
+) {
+    let outcome = match PermissionRequest::from_params(params) {
+        Ok(request) => match handler(request.clone()).await {
+            Some(decision) => request.outcome(decision),
+            None => PermissionOutcome::Cancelled,
+        },
+        Err(error) => {
+            tracing::warn!(%error, "malformed session/request_permission; cancelling it");
+            PermissionOutcome::Cancelled
+        }
+    };
+    let result = serde_json::to_value(RequestPermissionResponse { outcome }).unwrap_or(Value::Null);
+    if let Err(error) = inner.write(transport::success(id, result)).await {
+        tracing::warn!(%error, "cannot answer the permission request");
     }
 }
 

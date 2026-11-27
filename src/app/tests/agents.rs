@@ -344,3 +344,166 @@ fn a_failed_launch_clears_the_run_and_reports_the_error() {
     assert!(app.agent_run().is_none());
     assert_eq!(app.error(), Some("Cannot start 'unused'"));
 }
+
+/// A permission request from `session` for `task_id`, and the receiver that
+/// the agent-side handler would be waiting on.
+fn permission(
+    session: &str,
+    task_id: i64,
+    project_id: i64,
+    kind: &str,
+) -> (
+    crate::tui::events::PermissionAsk,
+    tokio::sync::oneshot::Receiver<Option<crate::acp::Decision>>,
+) {
+    let (reply, answer) = crate::tui::events::PermissionReply::new();
+    let request = crate::acp::PermissionRequest::from_params(serde_json::json!({
+        "sessionId": session,
+        "toolCall": { "toolCallId": "call-1", "title": "Run the test suite", "kind": kind },
+        "options": [
+            { "optionId": "once", "name": "Allow once", "kind": "allow_once" },
+            { "optionId": "always", "name": "Always", "kind": "allow_always" },
+            { "optionId": "no", "name": "Reject", "kind": "reject_once" },
+        ],
+    }))
+    .unwrap();
+    let ask = crate::tui::events::PermissionAsk {
+        session: SessionId::new(session),
+        agent: "claude".to_string(),
+        task_id,
+        project_id,
+        request,
+        reply,
+    };
+    (ask, answer)
+}
+
+#[test]
+fn an_open_permission_dialog_takes_keys_until_answered() {
+    let (_repo, mut app, task_id, _workspace) = ready_app(&[("claude", "unused")]);
+    let (ask, mut answer) = permission("sess-1", task_id, 1, "execute");
+    app.record_permission_ask(ask);
+
+    let dialog = app.permission_dialog().expect("the dialog opens");
+    assert_eq!(dialog.title, "Run the test suite");
+    assert_eq!(dialog.waiting, 0);
+
+    // Unrelated keys are swallowed, the agent keeps waiting.
+    assert!(app.handle_agent_key(KeyCode::Char('z'), KeyModifiers::NONE));
+    assert!(app.permission_dialog().is_some());
+    assert!(answer.try_recv().is_err());
+
+    // Down then Enter picks the second choice, "allow always".
+    app.handle_agent_key(KeyCode::Down, KeyModifiers::NONE);
+    app.handle_agent_key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(
+        answer.try_recv().unwrap(),
+        Some(crate::acp::Decision::AllowAlways)
+    );
+    assert!(app.permission_dialog().is_none());
+}
+
+#[test]
+fn allow_once_and_deny_answer_the_agent_and_are_noted_on_the_task() {
+    let (repo, mut app, task_id, _workspace) = ready_app(&[("claude", "unused")]);
+    let (first, mut first_answer) = permission("sess-1", task_id, 1, "execute");
+    let (second, mut second_answer) = permission("sess-1", task_id, 1, "edit");
+    app.record_permission_ask(first);
+    app.record_permission_ask(second);
+    assert_eq!(app.permission_dialog().unwrap().waiting, 1);
+
+    app.handle_agent_key(KeyCode::Char('o'), KeyModifiers::NONE);
+    assert_eq!(
+        first_answer.try_recv().unwrap(),
+        Some(crate::acp::Decision::AllowOnce)
+    );
+    // The next request moves to the front of the dialog.
+    assert_eq!(app.permission_dialog().unwrap().tool_kind, "edit");
+
+    app.handle_agent_key(KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(
+        second_answer.try_recv().unwrap(),
+        Some(crate::acp::Decision::Deny)
+    );
+
+    let notes = crate::application::notes::list(repo.as_ref(), task_id).unwrap();
+    let text: Vec<&str> = notes.iter().map(|note| note.content.as_str()).collect();
+    assert!(
+        text.iter().any(|note| note.contains("allowed once")),
+        "{text:?}"
+    );
+    assert!(text.iter().any(|note| note.contains("denied")), "{text:?}");
+}
+
+#[test]
+fn allow_always_stores_a_rule_that_answers_the_next_matching_request() {
+    let (_repo, mut app, task_id, _workspace) = ready_app(&[("claude", "unused")]);
+    let (first, mut first_answer) = permission("sess-1", task_id, 7, "execute");
+    app.record_permission_ask(first);
+    app.handle_agent_key(KeyCode::Char('a'), KeyModifiers::NONE);
+    assert_eq!(
+        first_answer.try_recv().unwrap(),
+        Some(crate::acp::Decision::AllowAlways)
+    );
+    assert_eq!(app.allowlist_len(), 1);
+
+    // Same project, agent and kind: no dialog, answered at once.
+    let (again, mut again_answer) = permission("sess-1", task_id, 7, "execute");
+    app.record_permission_ask(again);
+    assert!(app.permission_dialog().is_none());
+    assert_eq!(
+        again_answer.try_recv().unwrap(),
+        Some(crate::acp::Decision::AllowOnce)
+    );
+
+    // Another project still asks.
+    let (other, _other_answer) = permission("sess-1", task_id, 8, "execute");
+    app.record_permission_ask(other);
+    assert!(app.permission_dialog().is_some());
+}
+
+#[test]
+fn a_full_allowlist_allows_once_and_says_so() {
+    let (_repo, mut app, task_id, _workspace) = ready_app(&[("claude", "unused")]);
+    for index in 0..crate::acp::permissions::MAX_RULES {
+        app.allowlist
+            .allow_always(crate::acp::Rule {
+                project_id: 99,
+                agent: format!("agent-{index}"),
+                tool_kind: "edit".to_string(),
+            })
+            .unwrap();
+    }
+    let (ask, mut answer) = permission("sess-1", task_id, 1, "execute");
+    app.record_permission_ask(ask);
+    app.handle_agent_key(KeyCode::Char('a'), KeyModifiers::NONE);
+
+    assert_eq!(
+        answer.try_recv().unwrap(),
+        Some(crate::acp::Decision::AllowOnce)
+    );
+    assert_eq!(app.allowlist_len(), crate::acp::permissions::MAX_RULES);
+    assert!(
+        app.toasts()
+            .current()
+            .is_some_and(|toast| toast.message.contains("at most"))
+    );
+}
+
+#[test]
+fn ctrl_x_cancels_the_run_and_the_agent_gets_no_answer() {
+    let (_repo, mut app, task_id, _workspace) = ready_app(&[("claude", "unused")]);
+    app.dispatch(Action::ImplementTask { task_id });
+    app.agent_session_started(SessionId::new("sess-1"));
+    let (ask, mut answer) = permission("sess-1", task_id, 1, "execute");
+    app.record_permission_ask(ask);
+
+    assert!(app.handle_agent_key(KeyCode::Char('x'), KeyModifiers::CONTROL));
+
+    assert!(app.permission_dialog().is_none());
+    // The reply was dropped with the request: the handler sees a cancellation.
+    assert!(matches!(
+        answer.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+    ));
+}
